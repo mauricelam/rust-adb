@@ -983,6 +983,18 @@ python_test_host {
 }
 
 python_test_host {
+    name: "smart_protocol_test",
+    main: "smart_protocol_test.py",
+    srcs: [
+        "smart_protocol_test.py",
+    ],
+    test_suites: ["general-tests"],
+    test_options: {
+        unit_test: false,
+    },
+}
+
+python_test_host {
     name: "adb_integration_test_device",
     main: "test_device.py",
     srcs: [
