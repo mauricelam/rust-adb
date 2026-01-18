@@ -1,1 +1,2 @@
-.DS_Store
+/test/target
+/test/Cargo.lock
