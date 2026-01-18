@@ -1,50 +1,71 @@
+use std::io::{self, Read, Write};
 use std::net::{TcpListener, TcpStream};
-use std::io::{Read, Write};
+use std::sync::mpsc::{self, Receiver, Sender};
 use std::thread;
-use std::sync::mpsc::{self, Sender, Receiver};
 
-pub fn start_mock_server() -> std::io::Result<(u16, Receiver<String>)> {
+pub fn start_mock_server() -> std::io::Result<(u16, Receiver<String>, thread::JoinHandle<()>)> {
     let listener = TcpListener::bind("127.0.0.1:0")?;
     let port = listener.local_addr()?.port();
 
     let (tx, rx) = mpsc::channel();
 
-    thread::spawn(move || {
-        if let Ok((mut stream, _)) = listener.accept() {
-            handle_connection(&mut stream, tx);
+    let jh = thread::spawn(move || {
+        for stream in listener.incoming() {
+            if let Ok(stream) = stream {
+                let tx_clone = tx.clone();
+                thread::spawn(move || {
+                    let _ = handle_connection(stream, tx_clone);
+                });
+            } else {
+                break;
+            }
         }
     });
 
-    Ok((port, rx))
+    Ok((port, rx, jh))
 }
 
-fn handle_connection(stream: &mut TcpStream, tx: Sender<String>) {
-    let mut len_buf = [0u8; 4];
-    if stream.read_exact(&mut len_buf).is_err() {
-        return;
-    }
+fn handle_connection(client_stream: TcpStream, tx: Sender<String>) -> std::io::Result<()> {
+    let server_stream = TcpStream::connect("127.0.0.1:5037")?;
 
-    let len = match std::str::from_utf8(&len_buf) {
-        Ok(s) => match u32::from_str_radix(s, 16) {
-            Ok(val) => val,
-            Err(_) => return,
-        },
-        Err(_) => return,
-    };
+    // MITM bi-directional forwarding
+    let mut client_reader = client_stream.try_clone()?;
+    let mut server_reader = server_stream.try_clone()?;
 
-    let mut msg_buf = vec![0u8; len as usize];
-    if stream.read_exact(&mut msg_buf).is_err() {
-        return;
-    }
+    let mut client_writer = client_stream;
+    let mut server_writer = server_stream;
 
-    let msg = String::from_utf8_lossy(&msg_buf).to_string();
+    let t1 = thread::spawn(move || {
+        let mut x = || -> std::io::Result<()> {
+            let mut len_buf = [0u8; 4];
+            client_reader.read_exact(&mut len_buf)?;
 
-    // The receiver may have been dropped, so we ignore the error.
-    let _ = tx.send(msg);
+            let len_str = std::str::from_utf8(&len_buf)
+                .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+            let len = u32::from_str_radix(len_str, 16)
+                .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
 
-    // Send a valid response for `host:devices`.
-    // The format is "OKAY" followed by a 4-byte hex length, then the payload.
-    // An empty list of devices is an empty payload.
-    let response = b"OKAY0000";
-    let _ = stream.write_all(response);
+            let mut msg_buf = vec![0u8; len as usize];
+            client_reader.read_exact(&mut msg_buf)?;
+
+            let msg = String::from_utf8_lossy(&msg_buf).to_string();
+            let _ = tx.send(msg);
+
+            // Forward the initial command
+            server_writer.write_all(&len_buf)?;
+            server_writer.write_all(&msg_buf)?;
+
+            Ok(())
+        };
+        x().unwrap();
+    });
+
+    let t2 = thread::spawn(move || {
+        let _ = io::copy(&mut server_reader, &mut client_writer);
+    });
+
+    let _ = t1.join();
+    let _ = t2.join();
+
+    Ok(())
 }

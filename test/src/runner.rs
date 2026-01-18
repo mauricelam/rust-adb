@@ -8,7 +8,7 @@ pub fn run_adb_command(port: u16, args: &[&str]) -> std::io::Result<Output> {
     let adb_path = "../binaries/mac/adb";
 
     Command::new(adb_path)
+        .args(["-P", &port.to_string()])
         .args(args)
-        .env("ADB_SERVER_PORT", port.to_string())
         .output()
 }
