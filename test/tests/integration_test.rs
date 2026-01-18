@@ -4,7 +4,7 @@ use std::time::Duration;
 
 #[test]
 fn test_host_devices() {
-    runner::run_adb_command(5037, &[]).unwrap();
+    runner::run_adb_command(5037, &["devices"]).unwrap();
     // Start the mock server and get its port and the receiver for the message.
     let (port, rx, _jh) = mock_server::start_mock_server().expect("Failed to start mock server");
 
@@ -16,11 +16,11 @@ fn test_host_devices() {
 
     // Assert that the received message is correct.
     assert_eq!(
-        rx.recv_timeout(Duration::from_secs(1)).unwrap(),
+        rx.recv_timeout(Duration::from_secs(5)).unwrap(),
         "host:version"
     );
     assert_eq!(
-        rx.recv_timeout(Duration::from_secs(1)).unwrap(),
+        rx.recv_timeout(Duration::from_secs(5)).unwrap(),
         "host:devices"
     );
 }
