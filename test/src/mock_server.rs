@@ -1,9 +1,17 @@
-use std::io::{self, Read, Write};
+use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::thread;
 
-pub fn start_mock_server() -> std::io::Result<(u16, Receiver<String>, thread::JoinHandle<()>)> {
+#[derive(Debug)]
+pub enum Traffic {
+    FromClient(Vec<u8>),
+    FromServer(Vec<u8>),
+}
+
+pub fn start_mock_server(
+    upstream_port: u16,
+) -> std::io::Result<(u16, Receiver<Traffic>, thread::JoinHandle<()>)> {
     let listener = TcpListener::bind("127.0.0.1:0")?;
     let port = listener.local_addr()?.port();
 
@@ -14,7 +22,7 @@ pub fn start_mock_server() -> std::io::Result<(u16, Receiver<String>, thread::Jo
             if let Ok(stream) = stream {
                 let tx_clone = tx.clone();
                 thread::spawn(move || {
-                    let _ = handle_connection(stream, tx_clone);
+                    let _ = handle_connection(stream, upstream_port, tx_clone);
                 });
             } else {
                 break;
@@ -25,47 +33,48 @@ pub fn start_mock_server() -> std::io::Result<(u16, Receiver<String>, thread::Jo
     Ok((port, rx, jh))
 }
 
-fn handle_connection(client_stream: TcpStream, tx: Sender<String>) -> std::io::Result<()> {
-    let server_stream = TcpStream::connect("127.0.0.1:5037")?;
+fn handle_connection(
+    mut client_stream: TcpStream,
+    upstream_port: u16,
+    tx: Sender<Traffic>,
+) -> std::io::Result<()> {
+    let mut server_stream = TcpStream::connect(format!("127.0.0.1:{}", upstream_port))?;
 
-    // MITM bi-directional forwarding
     let mut client_reader = client_stream.try_clone()?;
     let mut server_reader = server_stream.try_clone()?;
 
-    let mut client_writer = client_stream;
-    let mut server_writer = server_stream;
-
-    let t1 = thread::spawn(move || {
-        let mut x = || -> std::io::Result<()> {
-            let mut len_buf = [0u8; 4];
-            client_reader.read_exact(&mut len_buf)?;
-
-            let len_str = std::str::from_utf8(&len_buf)
-                .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
-            let len = u32::from_str_radix(len_str, 16)
-                .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
-
-            let mut msg_buf = vec![0u8; len as usize];
-            client_reader.read_exact(&mut msg_buf)?;
-
-            let msg = String::from_utf8_lossy(&msg_buf).to_string();
-            let _ = tx.send(msg);
-
-            // Forward the initial command
-            server_writer.write_all(&len_buf)?;
-            server_writer.write_all(&msg_buf)?;
-
-            Ok(())
-        };
-        x().unwrap();
+    let tx_clone = tx.clone();
+    thread::spawn(move || {
+        let mut buffer = [0; 1024];
+        loop {
+            match client_reader.read(&mut buffer) {
+                Ok(0) => break,
+                Ok(n) => {
+                    if server_stream.write_all(&buffer[..n]).is_err() {
+                        break;
+                    }
+                    let _ = tx_clone.send(Traffic::FromClient(buffer[..n].to_vec()));
+                }
+                Err(_) => break,
+            }
+        }
     });
 
-    let t2 = thread::spawn(move || {
-        let _ = io::copy(&mut server_reader, &mut client_writer);
+    thread::spawn(move || {
+        let mut buffer = [0; 1024];
+        loop {
+            match server_reader.read(&mut buffer) {
+                Ok(0) => break,
+                Ok(n) => {
+                    if client_stream.write_all(&buffer[..n]).is_err() {
+                        break;
+                    }
+                    let _ = tx.send(Traffic::FromServer(buffer[..n].to_vec()));
+                }
+                Err(_) => break,
+            }
+        }
     });
-
-    let _ = t1.join();
-    let _ = t2.join();
 
     Ok(())
 }
