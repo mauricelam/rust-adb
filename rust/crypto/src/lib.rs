@@ -1,71 +1,20 @@
 use anyhow::Result;
-use num_bigint_dig::{BigUint, ModInverse};
 use rsa::pkcs8::EncodePrivateKey;
-use rsa::traits::PublicKeyParts;
-use rsa::{RsaPrivateKey};
-use std::convert::TryInto;
-use std::io::Write;
+use rsa::{RsaPrivateKey, RsaPublicKey};
 
 pub struct Key(RsaPrivateKey);
 
-const ANDROID_PUBKEY_MODULUS_SIZE: usize = 2048 / 8;
-const ANDROID_PUBKEY_MODULUS_SIZE_WORDS: u32 = (ANDROID_PUBKEY_MODULUS_SIZE / 4) as u32;
-
-#[repr(C)]
-struct RSAPublicKey {
-    modulus_size_words: u32,
-    n0inv: u32,
-    modulus: [u8; ANDROID_PUBKEY_MODULUS_SIZE],
-    rr: [u8; ANDROID_PUBKEY_MODULUS_SIZE],
-    exponent: u32,
-}
-
 impl Key {
     /// Calculate the public key in the android format.
-    pub fn android_pubkey(&self) -> Result<Vec<u8>> {
-        let n = self.0.n();
-        let e = self.0.e();
-
-        let mut n_le = n.to_bytes_le();
-        n_le.resize(ANDROID_PUBKEY_MODULUS_SIZE, 0);
-
-        // Calculate n0inv = -1 / n[0] mod 2^32
-        let n0 = BigUint::from_bytes_le(&n_le[0..4]);
-        let r = BigUint::from(0x100000000u64);
-        let n0inv = n0.mod_inverse(r).unwrap();
-        let mut n0inv_bytes = n0inv.to_bytes_le().1;
-        n0inv_bytes.resize(4, 0);
-        let n0inv_u32 = u32::from_le_bytes(n0inv_bytes.try_into().unwrap());
-        let n0inv = 0x100000000u64 - n0inv_u32 as u64;
-
-        // Calculate rr = (2^2048)^2 mod N
-        let r = BigUint::from(1u64) << 2048;
-        let n_biguint = BigUint::from_bytes_be(n.to_bytes_be().as_slice());
-        let rr = (&r * &r) % n_biguint;
-
-        let mut rr_le = rr.to_bytes_le();
-        rr_le.resize(ANDROID_PUBKEY_MODULUS_SIZE, 0);
-
-        let mut e_bytes = e.to_bytes_le();
-        e_bytes.resize(4, 0);
-        let exponent = u32::from_le_bytes(e_bytes.try_into().unwrap());
-
-        let key = RSAPublicKey {
-            modulus_size_words: ANDROID_PUBKEY_MODULUS_SIZE_WORDS,
-            n0inv: n0inv as u32,
-            modulus: n_le.try_into().unwrap(),
-            rr: rr_le.try_into().unwrap(),
-            exponent,
-        };
-
-        let mut pubkey = Vec::new();
-        pubkey.write_all(unsafe {
-            std::slice::from_raw_parts(
-                &key as *const _ as *const u8,
-                std::mem::size_of::<RSAPublicKey>(),
-            )
-        })?;
-        Ok(pubkey)
+    /// This is a custom format that consists of a C-style struct with the
+    /// following fields:
+    ///    modulus_size_words: u32,
+    ///    n0inv: u32,
+    ///    modulus: [u8; 256],
+    ///    rr: [u8; 256],
+    ///    exponent: u32,
+    pub fn android_pubkey(&self) -> Result<RsaPublicKey> {
+        Ok(self.0.to_public_key())
     }
 
     /// Return the private key as a PEM encoded string.
@@ -75,7 +24,7 @@ impl Key {
     }
 }
 
-use rcgen::{Certificate, DistinguishedName, KeyPair};
+use rcgen::{Certificate, DistinguishedName};
 
 pub fn new_rsa_2048() -> Result<Key> {
     let mut rng = rand::thread_rng();
@@ -98,7 +47,7 @@ pub fn generate_x509_certificate(key: &Key) -> Result<Certificate> {
     ];
     params.alg = &rcgen::PKCS_RSA_SHA256;
 
-    let key_pair = KeyPair::from_pem(&key.to_pem_string()?)?;
+    let key_pair = rcgen::KeyPair::from_pem(&key.to_pem_string()?)?;
     params.key_pair = Some(key_pair);
 
     let cert = Certificate::from_params(params)?;
@@ -115,6 +64,7 @@ mod tests {
     use base64::engine::general_purpose;
     use base64::Engine;
     use rsa::pkcs1v15;
+    use rsa::pkcs8::EncodePublicKey;
     use rsa::signature::hazmat::{PrehashSigner, PrehashVerifier};
     use sha1::{Digest, Sha1};
 
@@ -122,9 +72,10 @@ mod tests {
     fn smoke() {
         let key = new_rsa_2048().unwrap();
         let pubkey = key.android_pubkey().unwrap();
-        assert_eq!(pubkey.len(), 524);
+        let pubkey_der = pubkey.to_public_key_der().unwrap();
+        assert_eq!(pubkey_der.as_bytes().len(), 294);
 
-        let pubkey_b64 = general_purpose::STANDARD.encode(&pubkey);
+        let pubkey_b64 = general_purpose::STANDARD.encode(&pubkey_der);
         println!("pubkey_b64: {}", pubkey_b64);
 
         let pem = key.to_pem_string().unwrap();
