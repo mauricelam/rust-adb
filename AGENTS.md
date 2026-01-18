@@ -63,3 +63,17 @@ Before writing Rust code, identify the specific ADB Service or Protocol Layer in
 ### Phase 3: Validation
 
 Every new module in `rust/` must have a corresponding integration test in `tests/` that verifies parity with the AOSP implementation.
+
+
+---
+
+- Cryptographic operations should prefer to use the pure-rust implementations in https://github.com/rustcrypto
+- USB operations should prefer to use rusb: https://docs.rs/rusb/latest/rusb/
+- TCP operations should use the standard library implementation
+
+
+## Inspirations
+
+- https://github.com/GoogleChromeLabs/wadb
+- https://github.com/cocool97/adb_client
+- https://docs.rs/crate/mozdevice/0.5.4/source/
