@@ -1,4 +1,2 @@
-/test/target
-/test/Cargo.lock
 .DS_Store
-rust/crypto/target
+target/
