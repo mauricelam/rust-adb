@@ -1,3 +1,8 @@
+//! Integration tests for the ADB harness.
+//!
+//! These tests work by running a mock MITM server in between the ADB client and the ADB server (host-side).
+//! The mock server intercepts the ADB commands and asserts that they are correct.
+
 use adb_harness::mock_server;
 use adb_harness::runner;
 use std::process::Command;
@@ -41,6 +46,10 @@ fn test_host_devices_l() {
     // Assert that the received messages are correct.
     assert_eq!(
         rx.recv_timeout(Duration::from_secs(1)).unwrap(),
+        "host:version"
+    );
+    assert_eq!(
+        rx.recv_timeout(Duration::from_secs(1)).unwrap(),
         "host:devices-l"
     );
 }
@@ -69,6 +78,10 @@ fn test_host_track_devices() {
         .unwrap();
 
     // Assert that the received messages are correct.
+    assert_eq!(
+        rx.recv_timeout(Duration::from_secs(1)).unwrap(),
+        "host:version"
+    );
     assert_eq!(
         rx.recv_timeout(Duration::from_secs(1)).unwrap(),
         "host:track-devices"
