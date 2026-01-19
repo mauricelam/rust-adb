@@ -1,12 +1,13 @@
 use adb_harness::mock_server;
-use anyhow::Result;
+use anyhow::anyhow;
 
-fn main() -> Result<()> {
-    let (port, rx, jh) = mock_server::start_mock_server(5037)?;
+fn main() -> anyhow::Result<()> {
+    let (port, rx, jh) = mock_server::start_mock_server()?;
     println!("Mock server started on port {port}");
     for msg in rx {
-        println!("Received message: {msg:?}");
+        println!("Received message: {msg}");
     }
-    jh.join().expect("Handler thread panicked");
+    jh.join()
+        .map_err(|e| anyhow!("Failed to join thread: {e:?}"))?;
     Ok(())
 }
