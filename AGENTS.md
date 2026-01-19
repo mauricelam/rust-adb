@@ -23,6 +23,7 @@ This project aims to create a modern, safe, and performant implementation of the
 * **Build System**: Uses **Cargo**.
 * **Agent Instructions**:
 * Follow idiomatic Rust patterns (ownership, Result-based error handling, and type safety).
+* When porting over the code, make sure it's corresponding documentations are being ported over as well.
 * All dependencies must be managed via `Cargo.toml`. Avoid manual linking of external libraries unless absolutely necessary.
 
 
