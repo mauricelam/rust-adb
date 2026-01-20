@@ -1,4 +1,4 @@
 [workspace]
 members = [
-    "rust-adb-pairing-auth",
+    "rust-adb-pairing-auth", "sysdeps",
 ]
