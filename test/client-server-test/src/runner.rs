@@ -1,14 +1,26 @@
 use std::process::{Command, Output};
 
-pub fn run_adb_command(port: u16, args: &[&str]) -> std::io::Result<Output> {
-    // Path to the adb binary, relative to the workspace root
+const ADB_PATH: &str = {
     #[cfg(target_os = "linux")]
-    let adb_path = "../binaries/linux/adb";
+    {
+        "../../binaries/linux/adb"
+    }
     #[cfg(target_os = "macos")]
-    let adb_path = "../binaries/mac/adb";
+    {
+        "../../binaries/mac/adb"
+    }
+};
 
-    Command::new(adb_path)
+pub fn run_adb_command(port: u16, args: &[&str]) -> std::io::Result<Output> {
+    Command::new(ADB_PATH)
         .args(["-P", &port.to_string()])
         .args(args)
         .output()
+}
+
+pub fn spawn_adb_command(port: u16, args: &[&str]) -> std::io::Result<std::process::Child> {
+    Command::new(ADB_PATH)
+        .args(["-P", &port.to_string()])
+        .args(args)
+        .spawn()
 }

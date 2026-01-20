@@ -3,9 +3,8 @@
 //! These tests work by running a mock MITM server in between the ADB client and the ADB server (host-side).
 //! The mock server intercepts the ADB commands and asserts that they are correct.
 
-use adb_harness::mock_server;
-use adb_harness::runner;
-use std::process::Command;
+use adb_client_server_test::mock_server;
+use adb_client_server_test::runner;
 use std::time::Duration;
 
 #[test]
@@ -64,18 +63,9 @@ fn test_host_track_devices() {
     // Give the server thread a moment to start and bind the port.
     std::thread::sleep(Duration::from_secs(1));
 
-    // Path to the adb binary, relative to the workspace root
-    #[cfg(target_os = "linux")]
-    let adb_path = "../binaries/linux/adb";
-    #[cfg(target_os = "macos")]
-    let adb_path = "../binaries/mac/adb";
-
     // Run the `track-devices` command. Since this command doesn't exit,
     // we spawn it and then kill it after we've received the message.
-    let mut child = Command::new(adb_path)
-        .args(["-P", &port.to_string(), "track-devices"])
-        .spawn()
-        .unwrap();
+    let mut child = runner::spawn_adb_command(port, &["track-devices"]).unwrap();
 
     // Assert that the received messages are correct.
     assert_eq!(

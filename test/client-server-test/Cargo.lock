@@ -3,7 +3,7 @@
 version = 4
 
 [[package]]
-name = "adb-harness"
+name = "adb-client-server-test"
 version = "0.1.0"
 dependencies = [
  "anyhow",
