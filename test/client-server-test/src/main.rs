@@ -1,4 +1,4 @@
-use adb_harness::mock_server;
+use adb_client_server_test::mock_server;
 use anyhow::anyhow;
 
 fn main() -> anyhow::Result<()> {
