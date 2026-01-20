@@ -79,16 +79,30 @@ fn pairing_auth_corrupted_payload() {
     let mut client = client_builder.init_cipher(&server_msg).unwrap();
     let mut server = server_builder.init_cipher(&client_msg).unwrap();
 
-    let msg = &[0x2a, 0x2b, 0x2c, 0xff, 0x45, 0x12, 0x33];
+    let msg = &[
+        0x2a, 0x2b, 0x2c, 0xff, 0x45, 0x12, 0x33, 0x45, 0x12, 0xea, 0xf2, 0xdb,
+    ];
 
     // Client encrypts, server decrypts
-    let mut encrypted = client.encrypt(msg).unwrap();
+    let encrypted = client.encrypt(msg).unwrap();
     let decrypted = server.decrypt(&encrypted).unwrap();
     assert_eq!(msg.to_vec(), decrypted);
 
-    // Corrupt the payload
-    encrypted[0] ^= 0xff;
-    let decrypted = server.decrypt(&encrypted);
+    // Corrupt the payload by appending a byte
+    let mut corrupted: Vec<u8> = encrypted.clone();
+    corrupted.push(0xaa);
+    let decrypted = server.decrypt(&corrupted);
+    assert!(matches!(
+        decrypted,
+        Err(PairingAuthError::CipherError(
+            Aes128GcmError::DecryptionFailed
+        ))
+    ));
+
+    // Corrupt the payload by removing a byte
+    let mut corrupted = encrypted;
+    corrupted.pop();
+    let decrypted = server.decrypt(&corrupted);
     assert!(matches!(
         decrypted,
         Err(PairingAuthError::CipherError(
