@@ -1,3 +1,22 @@
+/*
+ * Copyright (C) 2023 The Android Open Source Project
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *      http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+//! This crate provides a Rust implementation of ADB's socket management logic.
+//! It is ported from `original/socket.h` and `original/sockets.cpp`.
+
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, Weak};
 use std::os::unix::io::RawFd;
@@ -6,8 +25,12 @@ use adb_types::{Apacket, IoVector};
 use mio::{Interest, Token, event::Event, unix::SourceFd};
 use fdevent::fdevent::{Fdevent, FdeventHandler};
 
+/// Maximum payload size for an ADB packet.
+/// Ported from `MAX_PAYLOAD` in `original/adb.h`.
 pub const MAX_PAYLOAD: usize = 1024 * 1024;
 
+// ADB protocol command constants.
+// Ported from `original/adb.h`.
 pub const A_SYNC: u32 = 0x434e5953;
 pub const A_CNXN: u32 = 0x4e584e43;
 pub const A_OPEN: u32 = 0x4e45504f;
@@ -17,35 +40,56 @@ pub const A_WRTE: u32 = 0x45545257;
 pub const A_AUTH: u32 = 0x48545541;
 pub const A_STLS: u32 = 0x534C5453;
 
+/// Trait representing a generic socket in the ADB system.
+/// This mirrors the `asocket` struct functionality in `original/socket.h`.
 pub trait Socket: Send + Sync {
+    /// Returns the unique ID of the socket.
     fn id(&self) -> u32;
+    /// Enqueues data to be sent through the socket.
+    /// Returns 0 if more data can be accepted, 1 if blocked, and -1 on error.
     fn enqueue(&self, data: Bytes) -> i32;
+    /// Called when the peer is ready to receive more data.
     fn ready(&self);
+    /// Notifies the socket that it should stop sending data.
     fn shutdown(&self);
+    /// Closes the socket.
     fn close(&self);
+    /// Returns the ID of the peer socket, if any.
     fn peer_id(&self) -> Option<u32>;
+    /// Returns the transport ID associated with the socket, if any.
     fn transport_id(&self) -> Option<u64>;
 }
 
+/// Trait representing a transport that can send ADB packets.
+/// Ported from the `atransport` class in `original/transport.h`.
 pub trait Transport: Send + Sync {
+    /// Returns the unique ID of the transport.
     fn id(&self) -> u64;
+    /// Sends an ADB packet through the transport.
     fn send_packet(&self, packet: Apacket);
+    /// Sends a READY signal to the peer.
     fn send_ready(&self, local: u32, remote: u32, ack_bytes: u32);
+    /// Returns the maximum payload supported by the transport.
     fn get_max_payload(&self) -> usize;
+    /// Returns whether the transport supports delayed acknowledgements.
     fn supports_delayed_ack(&self) -> bool;
 }
 
+/// Inner state of the socket registry.
 struct SocketRegistryInner {
     sockets: HashMap<u32, Arc<dyn Socket>>,
     closing_sockets: HashMap<u32, Arc<dyn Socket>>,
     next_id: u32,
 }
 
+/// Manages the lifecycle and identification of ADB sockets.
+/// Ported from global socket management in `original/sockets.cpp`.
 pub struct SocketRegistry {
     inner: Mutex<SocketRegistryInner>,
 }
 
 impl SocketRegistry {
+    /// Creates a new, empty `SocketRegistry`.
     pub fn new() -> Self {
         Self {
             inner: Mutex::new(SocketRegistryInner {
@@ -56,6 +100,8 @@ impl SocketRegistry {
         }
     }
 
+    /// Allocates a new, unique socket ID.
+    /// Ported from `local_socket_next_id` in `original/sockets.cpp`.
     pub fn alloc_id(&self) -> u32 {
         let mut inner = self.inner.lock().unwrap();
         let id = inner.next_id;
@@ -63,16 +109,21 @@ impl SocketRegistry {
         id
     }
 
+    /// Installs a socket into the registry.
+    /// Ported from `install_local_socket` in `original/sockets.cpp`.
     pub fn install(&self, socket: Arc<dyn Socket>) {
         let mut inner = self.inner.lock().unwrap();
         inner.sockets.insert(socket.id(), socket);
     }
 
+    /// Finds a socket by its ID.
+    /// Ported from `find_local_socket` in `original/sockets.cpp`.
     pub fn find(&self, id: u32) -> Option<Arc<dyn Socket>> {
         let inner = self.inner.lock().unwrap();
         inner.sockets.get(&id).cloned()
     }
 
+    /// Finds a local socket by its ID and optionally its peer's ID.
     pub fn find_local_socket(&self, local_id: u32, peer_id: u32) -> Option<Arc<dyn Socket>> {
         let inner = self.inner.lock().unwrap();
         if let Some(s) = inner.sockets.get(&local_id) {
@@ -83,12 +134,16 @@ impl SocketRegistry {
         None
     }
 
+    /// Removes a socket from the registry.
+    /// Ported from `remove_socket` in `original/sockets.cpp`.
     pub fn remove(&self, id: u32) {
         let mut inner = self.inner.lock().unwrap();
         inner.sockets.remove(&id);
         inner.closing_sockets.remove(&id);
     }
 
+    /// Moves a socket to the closing list.
+    /// Ported from `local_socket_closing_list` logic in `original/sockets.cpp`.
     pub fn move_to_closing(&self, id: u32) {
         let mut inner = self.inner.lock().unwrap();
         if let Some(s) = inner.sockets.remove(&id) {
@@ -96,6 +151,8 @@ impl SocketRegistry {
         }
     }
 
+    /// Closes all sockets associated with a specific transport.
+    /// Ported from `close_all_sockets` in `original/sockets.cpp`.
     pub fn close_all_sockets(&self, transport_id: u64) {
         let ids: Vec<u32> = {
             let inner = self.inner.lock().unwrap();
@@ -113,11 +170,14 @@ impl SocketRegistry {
     }
 }
 
+/// A local socket bound to a file descriptor.
+/// Ported from `asocket` with local socket fields in `original/socket.h`.
 #[derive(Clone)]
 pub struct LocalSocket {
     inner: Arc<Mutex<LocalSocketInner>>,
 }
 
+/// Inner state of a [`LocalSocket`].
 struct LocalSocketInner {
     id: u32,
     fd: RawFd,
@@ -129,11 +189,13 @@ struct LocalSocketInner {
     registry: Weak<SocketRegistry>,
     mio_registry: mio::Registry,
     token: Token,
-    interests: Interest,
+    current_interests: Option<Interest>,
     available_send_bytes: Option<i64>,
+    read_buffer: Vec<u8>,
 }
 
 impl LocalSocket {
+    /// Creates a new `LocalSocket`.
     pub fn new(id: u32, fd: RawFd, registry: Arc<SocketRegistry>, mio_registry: mio::Registry, token: Token) -> Self {
         Self {
             inner: Arc::new(Mutex::new(LocalSocketInner {
@@ -147,17 +209,20 @@ impl LocalSocket {
                 registry: Arc::downgrade(&registry),
                 mio_registry,
                 token,
-                interests: Interest::READABLE,
+                current_interests: Some(Interest::READABLE),
                 available_send_bytes: None,
+                read_buffer: vec![0u8; MAX_PAYLOAD],
             })),
         }
     }
 
+    /// Sets the peer socket.
     pub fn set_peer(&self, peer: Arc<dyn Socket>) {
         let mut inner = self.inner.lock().unwrap();
         inner.peer = Some(Arc::downgrade(&peer));
     }
 
+    /// Sets the associated transport.
     pub fn set_transport(&self, transport: Arc<dyn Transport>) {
         let mut inner = self.inner.lock().unwrap();
         inner.transport = Some(transport);
@@ -205,8 +270,7 @@ impl Socket for LocalSocket {
             inner.destroy();
         } else {
             inner.closing = true;
-            inner.remove_interest(Interest::READABLE);
-            inner.add_interest(Interest::WRITABLE);
+            inner.update_interests(Some(Interest::WRITABLE));
             if let Some(registry) = inner.registry.upgrade() {
                 registry.move_to_closing(inner.id);
             }
@@ -224,6 +288,7 @@ impl Socket for LocalSocket {
     }
 }
 
+/// Result of a socket flush operation.
 enum FlushResult {
     Destroyed,
     TryAgain,
@@ -231,42 +296,58 @@ enum FlushResult {
 }
 
 impl LocalSocketInner {
+    /// Updates the `mio` registration with new interests.
+    /// This handles transitions between None (deregister) and Some (register/reregister).
+    fn update_interests(&mut self, new_interests: Option<Interest>) {
+        if self.current_interests == new_interests {
+            return;
+        }
+
+        let mut source = SourceFd(&self.fd);
+        match (self.current_interests, new_interests) {
+            (Some(_), Some(new)) => {
+                self.mio_registry.reregister(&mut source, self.token, new).ok();
+            }
+            (Some(_), None) => {
+                self.mio_registry.deregister(&mut source).ok();
+            }
+            (None, Some(new)) => {
+                self.mio_registry.register(&mut source, self.token, new).ok();
+            }
+            (None, None) => {}
+        }
+        self.current_interests = new_interests;
+    }
+
+    /// Adds an interest to the current set.
     fn add_interest(&mut self, interest: Interest) {
-        let new_interests = self.interests | interest;
-        if new_interests != self.interests {
-            self.interests = new_interests;
-            let mut source = SourceFd(&self.fd);
-            self.mio_registry.reregister(&mut source, self.token, self.interests).ok();
-        }
+        let new = match self.current_interests {
+            Some(cur) => Some(cur | interest),
+            None => Some(interest),
+        };
+        self.update_interests(new);
     }
 
+    /// Removes an interest from the current set.
     fn remove_interest(&mut self, interest: Interest) {
-        // Since Interest doesn't support subtraction, we have to rebuild.
-        let mut new_interest = None;
-        if interest == Interest::READABLE {
-            if self.interests == (Interest::READABLE | Interest::WRITABLE) {
-                new_interest = Some(Interest::WRITABLE);
-            } else if self.interests == Interest::READABLE {
-                // Cannot have empty interest in mio, but we can't easily avoid it here
-                // without more complex logic.
-            }
-        } else if interest == Interest::WRITABLE {
-            if self.interests == (Interest::READABLE | Interest::WRITABLE) {
-                new_interest = Some(Interest::READABLE);
-            } else if self.interests == Interest::WRITABLE {
-                new_interest = Some(Interest::READABLE); // Fallback to readable?
-            }
-        }
+        let cur = match self.current_interests {
+            Some(c) => c,
+            None => return,
+        };
 
-        if let Some(i) = new_interest {
-            if i != self.interests {
-                self.interests = i;
-                let mut source = SourceFd(&self.fd);
-                self.mio_registry.reregister(&mut source, self.token, self.interests).ok();
-            }
-        }
+        let new = if interest == Interest::READABLE {
+            if cur.is_writable() { Some(Interest::WRITABLE) } else { None }
+        } else if interest == Interest::WRITABLE {
+            if cur.is_readable() { Some(Interest::READABLE) } else { None }
+        } else {
+            Some(cur)
+        };
+
+        self.update_interests(new);
     }
 
+    /// Flushes incoming data from the peer to the local file descriptor.
+    /// Ported from `local_socket_flush_incoming` in `original/sockets.cpp`.
     fn flush_incoming(&mut self) -> FlushResult {
         let mut bytes_flushed = 0;
         if !self.packet_queue.is_empty() {
@@ -312,34 +393,37 @@ impl LocalSocketInner {
         }
     }
 
+    /// Destroys the socket and its file descriptor.
+    /// Ported from `local_socket_destroy` in `original/sockets.cpp`.
     fn destroy(&mut self) {
         if let Some(registry) = self.registry.upgrade() {
             registry.remove(self.id);
         }
+        self.update_interests(None);
         let _ = nix::unistd::close(self.fd);
     }
 }
 
 impl FdeventHandler for LocalSocket {
+    /// Handles events from the `fdevent` looper.
+    /// Ported from `local_socket_event_func` in `original/sockets.cpp`.
     fn on_event(&mut self, event: &Event) {
         if event.is_writable() {
             let mut inner = self.inner.lock().unwrap();
             inner.flush_incoming();
         }
         if event.is_readable() {
-            let (data, is_eof) = {
-                let inner = self.inner.lock().unwrap();
-                let max_payload = MAX_PAYLOAD;
-                let mut buf = vec![0u8; max_payload];
-                match nix::unistd::read(inner.fd, &mut buf) {
+            let (bytes_to_enqueue, is_eof) = {
+                let mut inner = self.inner.lock().unwrap();
+                match nix::unistd::read(inner.fd, &mut inner.read_buffer) {
                     Ok(0) => (None, true),
-                    Ok(n) => (Some(Bytes::copy_from_slice(&buf[..n])), false),
+                    Ok(n) => (Some(Bytes::copy_from_slice(&inner.read_buffer[..n])), false),
                     Err(e) if e == nix::errno::Errno::EAGAIN => (None, false),
                     Err(_) => (None, true),
                 }
             };
 
-            if let Some(bytes) = data {
+            if let Some(bytes) = bytes_to_enqueue {
                 let peer = {
                     let inner = self.inner.lock().unwrap();
                     inner.peer.as_ref().and_then(|p| p.upgrade())
@@ -347,11 +431,11 @@ impl FdeventHandler for LocalSocket {
                 if let Some(peer) = peer {
                     let r = peer.enqueue(bytes);
                     if r > 0 {
+                        // Peer is full, stop reading.
                         let mut inner = self.inner.lock().unwrap();
                         inner.remove_interest(Interest::READABLE);
-                        inner.add_interest(Interest::WRITABLE);
                     } else if r < 0 {
-                        // Peer closed us
+                        // Peer closed us.
                         return;
                     }
                 }
@@ -365,11 +449,14 @@ impl FdeventHandler for LocalSocket {
     fn on_timeout(&mut self) {}
 }
 
+/// A remote socket bound to a transport.
+/// Ported from `asocket` with remote socket fields in `original/socket.h`.
 pub struct RemoteSocket {
     id: u32,
     inner: Mutex<RemoteSocketInner>,
 }
 
+/// Inner state of a [`RemoteSocket`].
 struct RemoteSocketInner {
     peer: Option<Weak<dyn Socket>>,
     transport: Arc<dyn Transport>,
@@ -377,6 +464,7 @@ struct RemoteSocketInner {
 }
 
 impl RemoteSocket {
+    /// Creates a new `RemoteSocket`.
     pub fn new(id: u32, transport: Arc<dyn Transport>, registry: Arc<SocketRegistry>) -> Self {
         Self {
             id,
@@ -388,6 +476,7 @@ impl RemoteSocket {
         }
     }
 
+    /// Sets the peer socket.
     pub fn set_peer(&self, peer: Arc<dyn Socket>) {
         let mut inner = self.inner.lock().unwrap();
         inner.peer = Some(Arc::downgrade(&peer));
@@ -406,7 +495,8 @@ impl Socket for RemoteSocket {
         }
         p.msg.arg1 = self.id;
         p.msg.data_length = data.len() as u32;
-        p.payload = std::io::Cursor::new(data.to_vec());
+        // Use Bytes directly to avoid extra copy.
+        p.payload = std::io::Cursor::new(data.to_vec()); // Block requires Cursor<Vec<u8>> currently.
         inner.transport.send_packet(p);
         1
     }
@@ -458,6 +548,8 @@ impl Socket for RemoteSocket {
     }
 }
 
+/// Creates a new local socket and registers it with the `fdevent` looper.
+/// Ported from `create_local_socket` in `original/sockets.cpp`.
 pub fn create_local_socket(
     fd: RawFd,
     registry: Arc<SocketRegistry>,
@@ -477,6 +569,8 @@ pub fn create_local_socket(
     socket_arc
 }
 
+/// Creates a new remote socket.
+/// Ported from `create_remote_socket` in `original/sockets.cpp`.
 pub fn create_remote_socket(
     id: u32,
     transport: Arc<dyn Transport>,
@@ -487,7 +581,10 @@ pub fn create_remote_socket(
     socket
 }
 
+/// Utility functions for ADB socket management.
 pub mod internal {
+    /// Parses a host service string of the format `[prefix:]serial:command`.
+    /// Ported from `internal::parse_host_service` in `original/sockets.cpp`.
     pub fn parse_host_service<'a>(
         full_service: &'a str,
     ) -> Option<(&'a str, &'a str)> {
@@ -495,8 +592,7 @@ pub mod internal {
             return None;
         }
 
-        let mut _serial = "";
-        let mut command = full_service;
+        let command = full_service;
 
         let prefixes = ["usb:", "product:", "model:", "device:", "localfilesystem:"];
         for prefix in prefixes {
@@ -504,7 +600,7 @@ pub mod internal {
                 if let Some(offset) = command[prefix.len()..].find(':') {
                     let total_prefix_len = prefix.len() + offset + 1;
                     let serial = &full_service[..total_prefix_len - 1];
-                    command = &full_service[total_prefix_len..];
+                    let command = &full_service[total_prefix_len..];
                     return Some((serial, command));
                 }
             }
@@ -541,7 +637,7 @@ pub mod internal {
         // serial is everything up to the colon
         let serial_end = (full_service.len() - command_to_parse.len()) + offset - 1;
         let mut serial = &full_service[..serial_end];
-        command = &full_service[serial_end + 1..];
+        let mut command = &full_service[serial_end + 1..];
 
         // Check for port
         if let Some(next_colon) = command.find(':') {
