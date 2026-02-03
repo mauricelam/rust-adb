@@ -137,6 +137,11 @@ impl Fdevent {
         }
     }
 
+    /// Returns a clone of the `mio::Registry` associated with this context.
+    pub fn registry(&self) -> mio::Registry {
+        self.poll.registry().try_clone().expect("failed to clone registry")
+    }
+
     /// Registers a file descriptor to be monitored.
     ///
     /// This corresponds to `fdevent_create` in C++. Note that in this Rust
