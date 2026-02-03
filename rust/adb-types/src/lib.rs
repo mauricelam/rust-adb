@@ -2,28 +2,6 @@ use std::collections::VecDeque;
 use std::io::Cursor;
 use bytes::{Bytes, Buf};
 
-pub mod apacket_reader;
-pub use apacket_reader::{APacketReader, AddResult};
-
-pub const MAX_PAYLOAD_V1: usize = 4 * 1024;
-pub const MAX_PAYLOAD: usize = 1024 * 1024;
-pub const INITIAL_DELAYED_ACK_BYTES: usize = 32 * 1024 * 1024;
-
-pub const A_SYNC: u32 = 0x434e5953;
-pub const A_CNXN: u32 = 0x4e584e43;
-pub const A_OPEN: u32 = 0x4e45504f;
-pub const A_OKAY: u32 = 0x59414b4f;
-pub const A_CLSE: u32 = 0x45534c43;
-pub const A_WRTE: u32 = 0x45545257;
-pub const A_AUTH: u32 = 0x48545541;
-pub const A_STLS: u32 = 0x534c5453;
-
-pub const A_VERSION_MIN: u32 = 0x01000000;
-pub const A_VERSION_SKIP_CHECKSUM: u32 = 0x01000001;
-pub const A_VERSION: u32 = 0x01000001;
-
-pub const ADB_SERVER_VERSION: u32 = 41;
-
 /// A message header in the ADB protocol.
 #[repr(C)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -51,16 +29,90 @@ impl Amessage {
 /// A block of memory used for I/O, with an associated seek position.
 ///
 /// In the original C++ implementation, this was a custom `Block` class.
-/// In Rust, we use `std::io::Cursor<Vec<u8>>` to provide equivalent
-/// functionality as requested.
-///
-/// Translation guide from C++ Block:
-/// - `size()` -> `block.get_ref().len()`
-/// - `data()` -> `block.get_ref().as_ptr()`
-/// - `position()` -> `block.position()`
-/// - `remaining()` -> `block.get_ref().len() - block.position() as usize`
-/// - `rewind()` -> `block.set_position(0)`
-pub type Block = Cursor<Vec<u8>>;
+/// In Rust, we use a wrapper around `std::io::Cursor<Vec<u8>>` to provide equivalent
+/// functionality with an idiomatic API.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct Block(Cursor<Vec<u8>>);
+
+impl Block {
+    /// Creates a new `Block` with the given capacity.
+    pub fn new(capacity: usize) -> Self {
+        Self(Cursor::new(vec![0; capacity]))
+    }
+
+    /// Creates a new `Block` from a `Vec<u8>`.
+    pub fn from_vec(vec: Vec<u8>) -> Self {
+        Self(Cursor::new(vec))
+    }
+
+    /// Returns the total size of the block.
+    pub fn len(&self) -> usize {
+        self.0.get_ref().len()
+    }
+
+    /// Returns true if the block is empty.
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
+    /// Returns the current seek position.
+    pub fn position(&self) -> u64 {
+        self.0.position()
+    }
+
+    /// Sets the seek position.
+    pub fn set_position(&mut self, pos: u64) {
+        self.0.set_position(pos);
+    }
+
+    /// Returns the number of bytes remaining from the current position.
+    pub fn remaining(&self) -> usize {
+        self.len() - self.position() as usize
+    }
+
+    /// Returns true if the current position is at the end of the block.
+    pub fn is_full(&self) -> bool {
+        self.remaining() == 0
+    }
+
+    /// Rewinds the seek position to the beginning.
+    pub fn rewind(&mut self) {
+        self.set_position(0);
+    }
+
+    /// Resizes the block to the new size.
+    pub fn resize(&mut self, new_size: usize) {
+        self.0.get_mut().resize(new_size, 0);
+    }
+
+    /// Returns a reference to the underlying byte slice.
+    pub fn get_ref(&self) -> &[u8] {
+        self.0.get_ref()
+    }
+
+    /// Returns a mutable reference to the underlying byte vector.
+    pub fn get_mut(&mut self) -> &mut Vec<u8> {
+        self.0.get_mut()
+    }
+
+    /// Fills this block from another block, up to the remaining capacity.
+    pub fn fill_from(&mut self, from: &mut Block) -> usize {
+        let to_rem = self.remaining();
+        let from_rem = from.remaining();
+        let size = std::cmp::min(to_rem, from_rem);
+
+        let to_pos = self.position() as usize;
+        let from_pos = from.position() as usize;
+
+        self.get_mut()[to_pos..to_pos + size]
+            .copy_from_slice(&from.get_ref()[from_pos..from_pos + size]);
+
+        self.set_position((to_pos + size) as u64);
+        from.set_position((from_pos + size) as u64);
+
+        size
+    }
+}
 
 /// An ADB packet, consisting of a message header and a payload.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
@@ -76,61 +128,6 @@ pub fn calculate_apacket_checksum(packet: &Apacket) -> u32 {
         .get_ref()
         .iter()
         .fold(0u32, |acc, &x| acc + x as u32)
-}
-
-/// Returns a string representation of an ADB command.
-pub fn command_to_string(cmd: u32) -> String {
-    match cmd {
-        A_SYNC => "SYNC".to_string(),
-        A_CNXN => "CNXN".to_string(),
-        A_OPEN => "OPEN".to_string(),
-        A_OKAY => "OKAY".to_string(),
-        A_CLSE => "CLSE".to_string(),
-        A_WRTE => "WRTE".to_string(),
-        A_AUTH => "AUTH".to_string(),
-        A_STLS => "STLS".to_string(),
-        _ => format!("{:08x}", cmd),
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum TransportType {
-    Usb,
-    Local,
-    Any,
-    Host,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[repr(i32)]
-pub enum ConnectionState {
-    Any = -1,
-    Connecting = 0,
-    Authorizing = 1,
-    Unauthorized = 2,
-    NoPerm = 3,
-    Detached = 4,
-    Offline = 5,
-    Bootloader = 6,
-    Device = 7,
-    Host = 8,
-    Recovery = 9,
-    Sideload = 10,
-    Rescue = 11,
-}
-
-impl ConnectionState {
-    pub fn is_online(&self) -> bool {
-        match self {
-            ConnectionState::Bootloader
-            | ConnectionState::Device
-            | ConnectionState::Host
-            | ConnectionState::Recovery
-            | ConnectionState::Sideload
-            | ConnectionState::Rescue => true,
-            _ => false,
-        }
-    }
 }
 
 /// A sequence of buffers that represents a single contiguous stream of data.
@@ -358,32 +355,19 @@ mod tests {
     #[test]
     fn test_calculate_apacket_checksum() {
         let mut packet = Apacket::default();
-        packet.payload = Cursor::new(vec![1, 2, 3, 4]);
+        packet.payload = Block::from_vec(vec![1, 2, 3, 4]);
         assert_eq!(calculate_apacket_checksum(&packet), 10);
     }
 
     #[test]
     fn test_amessage_magic() {
         let mut msg = Amessage::default();
-        msg.command = A_SYNC;
+        msg.command = 0x434e5953; // A_SYNC
         msg.update_magic();
-        assert_eq!(msg.magic, A_SYNC ^ 0xffffffff);
+        assert_eq!(msg.magic, 0x434e5953 ^ 0xffffffff);
         assert!(msg.check_magic());
 
         msg.magic = 0;
         assert!(!msg.check_magic());
-    }
-
-    #[test]
-    fn test_command_to_string() {
-        assert_eq!(command_to_string(A_SYNC), "SYNC");
-        assert_eq!(command_to_string(0x12345678), "12345678");
-    }
-
-    #[test]
-    fn test_connection_state_is_online() {
-        assert!(ConnectionState::Device.is_online());
-        assert!(!ConnectionState::Offline.is_online());
-        assert!(!ConnectionState::Connecting.is_online());
     }
 }

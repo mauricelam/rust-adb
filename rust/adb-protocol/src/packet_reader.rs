@@ -14,14 +14,13 @@
  * limitations under the License.
  */
 
-use crate::{Amessage, Apacket, Block, MAX_PAYLOAD};
-use std::io::Cursor;
+use adb_types::{Amessage, Apacket, Block};
+use crate::MAX_PAYLOAD;
 
-/// Result of adding bytes to the packet reader.
+/// Error returned when adding bytes to the packet reader fails.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum AddResult {
-    Ok,
-    Error,
+pub enum AddError {
+    OversizedPayload,
 }
 
 /// A utility to read ADB packets from a stream of blocks.
@@ -43,7 +42,7 @@ impl APacketReader {
     /// Creates a new `APacketReader`.
     pub fn new() -> Self {
         let mut reader = Self {
-            header: Cursor::new(vec![0; std::mem::size_of::<Amessage>()]),
+            header: Block::new(std::mem::size_of::<Amessage>()),
             packet: None,
             packets: Vec::new(),
         };
@@ -54,13 +53,13 @@ impl APacketReader {
     /// Adds bytes to the reader.
     ///
     /// This method can handle fragmented and merged packets.
-    pub fn add_bytes(&mut self, mut block: Block) -> AddResult {
-        while block_remaining(&block) > 0 || block_is_full(&self.header) {
-            if !block_is_full(&self.header) {
-                block_fill_from(&mut self.header, &mut block);
-                if !block_is_full(&self.header) {
+    pub fn add_bytes(&mut self, mut block: Block) -> Result<(), AddError> {
+        while block.remaining() > 0 || self.header.is_full() {
+            if !self.header.is_full() {
+                self.header.fill_from(&mut block);
+                if !self.header.is_full() {
                     // We don't have a full header. Wait for more bytes.
-                    return AddResult::Ok;
+                    return Ok(());
                 }
             }
 
@@ -73,50 +72,50 @@ impl APacketReader {
 
             if m.data_length as usize > MAX_PAYLOAD {
                 self.prepare_for_next_packet();
-                return AddResult::Error;
+                return Err(AddError::OversizedPayload);
             }
 
             if m.data_length == 0 {
                 let mut packet = Apacket::default();
                 packet.msg = m;
-                packet.payload = Cursor::new(Vec::new());
+                packet.payload = Block::new(0);
                 self.add_packet(packet);
                 continue;
             }
 
-            if block_remaining(&block) == 0 && self.packet.is_none() {
-                return AddResult::Ok;
+            if block.remaining() == 0 && self.packet.is_none() {
+                return Ok(());
             }
 
             if self.packet.is_none() {
                 let mut p = Apacket::default();
                 p.msg = m;
 
-                if block.position() == 0 && block_remaining(&block) == p.msg.data_length as usize {
+                if block.position() == 0 && block.remaining() == p.msg.data_length as usize {
                     // Zero-copy: move the whole block as payload.
                     p.payload = block;
                     self.add_packet(p);
-                    return AddResult::Ok;
+                    return Ok(());
                 } else {
-                    p.payload = Cursor::new(vec![0; p.msg.data_length as usize]);
+                    p.payload = Block::new(p.msg.data_length as usize);
                 }
                 self.packet = Some(p);
             }
 
             let p = self.packet.as_mut().expect("packet must be present");
-            block_fill_from(&mut p.payload, &mut block);
+            p.payload.fill_from(&mut block);
 
-            if block_is_full(&p.payload) {
-                p.payload.set_position(0);
+            if p.payload.is_full() {
+                p.payload.rewind();
                 let p = self.packet.take().expect("packet must be present");
                 self.add_packet(p);
             } else {
                 // We need more bytes for the payload.
-                return AddResult::Ok;
+                return Ok(());
             }
         }
 
-        AddResult::Ok
+        Ok(())
     }
 
     /// Returns all packets parsed so far, emptying the internal storage.
@@ -126,7 +125,7 @@ impl APacketReader {
 
     /// Prepares the reader for the next packet.
     pub fn prepare_for_next_packet(&mut self) {
-        self.header.set_position(0);
+        self.header.rewind();
         self.packet = None;
     }
 
@@ -136,35 +135,10 @@ impl APacketReader {
     }
 }
 
-fn block_remaining(block: &Block) -> usize {
-    block.get_ref().len() - block.position() as usize
-}
-
-fn block_is_full(block: &Block) -> bool {
-    block_remaining(block) == 0
-}
-
-fn block_fill_from(to: &mut Block, from: &mut Block) -> usize {
-    let to_rem = block_remaining(to);
-    let from_rem = block_remaining(from);
-    let size = std::cmp::min(to_rem, from_rem);
-
-    let to_pos = to.position() as usize;
-    let from_pos = from.position() as usize;
-
-    to.get_mut()[to_pos..to_pos + size]
-        .copy_from_slice(&from.get_ref()[from_pos..from_pos + size]);
-
-    to.set_position((to_pos + size) as u64);
-    from.set_position((from_pos + size) as u64);
-
-    size
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{A_SYNC, MAX_PAYLOAD};
+    use crate::A_SYNC;
 
     fn create_header_bytes(cmd: u32, data_len: u32) -> Vec<u8> {
         let msg = Amessage {
@@ -184,8 +158,8 @@ mod tests {
         let mut data = create_header_bytes(A_SYNC, 4);
         data.extend_from_slice(b"test");
 
-        let result = reader.add_bytes(Cursor::new(data));
-        assert_eq!(result, AddResult::Ok);
+        let result = reader.add_bytes(Block::from_vec(data));
+        assert_eq!(result, Ok(()));
 
         let packets = reader.get_packets();
         assert_eq!(packets.len(), 1);
@@ -199,10 +173,10 @@ mod tests {
         let data = create_header_bytes(A_SYNC, 0);
 
         let mid = data.len() / 2;
-        reader.add_bytes(Cursor::new(data[..mid].to_vec()));
+        reader.add_bytes(Block::from_vec(data[..mid].to_vec())).unwrap();
         assert_eq!(reader.get_packets().len(), 0);
 
-        reader.add_bytes(Cursor::new(data[mid..].to_vec()));
+        reader.add_bytes(Block::from_vec(data[mid..].to_vec())).unwrap();
         let packets = reader.get_packets();
         assert_eq!(packets.len(), 1);
         assert_eq!(packets[0].msg.command, A_SYNC);
@@ -215,10 +189,10 @@ mod tests {
         data.extend_from_slice(b"test");
 
         let header_len = std::mem::size_of::<Amessage>();
-        reader.add_bytes(Cursor::new(data[..header_len + 2].to_vec()));
+        reader.add_bytes(Block::from_vec(data[..header_len + 2].to_vec())).unwrap();
         assert_eq!(reader.get_packets().len(), 0);
 
-        reader.add_bytes(Cursor::new(data[header_len + 2..].to_vec()));
+        reader.add_bytes(Block::from_vec(data[header_len + 2..].to_vec())).unwrap();
         let packets = reader.get_packets();
         assert_eq!(packets.len(), 1);
         assert_eq!(packets[0].payload.get_ref(), b"test");
@@ -232,8 +206,8 @@ mod tests {
         let mut data2 = create_header_bytes(A_SYNC, 0);
         data.append(&mut data2);
 
-        let result = reader.add_bytes(Cursor::new(data));
-        assert_eq!(result, AddResult::Ok);
+        let result = reader.add_bytes(Block::from_vec(data));
+        assert_eq!(result, Ok(()));
 
         let packets = reader.get_packets();
         assert_eq!(packets.len(), 2);
@@ -244,8 +218,8 @@ mod tests {
         let mut reader = APacketReader::new();
         let data = create_header_bytes(A_SYNC, (MAX_PAYLOAD + 1) as u32);
 
-        let result = reader.add_bytes(Cursor::new(data));
-        assert_eq!(result, AddResult::Error);
+        let result = reader.add_bytes(Block::from_vec(data));
+        assert_eq!(result, Err(AddError::OversizedPayload));
     }
 
     #[test]
@@ -253,13 +227,13 @@ mod tests {
         let mut reader = APacketReader::new();
         let data = create_header_bytes(A_SYNC, 0);
 
-        let result = reader.add_bytes(Cursor::new(data));
-        assert_eq!(result, AddResult::Ok);
+        let result = reader.add_bytes(Block::from_vec(data));
+        assert_eq!(result, Ok(()));
 
         let packets = reader.get_packets();
         assert_eq!(packets.len(), 1);
         assert_eq!(packets[0].msg.command, A_SYNC);
         assert_eq!(packets[0].msg.data_length, 0);
-        assert_eq!(packets[0].payload.get_ref().len(), 0);
+        assert_eq!(packets[0].payload.len(), 0);
     }
 }

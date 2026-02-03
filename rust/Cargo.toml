@@ -8,4 +8,5 @@ members = [
     "trace",
     "rust-adb-pairing-auth",
     "socket-spec",
+    "adb-protocol",
 ]
