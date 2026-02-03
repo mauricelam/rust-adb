@@ -23,7 +23,7 @@ impl Key {
     ///    modulus: [u32; 64],
     ///    rr: [u32; 64],
     ///    exponent: u32,
-    pub fn android_pubkey(&self) -> Result<Vec<u8>> {
+    pub fn android_pubkey(&self) -> Result<[u8; 524]> {
         let n = self.0.n();
         let e = self.0.e();
 
@@ -43,17 +43,15 @@ impl Key {
         let mut rr_bytes = rr.to_bytes_le();
         rr_bytes.resize(256, 0);
 
-        let mut result = Vec::with_capacity(524);
-        result.extend_from_slice(&(2048 / 32u32).to_le_bytes()); // modulus_size_words
-        result.extend_from_slice(&n0inv.to_le_bytes());
-        result.extend_from_slice(&n_bytes);
-        result.extend_from_slice(&rr_bytes);
+        let mut result = [0u8; 524];
+        result[0..4].copy_from_slice(&(2048 / 32u32).to_le_bytes()); // modulus_size_words
+        result[4..8].copy_from_slice(&n0inv.to_le_bytes());
+        result[8..8 + 256].copy_from_slice(&n_bytes);
+        result[8 + 256..8 + 512].copy_from_slice(&rr_bytes);
 
         let e_bytes = e.to_bytes_le();
-        let mut e_u32_bytes = [0u8; 4];
         let len = std::cmp::min(e_bytes.len(), 4);
-        e_u32_bytes[..len].copy_from_slice(&e_bytes[..len]);
-        result.extend_from_slice(&e_u32_bytes);
+        result[520..520 + len].copy_from_slice(&e_bytes[..len]);
 
         Ok(result)
     }

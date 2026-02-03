@@ -8,6 +8,7 @@ anyhow = "1.0"
 libc = "0.2"
 rust-adb-crypto = { path = "../crypto" }
 adb-types = { path = "../adb-types" }
+adb-utils = { path = "../adb-utils" }
 adb_io = { path = "../adb_io" }
 base64 = "0.21"
 log = "0.4"

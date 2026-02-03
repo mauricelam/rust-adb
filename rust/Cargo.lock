@@ -7,6 +7,7 @@ name = "adb-auth"
 version = "0.1.0"
 dependencies = [
  "adb-types",
+ "adb-utils",
  "adb_io",
  "anyhow",
  "base64 0.21.7",

@@ -48,13 +48,8 @@ const A_AUTH: u32 = 0x48545541;
 
 /// Ported from `original/client/auth.cpp`: `get_user_key_path`
 fn get_user_key_path() -> Result<PathBuf> {
-    // Relying on adb-utils for path logic would be better but to avoid circular
-    // dependency or moving code, we replicate the logic here or expect it to be
-    // integrated later.
-    let home = std::env::var("HOME").or_else(|_| std::env::var("USERPROFILE"))
-        .map_err(|_| anyhow!("Could not find HOME or USERPROFILE"))?;
-    let mut path = PathBuf::from(home);
-    path.push(".android");
+    let mut path = adb_utils::adb_get_android_dir_path()
+        .ok_or_else(|| anyhow!("Could not find android directory"))?;
     path.push("adbkey");
     Ok(path)
 }
@@ -162,9 +157,9 @@ pub fn send_auth_request<W: std::io::Write>(writer: &mut W) -> Result<[u8; TOKEN
     // In a real implementation, we'd write the message and the payload.
     // Ported from adb_io.cpp logic (WriteFdExactly).
 
-    // SAFETY: Amessage is #[repr(C)] and has a fixed size of 24 bytes.
+    // SAFETY: Amessage is #[repr(C)] and has a fixed size.
     // Transmuting it to a byte array for writing to the wire is safe.
-    let msg_bytes: [u8; 24] = unsafe { std::mem::transmute(msg) };
+    let msg_bytes: [u8; std::mem::size_of::<Amessage>()] = unsafe { std::mem::transmute(msg) };
     writer.write_all(&msg_bytes)?;
     writer.write_all(&token)?;
 
