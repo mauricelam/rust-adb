@@ -24,7 +24,7 @@ pub fn errno_to_wire(errno: i32) -> i32 {
         libc::EPERM => 1,
         libc::EROFS => 30,
         libc::ETXTBSY => 26,
-        _ => 5, // Default to EIO (5)
+        _ => panic!("failed to convert errno {} to wire", errno),
     }
 }
 
@@ -51,7 +51,7 @@ pub fn errno_from_wire(wire_errno: i32) -> i32 {
         1 => libc::EPERM,
         30 => libc::EROFS,
         26 => libc::ETXTBSY,
-        _ => libc::EIO,
+        _ => panic!("failed to convert wire errno {} to host", wire_errno),
     }
 }
 
@@ -65,7 +65,12 @@ mod tests {
         assert_eq!(errno_to_wire(libc::EACCES), 13);
         assert_eq!(errno_to_wire(libc::ENOENT), 2);
         assert_eq!(errno_to_wire(libc::EIO), 5);
-        assert_eq!(errno_to_wire(-1), 5); // Default case
+    }
+
+    #[test]
+    #[should_panic(expected = "failed to convert errno -1 to wire")]
+    fn test_errno_to_wire_panic() {
+        errno_to_wire(-1);
     }
 
     #[test]
@@ -73,6 +78,11 @@ mod tests {
         assert_eq!(errno_from_wire(13), libc::EACCES);
         assert_eq!(errno_from_wire(2), libc::ENOENT);
         assert_eq!(errno_from_wire(5), libc::EIO);
-        assert_eq!(errno_from_wire(-1), libc::EIO); // Default case
+    }
+
+    #[test]
+    #[should_panic(expected = "failed to convert wire errno -1 to host")]
+    fn test_errno_from_wire_panic() {
+        errno_from_wire(-1);
     }
 }

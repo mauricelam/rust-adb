@@ -1,5 +1,5 @@
 #![cfg(unix)]
-use sysdeps::env::{parse_complete_utf8, get_environment_variable};
+use sysdeps::env::{parse_complete_utf8, get_environment_variable, get_host_name_utf8, get_login_name_utf8};
 use std::env;
 
 #[test]
@@ -48,6 +48,18 @@ fn test_sysdeps_env() {
     }
     assert_eq!(get_environment_variable("SYSDEPS_TEST_VAR"), Some("1".to_string()));
     assert_eq!(get_environment_variable("SYSDEPS_NONEXISTENT"), None);
+}
+
+#[test]
+fn test_get_host_name_utf8() {
+    let host = get_host_name_utf8().unwrap();
+    assert!(!host.is_empty());
+}
+
+#[test]
+fn test_get_login_name_utf8() {
+    let login = get_login_name_utf8().unwrap();
+    assert!(!login.is_empty());
 }
 
 #[test]

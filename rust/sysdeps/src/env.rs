@@ -1,5 +1,6 @@
 #![cfg(unix)]
 use std::env;
+use std::io::{Error, ErrorKind, Result};
 use hostname;
 use users;
 use libc;
@@ -10,35 +11,42 @@ pub fn get_environment_variable(var: &str) -> Option<String> {
 }
 
 /// Returns the host name in UTF-8.
-pub fn get_host_name_utf8() -> String {
+pub fn get_host_name_utf8() -> Result<String> {
     if let Ok(host) = env::var("HOSTNAME") {
         if !host.is_empty() {
-            return host;
+            return Ok(host);
         }
     }
 
     hostname::get()
         .map(|h| h.to_string_lossy().into_owned())
-        .unwrap_or_else(|_| String::new())
+        .map_err(|e| Error::new(ErrorKind::Other, e))
 }
 
 /// Returns the login name in UTF-8.
-pub fn get_login_name_utf8() -> String {
+pub fn get_login_name_utf8() -> Result<String> {
     if let Ok(user) = env::var("LOGNAME") {
         if !user.is_empty() {
-            return user;
+            return Ok(user);
         }
     }
 
     users::get_current_username()
         .map(|u| u.to_string_lossy().into_owned())
-        .unwrap_or_else(|| String::new())
+        .ok_or_else(|| Error::new(ErrorKind::NotFound, "failed to get current username"))
 }
 
 /// Returns a human-readable OS version string.
 pub fn get_os_version() -> String {
+    // SAFETY: utsname is a plain-old-data struct from libc. Zero-initializing it
+    // is safe before passing it to uname.
     let mut name: libc::utsname = unsafe { std::mem::zeroed() };
+
+    // SAFETY: uname is a standard libc function. It returns 0 on success.
+    // We check the return value before accessing the struct members.
     if unsafe { libc::uname(&mut name) } == 0 {
+        // SAFETY: The members of utsname are null-terminated byte arrays.
+        // from_ptr is safe here as we are pointing into our own stack-allocated struct.
         let sysname = unsafe { std::ffi::CStr::from_ptr(name.sysname.as_ptr()) }.to_string_lossy();
         let release = unsafe { std::ffi::CStr::from_ptr(name.release.as_ptr()) }.to_string_lossy();
         let machine = unsafe { std::ffi::CStr::from_ptr(name.machine.as_ptr()) }.to_string_lossy();
