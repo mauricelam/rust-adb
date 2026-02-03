@@ -2,6 +2,28 @@ use std::collections::VecDeque;
 use std::io::Cursor;
 use bytes::{Bytes, Buf};
 
+pub mod apacket_reader;
+pub use apacket_reader::{APacketReader, AddResult};
+
+pub const MAX_PAYLOAD_V1: usize = 4 * 1024;
+pub const MAX_PAYLOAD: usize = 1024 * 1024;
+pub const INITIAL_DELAYED_ACK_BYTES: usize = 32 * 1024 * 1024;
+
+pub const A_SYNC: u32 = 0x434e5953;
+pub const A_CNXN: u32 = 0x4e584e43;
+pub const A_OPEN: u32 = 0x4e45504f;
+pub const A_OKAY: u32 = 0x59414b4f;
+pub const A_CLSE: u32 = 0x45534c43;
+pub const A_WRTE: u32 = 0x45545257;
+pub const A_AUTH: u32 = 0x48545541;
+pub const A_STLS: u32 = 0x534c5453;
+
+pub const A_VERSION_MIN: u32 = 0x01000000;
+pub const A_VERSION_SKIP_CHECKSUM: u32 = 0x01000001;
+pub const A_VERSION: u32 = 0x01000001;
+
+pub const ADB_SERVER_VERSION: u32 = 41;
+
 /// A message header in the ADB protocol.
 #[repr(C)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -12,6 +34,18 @@ pub struct Amessage {
     pub data_length: u32,
     pub data_check: u32,
     pub magic: u32,
+}
+
+impl Amessage {
+    /// Checks if the magic value is correct for the command.
+    pub fn check_magic(&self) -> bool {
+        self.magic == self.command ^ 0xffffffff
+    }
+
+    /// Updates the magic value based on the command.
+    pub fn update_magic(&mut self) {
+        self.magic = self.command ^ 0xffffffff;
+    }
 }
 
 /// A block of memory used for I/O, with an associated seek position.
@@ -33,6 +67,70 @@ pub type Block = Cursor<Vec<u8>>;
 pub struct Apacket {
     pub msg: Amessage,
     pub payload: Block,
+}
+
+/// Calculates the checksum of an apacket payload.
+pub fn calculate_apacket_checksum(packet: &Apacket) -> u32 {
+    packet
+        .payload
+        .get_ref()
+        .iter()
+        .fold(0u32, |acc, &x| acc + x as u32)
+}
+
+/// Returns a string representation of an ADB command.
+pub fn command_to_string(cmd: u32) -> String {
+    match cmd {
+        A_SYNC => "SYNC".to_string(),
+        A_CNXN => "CNXN".to_string(),
+        A_OPEN => "OPEN".to_string(),
+        A_OKAY => "OKAY".to_string(),
+        A_CLSE => "CLSE".to_string(),
+        A_WRTE => "WRTE".to_string(),
+        A_AUTH => "AUTH".to_string(),
+        A_STLS => "STLS".to_string(),
+        _ => format!("{:08x}", cmd),
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TransportType {
+    Usb,
+    Local,
+    Any,
+    Host,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(i32)]
+pub enum ConnectionState {
+    Any = -1,
+    Connecting = 0,
+    Authorizing = 1,
+    Unauthorized = 2,
+    NoPerm = 3,
+    Detached = 4,
+    Offline = 5,
+    Bootloader = 6,
+    Device = 7,
+    Host = 8,
+    Recovery = 9,
+    Sideload = 10,
+    Rescue = 11,
+}
+
+impl ConnectionState {
+    pub fn is_online(&self) -> bool {
+        match self {
+            ConnectionState::Bootloader
+            | ConnectionState::Device
+            | ConnectionState::Host
+            | ConnectionState::Recovery
+            | ConnectionState::Sideload
+            | ConnectionState::Rescue => true,
+            _ => false,
+        }
+    }
 }
 
 /// A sequence of buffers that represents a single contiguous stream of data.
@@ -255,5 +353,37 @@ mod tests {
         vec.trim_front();
         assert_eq!(3, vec.size());
         assert_eq!(b"bar", vec.coalesce().as_slice());
+    }
+
+    #[test]
+    fn test_calculate_apacket_checksum() {
+        let mut packet = Apacket::default();
+        packet.payload = Cursor::new(vec![1, 2, 3, 4]);
+        assert_eq!(calculate_apacket_checksum(&packet), 10);
+    }
+
+    #[test]
+    fn test_amessage_magic() {
+        let mut msg = Amessage::default();
+        msg.command = A_SYNC;
+        msg.update_magic();
+        assert_eq!(msg.magic, A_SYNC ^ 0xffffffff);
+        assert!(msg.check_magic());
+
+        msg.magic = 0;
+        assert!(!msg.check_magic());
+    }
+
+    #[test]
+    fn test_command_to_string() {
+        assert_eq!(command_to_string(A_SYNC), "SYNC");
+        assert_eq!(command_to_string(0x12345678), "12345678");
+    }
+
+    #[test]
+    fn test_connection_state_is_online() {
+        assert!(ConnectionState::Device.is_online());
+        assert!(!ConnectionState::Offline.is_online());
+        assert!(!ConnectionState::Connecting.is_online());
     }
 }
