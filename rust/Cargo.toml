@@ -1,5 +1,7 @@
 [workspace]
+resolver = "2"
 members = [
+    "fdevent",
     "adb-types",
     "adb_io",
     "trace",
