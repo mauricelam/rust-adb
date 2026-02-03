@@ -3,6 +3,13 @@
 version = 4
 
 [[package]]
+name = "adb-types"
+version = "0.1.0"
+dependencies = [
+ "bytes",
+]
+
+[[package]]
 name = "adb_io"
 version = "0.1.0"
 dependencies = [
@@ -67,6 +74,12 @@ checksum = "3078c7629b62d3f0439517fa394996acacc5cbc91c5a20d8c658e77abd503a71"
 dependencies = [
  "generic-array",
 ]
+
+[[package]]
+name = "bytes"
+version = "1.11.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b35204fbdc0b3f4446b89fc1ac2cf84a8a68971995d0bf2e925ec7cd960f9cb3"
 
 [[package]]
 name = "cfg-if"

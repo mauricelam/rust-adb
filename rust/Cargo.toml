@@ -1,6 +1,7 @@
 [workspace]
 members = [
     "sysdeps",
+    "adb-types",
     "adb_io",
     "trace",
     "rust-adb-pairing-auth",
