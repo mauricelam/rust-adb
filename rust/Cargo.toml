@@ -2,5 +2,8 @@
 resolver = "2"
 members = [
     "fdevent",
+    "adb-types",
+    "adb_io",
+    "trace",
     "rust-adb-pairing-auth",
 ]

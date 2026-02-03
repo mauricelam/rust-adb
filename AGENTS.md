@@ -68,6 +68,8 @@ Every new module in `rust/` must have a corresponding integration test in `tests
 
 ---
 
+- When porting, always add comments to document which part of the C++ source is the Rust member being ported from. If Rust does not require a port, add type aliases or documentations to explain how to translate the C++ usages to Rust.
+- For any unsafe code usages, there must be corresponding Safety comments. For unsafe function declarations, the safety preconditions must be clearly documented in a bulleted list.
 - Cryptographic operations should prefer to use the pure-rust implementations in https://github.com/rustcrypto
 - USB operations should prefer to use rusb: https://docs.rs/rusb/latest/rusb/
 - TCP operations should use the standard library implementation
