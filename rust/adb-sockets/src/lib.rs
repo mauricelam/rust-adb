@@ -17,7 +17,7 @@
 //! This crate provides a Rust implementation of ADB's socket management logic.
 //! It is ported from `original/socket.h` and `original/sockets.cpp`.
 
-use adb_types::{Apacket, Block, IoVector};
+use adb_types::{Apacket, IoVector};
 use bytes::Bytes;
 use fdevent::fdevent::{Fdevent, FdeventHandler};
 use mio::{event::Event, unix::SourceFd, Interest, Token};
@@ -522,7 +522,7 @@ impl Socket for RemoteSocket {
         p.msg.arg1 = self.id;
         p.msg.data_length = data.len() as u32;
         // Use Bytes directly to avoid extra copy.
-        p.payload = Block(std::io::Cursor::new(data.to_vec())); // Block requires Cursor<Vec<u8>> currently.
+        p.payload = std::io::Cursor::new(data.to_vec()); // Block requires Cursor<Vec<u8>> currently.
         inner.transport.send_packet(p);
         1
     }
