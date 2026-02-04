@@ -1,0 +1,19 @@
+[package]
+name = "adb-sockets"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+adb-types = { path = "../adb-types" }
+fdevent = { path = "../fdevent" }
+adb_io = { path = "../adb_io" }
+anyhow = "1.0.75"
+thiserror = "1.0.44"
+bytes = "1"
+log = "0.4.20"
+mio = { version = "0.8.11", features = ["os-poll", "net", "os-ext"] }
+nix = { version = "0.27", features = ["net", "fs", "uio"] }
+
+[dev-dependencies]
+env_logger = "0.10.0"
+tempfile = "3.8.0"

@@ -38,7 +38,7 @@ pub trait FdeventHandler: Send {
     /// # Arguments
     ///
     /// * `event` - The `mio::event::Event` containing the details of the event.
-    fn on_event(&mut self, event: &mio::event::Event);
+    fn on_event(&mut self, event: &mio::event::Event, registry: &mio::Registry);
 
     /// Called when the timeout set for this file descriptor expires.
     fn on_timeout(&mut self);
@@ -137,6 +137,11 @@ impl Fdevent {
         }
     }
 
+    /// Returns a clone of the `mio::Registry` associated with this context.
+    pub fn registry(&self) -> mio::Registry {
+        self.poll.registry().try_clone().expect("failed to clone registry")
+    }
+
     /// Registers a file descriptor to be monitored.
     ///
     /// This corresponds to `fdevent_create` in C++. Note that in this Rust
@@ -160,7 +165,10 @@ impl Fdevent {
             .registry()
             .register(&mut SourceFd(&fd.as_raw_fd()), token, interest)?;
         #[cfg(not(unix))]
-        return Err(FdeventError::Io(io::Error::new(io::ErrorKind::Other, "Not supported on this platform")));
+        return Err(FdeventError::Io(io::Error::new(
+            io::ErrorKind::Other,
+            "Not supported on this platform",
+        )));
 
         self.handlers.insert(token, handler);
         Ok(token)
@@ -186,7 +194,10 @@ impl Fdevent {
             .registry()
             .reregister(&mut SourceFd(&fd.as_raw_fd()), token, interest)?;
         #[cfg(not(unix))]
-        return Err(FdeventError::Io(io::Error::new(io::ErrorKind::Other, "Not supported on this platform")));
+        return Err(FdeventError::Io(io::Error::new(
+            io::ErrorKind::Other,
+            "Not supported on this platform",
+        )));
 
         Ok(())
     }
@@ -205,7 +216,10 @@ impl Fdevent {
             .registry()
             .deregister(&mut SourceFd(&fd.as_raw_fd()))?;
         #[cfg(not(unix))]
-        return Err(FdeventError::Io(io::Error::new(io::ErrorKind::Other, "Not supported on this platform")));
+        return Err(FdeventError::Io(io::Error::new(
+            io::ErrorKind::Other,
+            "Not supported on this platform",
+        )));
 
         self.handlers.remove(&token);
         self.timeouts.remove(&token);
@@ -228,8 +242,7 @@ impl Fdevent {
         token: Token,
         timeout: Duration,
     ) -> FdeventResult<()> {
-        self.timeouts
-            .insert(token, (Instant::now(), timeout));
+        self.timeouts.insert(token, (Instant::now(), timeout));
         Ok(())
     }
 
@@ -282,7 +295,7 @@ impl Fdevent {
                 continue;
             }
             if let Some(handler) = self.handlers.get_mut(&event.token()) {
-                handler.on_event(event);
+                handler.on_event(event, self.poll.registry());
             }
         }
 
