@@ -213,8 +213,8 @@ impl ATransport {
     }
 
     pub fn get_connection_state(&self) -> ConnectionState {
-        // SAFETY: ConnectionState is repr(i32)
-        unsafe { std::mem::transmute(self.connection_state.load(Ordering::SeqCst)) }
+        ConnectionState::try_from(self.connection_state.load(Ordering::SeqCst))
+            .unwrap_or(ConnectionState::Offline)
     }
 
     pub fn set_connection_state(&self, state: ConnectionState) {
@@ -227,8 +227,19 @@ impl ATransport {
         *conn_lock = Some(connection);
     }
 
-    pub fn handle_read(&self, _packet: Apacket) -> bool {
-        // TODO: implement handle_read
+    /// Ported from original/transport.cpp: `bool atransport::HandleRead(std::unique_ptr<apacket> p)`
+    pub fn handle_read(&self, packet: Apacket) -> bool {
+        log::debug!(
+            target: "transport",
+            "{} remote read: {} {}",
+            self.serial.lock().unwrap(),
+            adb_protocol::command_to_string(packet.msg.command),
+            packet.msg.data_length
+        );
+
+        // TODO: This should run on the looper thread in the full implementation.
+        handle_packet(packet, self);
+
         true
     }
 
@@ -375,13 +386,29 @@ pub fn acquire_one_transport(
     }
 }
 
+/// Parses a banner string and updates the transport's properties.
+///
+/// Ported from original/adb.cpp: `void parse_banner(const std::string& banner, atransport* t)`
+///
+/// # Arguments
+/// * `banner` - The banner string sent by the remote end (e.g., "device::ro.product.name=x;...").
+/// * `t` - The transport to update.
+///
+/// Example banner string:
+/// "device::ro.product.name=x;ro.product.model=y;ro.product.device=z;features=shell_v2,cmd"
 pub fn parse_banner(banner: &str, t: &ATransport) {
+    log::debug!(target: "transport", "parse_banner: {}", banner);
+
     let pieces: Vec<&str> = banner.split(':').collect();
+
+    // Reset the features list or else if the server sends no features we may
+    // keep the existing feature set (http://b/24405971).
     t.set_features("");
 
     if pieces.len() > 2 {
         let props = pieces[2];
         for prop in props.split(';') {
+            // The list of properties was traditionally ;-terminated rather than ;-separated.
             if prop.is_empty() {
                 continue;
             }
@@ -403,19 +430,42 @@ pub fn parse_banner(banner: &str, t: &ATransport) {
 
     if let Some(&type_str) = pieces.get(0) {
         let state = match type_str {
-            "bootloader" => ConnectionState::Bootloader,
-            "device" => ConnectionState::Device,
-            "recovery" => ConnectionState::Recovery,
-            "sideload" => ConnectionState::Sideload,
-            "rescue" => ConnectionState::Rescue,
-            _ => ConnectionState::Host,
+            "bootloader" => {
+                log::debug!(target: "transport", "setting connection_state to kCsBootloader");
+                ConnectionState::Bootloader
+            }
+            "device" => {
+                log::debug!(target: "transport", "setting connection_state to kCsDevice");
+                ConnectionState::Device
+            }
+            "recovery" => {
+                log::debug!(target: "transport", "setting connection_state to kCsRecovery");
+                ConnectionState::Recovery
+            }
+            "sideload" => {
+                log::debug!(target: "transport", "setting connection_state to kCsSideload");
+                ConnectionState::Sideload
+            }
+            "rescue" => {
+                log::debug!(target: "transport", "setting connection_state to kCsRescue");
+                ConnectionState::Rescue
+            }
+            _ => {
+                log::debug!(target: "transport", "setting connection_state to kCsHost");
+                ConnectionState::Host
+            }
         };
         t.set_connection_state(state);
     }
 }
 
+pub fn handle_packet(_packet: Apacket, _t: &ATransport) {
+    // TODO: implement handle_packet logic (A_OPEN, A_CLSE, etc.)
+}
+
 pub fn update_transports() {
-    // TODO: implement update_transports
+    log::debug!(target: "transport", "update_transports");
+    // TODO: Notify `adb track-devices` clients once device_tracker is ported.
 }
 
 #[cfg(test)]
