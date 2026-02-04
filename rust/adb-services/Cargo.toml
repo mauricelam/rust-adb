@@ -1,0 +1,20 @@
+[package]
+name = "adb-services"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+adb-protocol = { path = "../adb-protocol" }
+adb-transport = { path = "../adb-transport" }
+adb-sockets = { path = "../adb-sockets" }
+adb-utils = { path = "../adb-utils" }
+adb-types = { path = "../adb-types" }
+adb_io = { path = "../adb_io" }
+sysdeps = { path = "../sysdeps" }
+fdevent = { path = "../fdevent" }
+adb-socket-spec = { path = "../socket-spec" }
+log = "0.4.20"
+libc = "0.2"
+
+[dev-dependencies]
+env_logger = "0.10.0"
