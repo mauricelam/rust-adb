@@ -3,18 +3,6 @@
 version = 4
 
 [[package]]
-name = "adb-sockets"
-version = "0.1.0"
-dependencies = [
- "adb-types",
- "adb_io",
- "anyhow",
- "bytes",
- "env_logger",
- "fdevent",
- "log",
- "mio",
- "nix",
 name = "adb-socket-spec"
 version = "0.1.0"
 dependencies = [
@@ -585,6 +573,16 @@ dependencies = [
  "proc-macro2",
  "quote",
  "unicode-ident",
+]
+
+[[package]]
+name = "sysdeps"
+version = "0.1.0"
+dependencies = [
+ "hostname",
+ "libc",
+ "tempfile",
+ "users",
 ]
 
 [[package]]

@@ -431,7 +431,7 @@ impl LocalSocketInner {
 impl FdeventHandler for LocalSocket {
     /// Handles events from the `fdevent` looper.
     /// Ported from `local_socket_event_func` in `original/sockets.cpp`.
-    fn on_event(&mut self, event: &Event) {
+    fn on_event(&mut self, event: &Event, _registry: &mio::Registry) {
         if event.is_writable() {
             let mut inner = self.inner.lock().unwrap();
             inner.flush_incoming();
