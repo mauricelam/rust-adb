@@ -21,18 +21,18 @@
 //! - `original/client/auth.cpp`
 //! - `original/daemon/auth.cpp`
 
-use std::path::{Path, PathBuf};
-use std::fs;
-use std::sync::Mutex;
 use std::collections::HashMap;
+use std::fs;
+use std::path::{Path, PathBuf};
+use std::sync::Mutex;
 
-use anyhow::{Result, anyhow};
-use rust_adb_crypto::{Key, new_rsa_2048};
-use adb_types::{Apacket, Amessage, Block};
+use adb_types::{Amessage, Apacket, Block};
+use anyhow::{anyhow, Result};
+use base64::{engine::general_purpose, Engine as _};
 use rsa::pkcs1v15::{SigningKey, VerifyingKey};
-use rsa::signature::{Signer, Verifier, SignatureEncoding};
+use rsa::signature::{SignatureEncoding, Signer, Verifier};
+use rust_adb_crypto::{new_rsa_2048, Key};
 use sha1::Sha1;
-use base64::{Engine as _, engine::general_purpose};
 
 pub const ADB_AUTH_TOKEN: u32 = 1;
 pub const ADB_AUTH_SIGNATURE: u32 = 2;
@@ -68,14 +68,18 @@ pub fn adb_auth_keygen(filename: &Path) -> Result<()> {
 
     let pubkey_struct = key.android_pubkey()?;
     // SAFETY: AndroidPubkey is #[repr(C)] and has a fixed size of 524 bytes.
-    let pubkey_bytes: [u8; std::mem::size_of::<rust_adb_crypto::AndroidPubkey>()] = unsafe { std::mem::transmute(pubkey_struct) };
+    let pubkey_bytes: [u8; std::mem::size_of::<rust_adb_crypto::AndroidPubkey>()] =
+        unsafe { std::mem::transmute(pubkey_struct) };
     let pubkey_b64 = general_purpose::STANDARD.encode(pubkey_bytes);
 
     let hostname = hostname::get()?.to_string_lossy().into_owned();
     let login = "adb"; // Simplified
     let comment = format!(" {}@{}", login, hostname);
 
-    fs::write(filename.with_extension("pub"), format!("{}{}", pubkey_b64, comment))?;
+    fs::write(
+        filename.with_extension("pub"),
+        format!("{}{}", pubkey_b64, comment),
+    )?;
 
     Ok(())
 }
@@ -106,7 +110,9 @@ pub fn adb_auth_init() -> Result<()> {
 /// Ported from `original/client/auth.cpp`: `adb_auth_sign`
 pub fn adb_auth_sign(key: &Key, token: &[u8]) -> Result<Vec<u8>> {
     let signing_key = SigningKey::<Sha1>::new_unprefixed(key.privkey().clone());
-    let signature = signing_key.try_sign(token).map_err(|e| anyhow!("Signing failed: {}", e))?;
+    let signature = signing_key
+        .try_sign(token)
+        .map_err(|e| anyhow!("Signing failed: {}", e))?;
     Ok(signature.to_vec())
 }
 
@@ -124,7 +130,8 @@ pub fn adbd_auth_verify(token: &[u8], sig: &[u8], public_key_line: &str) -> bool
 
     // Decode the Android RSA pubkey format back to rsa::RsaPublicKey.
     // SAFETY: We checked the length above.
-    let pubkey_struct: rust_adb_crypto::AndroidPubkey = unsafe { std::ptr::read_unaligned(pubkey_encoded.as_ptr() as *const _) };
+    let pubkey_struct: rust_adb_crypto::AndroidPubkey =
+        unsafe { std::ptr::read_unaligned(pubkey_encoded.as_ptr() as *const _) };
 
     let n = rsa::BigUint::from_bytes_le(&pubkey_struct.modulus);
     let e = rsa::BigUint::from(pubkey_struct.exponent);
@@ -175,7 +182,7 @@ pub fn send_auth_response(token: &[u8], key: &Key) -> Result<Apacket> {
     p.msg.arg0 = ADB_AUTH_SIGNATURE;
     p.msg.data_length = signature.len() as u32;
     p.msg.magic = p.msg.command ^ 0xffffffff;
-    p.payload = Block::new(signature);
+    p.payload = Block::from_vec(signature);
 
     Ok(p)
 }
