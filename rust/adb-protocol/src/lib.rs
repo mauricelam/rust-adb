@@ -77,6 +77,29 @@ pub enum ConnectionState {
     Rescue = 11,
 }
 
+impl TryFrom<i32> for ConnectionState {
+    type Error = i32;
+
+    fn try_from(value: i32) -> Result<Self, Self::Error> {
+        match value {
+            -1 => Ok(ConnectionState::Any),
+            0 => Ok(ConnectionState::Connecting),
+            1 => Ok(ConnectionState::Authorizing),
+            2 => Ok(ConnectionState::Unauthorized),
+            3 => Ok(ConnectionState::NoPerm),
+            4 => Ok(ConnectionState::Detached),
+            5 => Ok(ConnectionState::Offline),
+            6 => Ok(ConnectionState::Bootloader),
+            7 => Ok(ConnectionState::Device),
+            8 => Ok(ConnectionState::Host),
+            9 => Ok(ConnectionState::Recovery),
+            10 => Ok(ConnectionState::Sideload),
+            11 => Ok(ConnectionState::Rescue),
+            _ => Err(value),
+        }
+    }
+}
+
 impl ConnectionState {
     pub fn is_online(&self) -> bool {
         match self {

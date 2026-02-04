@@ -1,0 +1,16 @@
+[package]
+name = "adb-transport"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+adb-protocol = { path = "../adb-protocol" }
+adb-types = { path = "../adb-types" }
+adb-utils = { path = "../adb-utils" }
+sysdeps = { path = "../sysdeps" }
+trace = { path = "../trace" }
+adb-auth = { path = "../adb-auth" }
+rust-adb-crypto = { path = "../crypto" }
+thiserror = "1.0.44"
+libc = "0.2"
+log = "0.4"

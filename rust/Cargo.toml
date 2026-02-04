@@ -12,4 +12,5 @@ members = [
     "adb-utils",
     "adb-auth",
     "adb-protocol",
+    "adb-transport",
 ]
