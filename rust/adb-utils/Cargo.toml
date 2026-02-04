@@ -1,0 +1,12 @@
+[package]
+name = "adb-utils"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+anyhow = "1.0"
+libc = "0.2"
+adb-types = { path = "../adb-types" }
+
+[dev-dependencies]
+tempfile = "3.8"
