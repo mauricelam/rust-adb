@@ -182,7 +182,7 @@ fn _network_loopback_client(ipv6: bool, port: i32, _type: libc::c_int) -> Result
     unsafe {
         let fd = libc::socket(
             if ipv6 { libc::AF_INET6 } else { libc::AF_INET },
-            _type | libc::SOCK_CLOEXEC,
+            _type | SOCK_CLOEXEC,
             0,
         );
         if fd < 0 {
@@ -254,7 +254,7 @@ fn _network_loopback_server(ipv6: bool, port: i32, _type: libc::c_int) -> Result
     unsafe {
         let fd = libc::socket(
             if ipv6 { libc::AF_INET6 } else { libc::AF_INET },
-            _type | libc::SOCK_CLOEXEC,
+            _type | SOCK_CLOEXEC,
             0,
         );
         if fd < 0 {
@@ -330,7 +330,7 @@ fn network_loopback_server(
 fn network_inaddr_any_server(port: i32, _type: libc::c_int) -> Result<OwnedFd, String> {
     // SAFETY: Binding to INADDR_ANY for server.
     unsafe {
-        let fd = libc::socket(libc::AF_INET, _type | libc::O_CLOEXEC, 0);
+        let fd = libc::socket(libc::AF_INET, _type | SOCK_CLOEXEC, 0);
         if fd < 0 {
             return Err(std::io::Error::last_os_error().to_string());
         }
@@ -387,7 +387,7 @@ fn network_local_client(
 
     // SAFETY: Setting up sockaddr_un and connecting.
     unsafe {
-        let fd = libc::socket(libc::AF_UNIX, _type | libc::O_CLOEXEC, 0);
+        let fd = libc::socket(libc::AF_UNIX, _type | SOCK_CLOEXEC, 0);
         if fd < 0 {
             return Err(std::io::Error::last_os_error().to_string());
         }
@@ -454,7 +454,7 @@ fn network_local_server(
 
     // SAFETY: Binding Unix domain socket.
     unsafe {
-        let fd = libc::socket(libc::AF_UNIX, _type | libc::O_CLOEXEC, 0);
+        let fd = libc::socket(libc::AF_UNIX, _type | SOCK_CLOEXEC, 0);
         if fd < 0 {
             return Err(std::io::Error::last_os_error().to_string());
         }
@@ -766,7 +766,7 @@ pub fn socket_spec_connect(
 
                 // SAFETY: Manual socket creation and connection for AF_VSOCK.
                 unsafe {
-                    let raw_fd = libc::socket(AF_VSOCK, libc::SOCK_STREAM | libc::O_CLOEXEC, 0);
+                    let raw_fd = libc::socket(AF_VSOCK, libc::SOCK_STREAM | SOCK_CLOEXEC, 0);
                     if raw_fd < 0 {
                         return Err("could not open vsock socket".to_string());
                     }
@@ -883,7 +883,7 @@ pub fn socket_spec_listen(
 
                 // SAFETY: Manual server socket creation for AF_VSOCK.
                 unsafe {
-                    let raw_fd = libc::socket(AF_VSOCK, libc::SOCK_STREAM | libc::O_CLOEXEC, 0);
+                    let raw_fd = libc::socket(AF_VSOCK, libc::SOCK_STREAM | SOCK_CLOEXEC, 0);
                     if raw_fd < 0 {
                         return Err(format!(
                             "could not create vsock server: {}",
