@@ -66,8 +66,10 @@ pub fn adb_auth_keygen(filename: &Path) -> Result<()> {
         fs::set_permissions(filename, fs::Permissions::from_mode(0o600))?;
     }
 
-    let pubkey_encoded = key.android_pubkey()?;
-    let pubkey_b64 = general_purpose::STANDARD.encode(pubkey_encoded);
+    let pubkey_struct = key.android_pubkey()?;
+    // SAFETY: AndroidPubkey is #[repr(C)] and has a fixed size of 524 bytes.
+    let pubkey_bytes: [u8; std::mem::size_of::<rust_adb_crypto::AndroidPubkey>()] = unsafe { std::mem::transmute(pubkey_struct) };
+    let pubkey_b64 = general_purpose::STANDARD.encode(pubkey_bytes);
 
     let hostname = hostname::get()?.to_string_lossy().into_owned();
     let login = "adb"; // Simplified
@@ -116,18 +118,16 @@ pub fn adbd_auth_verify(token: &[u8], sig: &[u8], public_key_line: &str) -> bool
         Err(_) => return false,
     };
 
-    if pubkey_encoded.len() != 524 {
+    if pubkey_encoded.len() != std::mem::size_of::<rust_adb_crypto::AndroidPubkey>() {
         return false;
     }
 
     // Decode the Android RSA pubkey format back to rsa::RsaPublicKey.
-    // The modulus is at offset 8, length 256 bytes.
-    let n_bytes = &pubkey_encoded[8..8+256];
-    let n = rsa::BigUint::from_bytes_le(n_bytes);
+    // SAFETY: We checked the length above.
+    let pubkey_struct: rust_adb_crypto::AndroidPubkey = unsafe { std::ptr::read_unaligned(pubkey_encoded.as_ptr() as *const _) };
 
-    // Exponent is at the end, 4 bytes.
-    let e_bytes = &pubkey_encoded[520..524];
-    let e = rsa::BigUint::from_bytes_le(e_bytes);
+    let n = rsa::BigUint::from_bytes_le(&pubkey_struct.modulus);
+    let e = rsa::BigUint::from(pubkey_struct.exponent);
 
     let pubkey = match rsa::RsaPublicKey::new(n, e) {
         Ok(k) => k,
@@ -191,8 +191,9 @@ mod tests {
         let sig = adb_auth_sign(&key, token).unwrap();
         assert!(!sig.is_empty());
 
-        let pubkey_encoded = key.android_pubkey().unwrap();
-        let pubkey_b64 = general_purpose::STANDARD.encode(pubkey_encoded);
+        let pubkey_struct = key.android_pubkey().unwrap();
+        let pubkey_bytes: [u8; 524] = unsafe { std::mem::transmute(pubkey_struct) };
+        let pubkey_b64 = general_purpose::STANDARD.encode(pubkey_bytes);
 
         // Verification should work even with full line (with comment)
         let hostname = "test-host";

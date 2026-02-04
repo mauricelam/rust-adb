@@ -5,6 +5,16 @@ use num_bigint_dig::BigUint;
 
 pub struct Key(RsaPrivateKey);
 
+#[repr(C)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct AndroidPubkey {
+    pub modulus_size_words: u32,
+    pub n0inv: u32,
+    pub modulus: [u8; 256],
+    pub rr: [u8; 256],
+    pub exponent: u32,
+}
+
 impl Key {
     pub fn from_pem(pem: &str) -> Result<Self> {
         let key = RsaPrivateKey::from_pkcs8_pem(pem)?;
@@ -23,7 +33,7 @@ impl Key {
     ///    modulus: [u32; 64],
     ///    rr: [u32; 64],
     ///    exponent: u32,
-    pub fn android_pubkey(&self) -> Result<[u8; 524]> {
+    pub fn android_pubkey(&self) -> Result<AndroidPubkey> {
         let n = self.0.n();
         let e = self.0.e();
 
@@ -43,17 +53,25 @@ impl Key {
         let mut rr_bytes = rr.to_bytes_le();
         rr_bytes.resize(256, 0);
 
-        let mut result = [0u8; 524];
-        result[0..4].copy_from_slice(&(2048 / 32u32).to_le_bytes()); // modulus_size_words
-        result[4..8].copy_from_slice(&n0inv.to_le_bytes());
-        result[8..8 + 256].copy_from_slice(&n_bytes);
-        result[8 + 256..8 + 512].copy_from_slice(&rr_bytes);
+        let mut modulus = [0u8; 256];
+        modulus.copy_from_slice(&n_bytes);
+
+        let mut rr = [0u8; 256];
+        rr.copy_from_slice(&rr_bytes);
 
         let e_bytes = e.to_bytes_le();
+        let mut e_u32_bytes = [0u8; 4];
         let len = std::cmp::min(e_bytes.len(), 4);
-        result[520..520 + len].copy_from_slice(&e_bytes[..len]);
+        e_u32_bytes[..len].copy_from_slice(&e_bytes[..len]);
+        let exponent = u32::from_le_bytes(e_u32_bytes);
 
-        Ok(result)
+        Ok(AndroidPubkey {
+            modulus_size_words: 2048 / 32,
+            n0inv,
+            modulus,
+            rr,
+            exponent,
+        })
     }
 
     /// Return the private key as a PEM encoded string.
@@ -117,10 +135,12 @@ mod tests {
     #[test]
     fn smoke() {
         let key = new_rsa_2048().unwrap();
-        let pubkey_encoded = key.android_pubkey().unwrap();
-        assert_eq!(pubkey_encoded.len(), 524);
+        let pubkey_struct = key.android_pubkey().unwrap();
+        assert_eq!(pubkey_struct.modulus_size_words, 64);
 
-        let pubkey_b64 = general_purpose::STANDARD.encode(&pubkey_encoded);
+        // SAFETY: AndroidPubkey is #[repr(C)] and has a fixed size.
+        let pubkey_bytes: [u8; 524] = unsafe { std::mem::transmute(pubkey_struct) };
+        let pubkey_b64 = general_purpose::STANDARD.encode(&pubkey_bytes);
         println!("pubkey_b64: {}", pubkey_b64);
 
         let pem = key.to_pem_string().unwrap();
