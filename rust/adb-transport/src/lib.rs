@@ -275,13 +275,36 @@ impl ATransport {
         *self.max_payload.lock().unwrap()
     }
 
+    /// Checks if this transport matches the given target string.
+    ///
+    /// Ported from original/transport.cpp: `bool atransport::MatchesTarget(const std::string& target) const`
     pub fn matches_target(&self, target: &str) -> bool {
         let serial = self.serial.lock().unwrap();
         if !serial.is_empty() {
             if target == *serial {
                 return true;
             }
-            // TODO: handle local transport network address matching
+
+            if self.transport_type == TransportType::Local {
+                // Local transports can match [tcp:|udp:]<hostname>[:port].
+                let local_target = target
+                    .strip_prefix("tcp:")
+                    .or_else(|| target.strip_prefix("udp:"))
+                    .unwrap_or(target);
+
+                // Simple address matching: check if serial and target match without port if necessary.
+                // In C++ this uses ParseNetAddress. Here we do a basic split for now.
+                if let Some((serial_host, serial_port)) = serial.rsplit_once(':') {
+                    let (target_host, target_port) = match local_target.rsplit_once(':') {
+                        Some((h, p)) => (h, p),
+                        None => (local_target, serial_port),
+                    };
+
+                    if serial_host == target_host && serial_port == target_port {
+                        return true;
+                    }
+                }
+            }
         }
 
         let devpath = self.devpath.lock().unwrap();
@@ -600,6 +623,22 @@ mod tests {
         assert!(!t.matches_target("bar"));
     }
 
+    #[test]
+    fn test_matches_target_local() {
+        let t = ATransport::new_offline(TransportType::Local);
+        *t.serial.lock().unwrap() = "100.100.100.100:5555".to_string();
+
+        assert!(t.matches_target("100.100.100.100"));
+        assert!(t.matches_target("100.100.100.100:5555"));
+        assert!(t.matches_target("tcp:100.100.100.100"));
+        assert!(t.matches_target("tcp:100.100.100.100:5555"));
+        assert!(t.matches_target("udp:100.100.100.100"));
+        assert!(t.matches_target("udp:100.100.100.100:5555"));
+
+        assert!(!t.matches_target("100.100.100.100:5554"));
+        assert!(!t.matches_target("100.100.100.101"));
+    }
+
     struct MockConnection {
         stopped: AtomicBool,
     }
@@ -656,6 +695,9 @@ pub trait Connection: Send + Sync {
     fn write(&self, packet: Apacket) -> bool;
     fn start(&self) -> bool;
     fn stop(&self);
+    /// Performs the TLS handshake for secure ADB connections.
+    ///
+    /// Note: Implementation is pending the porting of the `adb::tls::TlsConnection` library.
     fn do_tls_handshake(&self, key: &Key, auth_key: Option<&mut String>) -> bool;
     fn reset(&self);
     fn supports_detach(&self) -> bool { false }
