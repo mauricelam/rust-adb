@@ -66,8 +66,18 @@ fn set_tcp_keepalive(fd: RawFd, interval_sec: i32) -> Result<(), String> {
     let enable: libc::c_int = if interval_sec > 0 { 1 } else { 0 };
     // SAFETY: Setting SO_KEEPALIVE on a valid socket.
     unsafe {
-        if libc::setsockopt(fd, libc::SOL_SOCKET, libc::SO_KEEPALIVE, &enable as *const _ as *const libc::c_void, std::mem::size_of::<libc::c_int>() as libc::socklen_t) != 0 {
-            return Err(format!("setsockopt(SO_KEEPALIVE) failed: {}", std::io::Error::last_os_error()));
+        if libc::setsockopt(
+            fd,
+            libc::SOL_SOCKET,
+            libc::SO_KEEPALIVE,
+            &enable as *const _ as *const libc::c_void,
+            std::mem::size_of::<libc::c_int>() as libc::socklen_t,
+        ) != 0
+        {
+            return Err(format!(
+                "setsockopt(SO_KEEPALIVE) failed: {}",
+                std::io::Error::last_os_error()
+            ));
         }
     }
     if enable == 0 {
@@ -82,17 +92,35 @@ fn set_tcp_keepalive(fd: RawFd, interval_sec: i32) -> Result<(), String> {
     // SAFETY: Platform-specific setsockopt calls on valid socket.
     unsafe {
         #[cfg(any(target_os = "linux", target_os = "macos", target_os = "ios"))]
-        if libc::setsockopt(fd, libc::IPPROTO_TCP, TCP_KEEPIDLE, &interval_sec as *const _ as *const libc::c_void, std::mem::size_of::<libc::c_int>() as libc::socklen_t) != 0 {
-        }
+        if libc::setsockopt(
+            fd,
+            libc::IPPROTO_TCP,
+            TCP_KEEPIDLE,
+            &interval_sec as *const _ as *const libc::c_void,
+            std::mem::size_of::<libc::c_int>() as libc::socklen_t,
+        ) != 0
+        {}
 
         #[cfg(any(target_os = "linux", target_os = "macos", target_os = "ios"))]
         {
-            if libc::setsockopt(fd, libc::IPPROTO_TCP, libc::TCP_KEEPINTVL, &interval_sec as *const _ as *const libc::c_void, std::mem::size_of::<libc::c_int>() as libc::socklen_t) != 0 {
-            }
+            if libc::setsockopt(
+                fd,
+                libc::IPPROTO_TCP,
+                libc::TCP_KEEPINTVL,
+                &interval_sec as *const _ as *const libc::c_void,
+                std::mem::size_of::<libc::c_int>() as libc::socklen_t,
+            ) != 0
+            {}
 
             let keepcnt: libc::c_int = 10;
-            if libc::setsockopt(fd, libc::IPPROTO_TCP, libc::TCP_KEEPCNT, &keepcnt as *const _ as *const libc::c_void, std::mem::size_of::<libc::c_int>() as libc::socklen_t) != 0 {
-            }
+            if libc::setsockopt(
+                fd,
+                libc::IPPROTO_TCP,
+                libc::TCP_KEEPCNT,
+                &keepcnt as *const _ as *const libc::c_void,
+                std::mem::size_of::<libc::c_int>() as libc::socklen_t,
+            ) != 0
+            {}
         }
     }
 
@@ -105,8 +133,18 @@ fn disable_tcp_nagle(fd: RawFd) -> Result<(), String> {
     let on: libc::c_int = 1;
     // SAFETY: Setting TCP_NODELAY on a valid socket.
     unsafe {
-        if libc::setsockopt(fd, libc::IPPROTO_TCP, libc::TCP_NODELAY, &on as *const _ as *const libc::c_void, std::mem::size_of::<libc::c_int>() as libc::socklen_t) != 0 {
-            return Err(format!("setsockopt(TCP_NODELAY) failed: {}", std::io::Error::last_os_error()));
+        if libc::setsockopt(
+            fd,
+            libc::IPPROTO_TCP,
+            libc::TCP_NODELAY,
+            &on as *const _ as *const libc::c_void,
+            std::mem::size_of::<libc::c_int>() as libc::socklen_t,
+        ) != 0
+        {
+            return Err(format!(
+                "setsockopt(TCP_NODELAY) failed: {}",
+                std::io::Error::last_os_error()
+            ));
         }
     }
     Ok(())
@@ -137,7 +175,11 @@ fn adb_socket_get_local_port(fd: RawFd) -> i32 {
 fn _network_loopback_client(ipv6: bool, port: i32, _type: libc::c_int) -> Result<OwnedFd, String> {
     // SAFETY: Creating socket and connecting it.
     unsafe {
-        let fd = libc::socket(if ipv6 { libc::AF_INET6 } else { libc::AF_INET }, _type | libc::SOCK_CLOEXEC, 0);
+        let fd = libc::socket(
+            if ipv6 { libc::AF_INET6 } else { libc::AF_INET },
+            _type | libc::O_CLOEXEC,
+            0,
+        );
         if fd < 0 {
             return Err(std::io::Error::last_os_error().to_string());
         }
@@ -159,7 +201,12 @@ fn _network_loopback_client(ipv6: bool, port: i32, _type: libc::c_int) -> Result
             addrlen = std::mem::size_of::<libc::sockaddr_in>() as libc::socklen_t;
         }
 
-        if libc::bind(fd, &addr_storage as *const _ as *const libc::sockaddr, addrlen) != 0 {
+        if libc::bind(
+            fd,
+            &addr_storage as *const _ as *const libc::sockaddr,
+            addrlen,
+        ) != 0
+        {
             let err = std::io::Error::last_os_error().to_string();
             libc::close(fd);
             return Err(err);
@@ -173,7 +220,12 @@ fn _network_loopback_client(ipv6: bool, port: i32, _type: libc::c_int) -> Result
             (*addr).sin_port = (port as u16).to_be();
         }
 
-        if libc::connect(fd, &addr_storage as *const _ as *const libc::sockaddr, addrlen) != 0 {
+        if libc::connect(
+            fd,
+            &addr_storage as *const _ as *const libc::sockaddr,
+            addrlen,
+        ) != 0
+        {
             let err = std::io::Error::last_os_error().to_string();
             libc::close(fd);
             return Err(err);
@@ -195,14 +247,24 @@ fn network_loopback_client(port: i32, _type: libc::c_int) -> Result<OwnedFd, Str
 fn _network_loopback_server(ipv6: bool, port: i32, _type: libc::c_int) -> Result<OwnedFd, String> {
     // SAFETY: Creating socket and binding it for server.
     unsafe {
-        let fd = libc::socket(if ipv6 { libc::AF_INET6 } else { libc::AF_INET }, _type | libc::SOCK_CLOEXEC, 0);
+        let fd = libc::socket(
+            if ipv6 { libc::AF_INET6 } else { libc::AF_INET },
+            _type | libc::O_CLOEXEC,
+            0,
+        );
         if fd < 0 {
             return Err(std::io::Error::last_os_error().to_string());
         }
         close_on_exec(fd);
 
         let n: libc::c_int = 1;
-        libc::setsockopt(fd, libc::SOL_SOCKET, libc::SO_REUSEADDR, &n as *const _ as *const libc::c_void, std::mem::size_of::<libc::c_int>() as libc::socklen_t);
+        libc::setsockopt(
+            fd,
+            libc::SOL_SOCKET,
+            libc::SO_REUSEADDR,
+            &n as *const _ as *const libc::c_void,
+            std::mem::size_of::<libc::c_int>() as libc::socklen_t,
+        );
 
         let mut addr_storage: libc::sockaddr_storage = std::mem::zeroed();
         let addrlen: libc::socklen_t;
@@ -220,7 +282,12 @@ fn _network_loopback_server(ipv6: bool, port: i32, _type: libc::c_int) -> Result
             addrlen = std::mem::size_of::<libc::sockaddr_in>() as libc::socklen_t;
         }
 
-        if libc::bind(fd, &addr_storage as *const _ as *const libc::sockaddr, addrlen) != 0 {
+        if libc::bind(
+            fd,
+            &addr_storage as *const _ as *const libc::sockaddr,
+            addrlen,
+        ) != 0
+        {
             let err = std::io::Error::last_os_error().to_string();
             libc::close(fd);
             return Err(err);
@@ -240,7 +307,11 @@ fn _network_loopback_server(ipv6: bool, port: i32, _type: libc::c_int) -> Result
 
 /// Ported from original/sysdeps/posix/network.cpp: int network_loopback_server(int port, int type, std::string* error, bool prefer_ipv4)
 #[cfg(unix)]
-fn network_loopback_server(port: i32, _type: libc::c_int, prefer_ipv4: bool) -> Result<OwnedFd, String> {
+fn network_loopback_server(
+    port: i32,
+    _type: libc::c_int,
+    prefer_ipv4: bool,
+) -> Result<OwnedFd, String> {
     if prefer_ipv4 {
         if let Ok(fd) = _network_loopback_server(false, port, _type) {
             return Ok(fd);
@@ -254,21 +325,32 @@ fn network_loopback_server(port: i32, _type: libc::c_int, prefer_ipv4: bool) -> 
 fn network_inaddr_any_server(port: i32, _type: libc::c_int) -> Result<OwnedFd, String> {
     // SAFETY: Binding to INADDR_ANY for server.
     unsafe {
-        let fd = libc::socket(libc::AF_INET, _type | libc::SOCK_CLOEXEC, 0);
+        let fd = libc::socket(libc::AF_INET, _type | libc::O_CLOEXEC, 0);
         if fd < 0 {
-             return Err(std::io::Error::last_os_error().to_string());
+            return Err(std::io::Error::last_os_error().to_string());
         }
         close_on_exec(fd);
 
         let n: libc::c_int = 1;
-        libc::setsockopt(fd, libc::SOL_SOCKET, libc::SO_REUSEADDR, &n as *const _ as *const libc::c_void, std::mem::size_of::<libc::c_int>() as libc::socklen_t);
+        libc::setsockopt(
+            fd,
+            libc::SOL_SOCKET,
+            libc::SO_REUSEADDR,
+            &n as *const _ as *const libc::c_void,
+            std::mem::size_of::<libc::c_int>() as libc::socklen_t,
+        );
 
         let mut addr: libc::sockaddr_in = std::mem::zeroed();
         addr.sin_family = libc::AF_INET as libc::sa_family_t;
         addr.sin_addr.s_addr = libc::INADDR_ANY.to_be();
         addr.sin_port = (port as u16).to_be();
 
-        if libc::bind(fd, &addr as *const _ as *const libc::sockaddr, std::mem::size_of::<libc::sockaddr_in>() as libc::socklen_t) != 0 {
+        if libc::bind(
+            fd,
+            &addr as *const _ as *const libc::sockaddr,
+            std::mem::size_of::<libc::sockaddr_in>() as libc::socklen_t,
+        ) != 0
+        {
             let err = std::io::Error::last_os_error().to_string();
             libc::close(fd);
             return Err(err);
@@ -288,7 +370,11 @@ fn network_inaddr_any_server(port: i32, _type: libc::c_int) -> Result<OwnedFd, S
 
 /// Ported from original/sysdeps.h: inline int network_local_client(const char* name, int namespace_id, int type, std::string* error)
 #[cfg(unix)]
-fn network_local_client(name: &str, namespace_id: i32, _type: libc::c_int) -> Result<OwnedFd, String> {
+fn network_local_client(
+    name: &str,
+    namespace_id: i32,
+    _type: libc::c_int,
+) -> Result<OwnedFd, String> {
     let mut path = name.to_string();
     if namespace_id == ANDROID_SOCKET_NAMESPACE_RESERVED {
         path = format!("/dev/socket/{}", name);
@@ -296,7 +382,7 @@ fn network_local_client(name: &str, namespace_id: i32, _type: libc::c_int) -> Re
 
     // SAFETY: Setting up sockaddr_un and connecting.
     unsafe {
-        let fd = libc::socket(libc::AF_UNIX, _type | libc::SOCK_CLOEXEC, 0);
+        let fd = libc::socket(libc::AF_UNIX, _type | libc::O_CLOEXEC, 0);
         if fd < 0 {
             return Err(std::io::Error::last_os_error().to_string());
         }
@@ -314,15 +400,25 @@ fn network_local_client(name: &str, namespace_id: i32, _type: libc::c_int) -> Re
                 libc::close(fd);
                 return Err("path too long".to_string());
             }
-            std::ptr::copy_nonoverlapping(path_bytes.as_ptr(), addr.sun_path.as_mut_ptr().offset(1) as *mut u8, path_bytes.len());
-            len = (std::mem::size_of::<libc::sa_family_t>() + 1 + path_bytes.len()) as libc::socklen_t;
+            std::ptr::copy_nonoverlapping(
+                path_bytes.as_ptr(),
+                addr.sun_path.as_mut_ptr().offset(1) as *mut u8,
+                path_bytes.len(),
+            );
+            len = (std::mem::size_of::<libc::sa_family_t>() + 1 + path_bytes.len())
+                as libc::socklen_t;
         } else {
             if path_bytes.len() >= sun_path_len {
                 libc::close(fd);
                 return Err("path too long".to_string());
             }
-            std::ptr::copy_nonoverlapping(path_bytes.as_ptr(), addr.sun_path.as_mut_ptr() as *mut u8, path_bytes.len());
-            len = (std::mem::size_of::<libc::sa_family_t>() + path_bytes.len() + 1) as libc::socklen_t;
+            std::ptr::copy_nonoverlapping(
+                path_bytes.as_ptr(),
+                addr.sun_path.as_mut_ptr() as *mut u8,
+                path_bytes.len(),
+            );
+            len = (std::mem::size_of::<libc::sa_family_t>() + path_bytes.len() + 1)
+                as libc::socklen_t;
         }
 
         if libc::connect(fd, &addr as *const _ as *const libc::sockaddr, len) != 0 {
@@ -337,7 +433,11 @@ fn network_local_client(name: &str, namespace_id: i32, _type: libc::c_int) -> Re
 
 /// Ported from original/sysdeps.h: inline int network_local_server(const char* name, int namespace_id, int type, std::string* error)
 #[cfg(unix)]
-fn network_local_server(name: &str, namespace_id: i32, _type: libc::c_int) -> Result<OwnedFd, String> {
+fn network_local_server(
+    name: &str,
+    namespace_id: i32,
+    _type: libc::c_int,
+) -> Result<OwnedFd, String> {
     let mut path = name.to_string();
     if namespace_id == ANDROID_SOCKET_NAMESPACE_RESERVED {
         path = format!("/dev/socket/{}", name);
@@ -349,7 +449,7 @@ fn network_local_server(name: &str, namespace_id: i32, _type: libc::c_int) -> Re
 
     // SAFETY: Binding Unix domain socket.
     unsafe {
-        let fd = libc::socket(libc::AF_UNIX, _type | libc::SOCK_CLOEXEC, 0);
+        let fd = libc::socket(libc::AF_UNIX, _type | libc::O_CLOEXEC, 0);
         if fd < 0 {
             return Err(std::io::Error::last_os_error().to_string());
         }
@@ -367,15 +467,25 @@ fn network_local_server(name: &str, namespace_id: i32, _type: libc::c_int) -> Re
                 libc::close(fd);
                 return Err("path too long".to_string());
             }
-            std::ptr::copy_nonoverlapping(path_bytes.as_ptr(), addr.sun_path.as_mut_ptr().offset(1) as *mut u8, path_bytes.len());
-            len = (std::mem::size_of::<libc::sa_family_t>() + 1 + path_bytes.len()) as libc::socklen_t;
+            std::ptr::copy_nonoverlapping(
+                path_bytes.as_ptr(),
+                addr.sun_path.as_mut_ptr().offset(1) as *mut u8,
+                path_bytes.len(),
+            );
+            len = (std::mem::size_of::<libc::sa_family_t>() + 1 + path_bytes.len())
+                as libc::socklen_t;
         } else {
             if path_bytes.len() >= sun_path_len {
                 libc::close(fd);
                 return Err("path too long".to_string());
             }
-            std::ptr::copy_nonoverlapping(path_bytes.as_ptr(), addr.sun_path.as_mut_ptr() as *mut u8, path_bytes.len());
-            len = (std::mem::size_of::<libc::sa_family_t>() + path_bytes.len() + 1) as libc::socklen_t;
+            std::ptr::copy_nonoverlapping(
+                path_bytes.as_ptr(),
+                addr.sun_path.as_mut_ptr() as *mut u8,
+                path_bytes.len(),
+            );
+            len = (std::mem::size_of::<libc::sa_family_t>() + path_bytes.len() + 1)
+                as libc::socklen_t;
         }
 
         if libc::bind(fd, &addr as *const _ as *const libc::sockaddr, len) != 0 {
@@ -403,16 +513,20 @@ fn parse_net_address(addr: &str, default_port: i32) -> Result<(String, i32, Stri
     let mut port = default_port;
 
     if addr.starts_with('[') {
-        let end_bracket = addr.find(']').ok_or_else(|| format!("missing ']' in address: {}", addr))?;
+        let end_bracket = addr
+            .find(']')
+            .ok_or_else(|| format!("missing ']' in address: {}", addr))?;
         host = addr[1..end_bracket].to_string();
         let rest = &addr[end_bracket + 1..];
         if rest.starts_with(':') {
             if rest.len() == 1 {
-                 return Err(format!("bad port number in: {}", addr));
+                return Err(format!("bad port number in: {}", addr));
             }
-            port = rest[1..].parse::<i32>().map_err(|_| format!("bad port number in: {}", addr))?;
+            port = rest[1..]
+                .parse::<i32>()
+                .map_err(|_| format!("bad port number in: {}", addr))?;
         } else if !rest.is_empty() {
-             return Err(format!("garbage after ']': {}", rest));
+            return Err(format!("garbage after ']': {}", rest));
         }
     } else {
         if let Some(last_colon) = addr.rfind(':') {
@@ -424,9 +538,11 @@ fn parse_net_address(addr: &str, default_port: i32) -> Result<(String, i32, Stri
                 // host:port
                 host = addr[..last_colon].to_string();
                 if last_colon + 1 == addr.len() {
-                     return Err(format!("bad port number in: {}", addr));
+                    return Err(format!("bad port number in: {}", addr));
                 }
-                port = addr[last_colon + 1..].parse::<i32>().map_err(|_| format!("bad port number in: {}", addr))?;
+                port = addr[last_colon + 1..]
+                    .parse::<i32>()
+                    .map_err(|_| format!("bad port number in: {}", addr))?;
             }
         } else {
             host = addr.to_string();
@@ -457,12 +573,12 @@ pub fn parse_tcp_socket_spec(spec: &str) -> Result<(String, i32, String), String
     }
 
     if remainder.is_empty() {
-         return Err(format!("bad port number in: {}", spec));
+        return Err(format!("bad port number in: {}", spec));
     }
 
     let (host, port, serial) = parse_net_address(remainder, DEFAULT_ADB_LOCAL_TRANSPORT_PORT)?;
     if port < 0 || port > 65535 {
-         return Err(format!("bad port number '{}'", port));
+        return Err(format!("bad port number '{}'", port));
     }
 
     Ok((host, port, serial))
@@ -478,7 +594,9 @@ pub fn get_host_socket_spec_port(spec: &str) -> Result<i32, String> {
         if parts.len() != 2 {
             return Err("given vsock server socket string was invalid".to_string());
         }
-        let port = parts[1].parse::<i32>().map_err(|_| "could not parse vsock port".to_string())?;
+        let port = parts[1]
+            .parse::<i32>()
+            .map_err(|_| "could not parse vsock port".to_string())?;
         if port < 0 {
             return Err("vsock port was negative.".to_string());
         }
@@ -528,10 +646,30 @@ pub fn is_local_socket_spec(spec: &str) -> bool {
 /// Ported from original/socket_spec.cpp: static auto& kLocalSocketTypes = ...
 fn get_local_socket_types() -> Vec<(&'static str, i32, bool)> {
     vec![
-        ("local", if IS_HOST { ANDROID_SOCKET_NAMESPACE_FILESYSTEM } else { ANDROID_SOCKET_NAMESPACE_RESERVED }, cfg!(unix)),
-        ("localreserved", ANDROID_SOCKET_NAMESPACE_RESERVED, cfg!(unix) && !IS_HOST),
-        ("localabstract", ANDROID_SOCKET_NAMESPACE_ABSTRACT, cfg!(target_os = "linux")),
-        ("localfilesystem", ANDROID_SOCKET_NAMESPACE_FILESYSTEM, cfg!(unix)),
+        (
+            "local",
+            if IS_HOST {
+                ANDROID_SOCKET_NAMESPACE_FILESYSTEM
+            } else {
+                ANDROID_SOCKET_NAMESPACE_RESERVED
+            },
+            cfg!(unix),
+        ),
+        (
+            "localreserved",
+            ANDROID_SOCKET_NAMESPACE_RESERVED,
+            cfg!(unix) && !IS_HOST,
+        ),
+        (
+            "localabstract",
+            ANDROID_SOCKET_NAMESPACE_ABSTRACT,
+            cfg!(target_os = "linux"),
+        ),
+        (
+            "localfilesystem",
+            ANDROID_SOCKET_NAMESPACE_FILESYSTEM,
+            cfg!(unix),
+        ),
     ]
 }
 
@@ -552,25 +690,27 @@ pub fn socket_spec_connect(
         if address.starts_with("tcp:") {
             let (hostname, port_value, serial_value) = parse_tcp_socket_spec(address)?;
             let fd = if tcp_host_is_local(&hostname) {
-                 network_loopback_client(port_value, libc::SOCK_STREAM)?
+                network_loopback_client(port_value, libc::SOCK_STREAM)?
             } else {
-                 // network_connect
-                 let addrs = format!("{}:{}", hostname, port_value).to_socket_addrs().map_err(|e| e.to_string())?;
-                 let mut last_err = format!("failed to connect to {}:{}", hostname, port_value);
-                 let mut fd = None;
-                 for addr in addrs {
-                     match TcpStream::connect(addr) {
-                         Ok(stream) => {
-                             let raw_fd = stream.as_raw_fd();
-                             std::mem::forget(stream);
-                             // SAFETY: We forget the stream, taking ownership of the raw FD.
-                             fd = Some(unsafe { OwnedFd::from_raw_fd(raw_fd) });
-                             break;
-                         }
-                         Err(e) => last_err = e.to_string(),
-                     }
-                 }
-                 fd.ok_or(last_err)?
+                // network_connect
+                let addrs = format!("{}:{}", hostname, port_value)
+                    .to_socket_addrs()
+                    .map_err(|e| e.to_string())?;
+                let mut last_err = format!("failed to connect to {}:{}", hostname, port_value);
+                let mut fd = None;
+                for addr in addrs {
+                    match TcpStream::connect(addr) {
+                        Ok(stream) => {
+                            let raw_fd = stream.as_raw_fd();
+                            std::mem::forget(stream);
+                            // SAFETY: We forget the stream, taking ownership of the raw FD.
+                            fd = Some(unsafe { OwnedFd::from_raw_fd(raw_fd) });
+                            break;
+                        }
+                        Err(e) => last_err = e.to_string(),
+                    }
+                }
+                fd.ok_or(last_err)?
             };
 
             let keepalive_interval = std::env::var("ADB_TCP_KEEPALIVE_INTERVAL")
@@ -592,15 +732,28 @@ pub fn socket_spec_connect(
             #[cfg(target_os = "linux")]
             {
                 let parts: Vec<&str> = address.split(':').collect();
-                let mut port_value = if let Some(p) = port.as_ref() { **p as u32 } else { 0 };
+                let mut port_value = if let Some(p) = port.as_ref() {
+                    **p as u32
+                } else {
+                    0
+                };
                 let cid: u32;
                 if parts.len() == 2 {
-                    cid = parts[1].parse::<u32>().map_err(|_| format!("could not parse vsock cid in '{}'", address))?;
+                    cid = parts[1]
+                        .parse::<u32>()
+                        .map_err(|_| format!("could not parse vsock cid in '{}'", address))?;
                 } else if parts.len() == 3 {
-                    cid = parts[1].parse::<u32>().map_err(|_| format!("could not parse vsock cid in '{}'", address))?;
-                    port_value = parts[2].parse::<u32>().map_err(|_| format!("could not parse vsock port in '{}'", address))?;
+                    cid = parts[1]
+                        .parse::<u32>()
+                        .map_err(|_| format!("could not parse vsock cid in '{}'", address))?;
+                    port_value = parts[2]
+                        .parse::<u32>()
+                        .map_err(|_| format!("could not parse vsock port in '{}'", address))?;
                 } else {
-                     return Err(format!("expected vsock:cid or vsock:cid:port in '{}'", address));
+                    return Err(format!(
+                        "expected vsock:cid or vsock:cid:port in '{}'",
+                        address
+                    ));
                 }
                 if port_value == 0 {
                     return Err(format!("vsock port was not provided."));
@@ -608,19 +761,27 @@ pub fn socket_spec_connect(
 
                 // SAFETY: Manual socket creation and connection for AF_VSOCK.
                 unsafe {
-                    let raw_fd = libc::socket(AF_VSOCK, libc::SOCK_STREAM | libc::SOCK_CLOEXEC, 0);
+                    let raw_fd = libc::socket(AF_VSOCK, libc::SOCK_STREAM | libc::O_CLOEXEC, 0);
                     if raw_fd < 0 {
-                         return Err("could not open vsock socket".to_string());
+                        return Err("could not open vsock socket".to_string());
                     }
                     let mut addr: sockaddr_vm = std::mem::zeroed();
                     addr.svm_family = AF_VSOCK as libc::sa_family_t;
                     addr.svm_port = port_value;
                     addr.svm_cid = cid;
 
-                    if libc::connect(raw_fd, &addr as *const _ as *const libc::sockaddr, std::mem::size_of::<sockaddr_vm>() as libc::socklen_t) != 0 {
+                    if libc::connect(
+                        raw_fd,
+                        &addr as *const _ as *const libc::sockaddr,
+                        std::mem::size_of::<sockaddr_vm>() as libc::socklen_t,
+                    ) != 0
+                    {
                         let err = std::io::Error::last_os_error().to_string();
                         libc::close(raw_fd);
-                        return Err(format!("could not connect to vsock address '{}': {}", address, err));
+                        return Err(format!(
+                            "could not connect to vsock address '{}': {}",
+                            address, err
+                        ));
                     }
 
                     if let Some(p) = port {
@@ -634,10 +795,10 @@ pub fn socket_spec_connect(
             }
             #[cfg(not(target_os = "linux"))]
             {
-                 return Err("vsock is only supported on Linux".to_string());
+                return Err("vsock is only supported on Linux".to_string());
             }
         } else if address.starts_with("acceptfd:") {
-             return Err("cannot connect to acceptfd".to_string());
+            return Err("cannot connect to acceptfd".to_string());
         }
 
         let local_socket_types = get_local_socket_types();
@@ -645,9 +806,16 @@ pub fn socket_spec_connect(
             let prefix = format!("{}:", name);
             if address.starts_with(&prefix) {
                 if !available {
-                     return Err(format!("socket type {} is unavailable on this platform", name));
+                    return Err(format!(
+                        "socket type {} is unavailable on this platform",
+                        name
+                    ));
                 }
-                let fd = network_local_client(&address[prefix.len()..], namespace_id, libc::SOCK_STREAM)?;
+                let fd = network_local_client(
+                    &address[prefix.len()..],
+                    namespace_id,
+                    libc::SOCK_STREAM,
+                )?;
                 if let Some(s) = serial {
                     *s = address.to_string();
                 }
@@ -673,21 +841,21 @@ pub fn socket_spec_listen(
         if spec.starts_with("tcp:") {
             let (hostname, port, _) = parse_tcp_socket_spec(spec)?;
             let fd = if hostname.is_empty() {
-                 if IS_HOST {
-                     if G_LISTEN_ALL.load(Ordering::Relaxed) {
-                         network_inaddr_any_server(port, libc::SOCK_STREAM)?
-                     } else {
-                         network_loopback_server(port, libc::SOCK_STREAM, true)?
-                     }
-                 } else {
-                     network_inaddr_any_server(port, libc::SOCK_STREAM)?
-                 }
+                if IS_HOST {
+                    if G_LISTEN_ALL.load(Ordering::Relaxed) {
+                        network_inaddr_any_server(port, libc::SOCK_STREAM)?
+                    } else {
+                        network_loopback_server(port, libc::SOCK_STREAM, true)?
+                    }
+                } else {
+                    network_inaddr_any_server(port, libc::SOCK_STREAM)?
+                }
             } else if tcp_host_is_local(&hostname) {
-                 network_loopback_server(port, libc::SOCK_STREAM, true)?
+                network_loopback_server(port, libc::SOCK_STREAM, true)?
             } else if hostname == "::1" {
-                 network_loopback_server(port, libc::SOCK_STREAM, false)?
+                network_loopback_server(port, libc::SOCK_STREAM, false)?
             } else {
-                 return Err("listening on specified hostname currently unsupported".to_string());
+                return Err("listening on specified hostname currently unsupported".to_string());
             };
 
             if let Some(p) = resolved_port {
@@ -699,38 +867,57 @@ pub fn socket_spec_listen(
             {
                 let parts: Vec<&str> = spec.split(':').collect();
                 if parts.len() != 2 {
-                     return Err("given vsock server socket string was invalid".to_string());
+                    return Err("given vsock server socket string was invalid".to_string());
                 }
-                let port = parts[1].parse::<i32>().map_err(|_| "could not parse vsock port".to_string())?;
+                let port = parts[1]
+                    .parse::<i32>()
+                    .map_err(|_| "could not parse vsock port".to_string())?;
                 if port < 0 {
                     return Err("vsock port was negative.".to_string());
                 }
 
                 // SAFETY: Manual server socket creation for AF_VSOCK.
                 unsafe {
-                    let raw_fd = libc::socket(AF_VSOCK, libc::SOCK_STREAM | libc::SOCK_CLOEXEC, 0);
+                    let raw_fd = libc::socket(AF_VSOCK, libc::SOCK_STREAM | libc::O_CLOEXEC, 0);
                     if raw_fd < 0 {
-                        return Err(format!("could not create vsock server: {}", std::io::Error::last_os_error()));
+                        return Err(format!(
+                            "could not create vsock server: {}",
+                            std::io::Error::last_os_error()
+                        ));
                     }
                     let mut addr: sockaddr_vm = std::mem::zeroed();
                     addr.svm_family = AF_VSOCK as libc::sa_family_t;
-                    addr.svm_port = if port == 0 { VMADDR_PORT_ANY } else { port as u32 };
+                    addr.svm_port = if port == 0 {
+                        VMADDR_PORT_ANY
+                    } else {
+                        port as u32
+                    };
                     addr.svm_cid = VMADDR_CID_ANY;
 
-                    if libc::bind(raw_fd, &addr as *const _ as *const libc::sockaddr, std::mem::size_of::<sockaddr_vm>() as libc::socklen_t) != 0 {
-                         let err = std::io::Error::last_os_error().to_string();
-                         libc::close(raw_fd);
-                         return Err(err);
+                    if libc::bind(
+                        raw_fd,
+                        &addr as *const _ as *const libc::sockaddr,
+                        std::mem::size_of::<sockaddr_vm>() as libc::socklen_t,
+                    ) != 0
+                    {
+                        let err = std::io::Error::last_os_error().to_string();
+                        libc::close(raw_fd);
+                        return Err(err);
                     }
                     if libc::listen(raw_fd, 4) != 0 {
-                         let err = std::io::Error::last_os_error().to_string();
-                         libc::close(raw_fd);
-                         return Err(err);
+                        let err = std::io::Error::last_os_error().to_string();
+                        libc::close(raw_fd);
+                        return Err(err);
                     }
 
                     if let Some(p) = resolved_port {
                         let mut addr_len = std::mem::size_of::<sockaddr_vm>() as libc::socklen_t;
-                        if libc::getsockname(raw_fd, &mut addr as *mut _ as *mut libc::sockaddr, &mut addr_len) == 0 {
+                        if libc::getsockname(
+                            raw_fd,
+                            &mut addr as *mut _ as *mut libc::sockaddr,
+                            &mut addr_len,
+                        ) == 0
+                        {
                             *p = addr.svm_port as i32;
                         } else {
                             libc::close(raw_fd);
@@ -742,32 +929,49 @@ pub fn socket_spec_listen(
             }
             #[cfg(not(target_os = "linux"))]
             {
-                 return Err("vsock is only supported on linux".to_string());
+                return Err("vsock is only supported on linux".to_string());
             }
         } else if spec.starts_with("acceptfd:") {
             let fd_str = &spec["acceptfd:".len()..];
-            let fd_u = fd_str.parse::<u32>().map_err(|_| "invalid fd".to_string())?;
+            let fd_u = fd_str
+                .parse::<u32>()
+                .map_err(|_| "invalid fd".to_string())?;
             let fd = fd_u as i32;
 
             // SAFETY: Duping inherited FD and checking its status.
             unsafe {
                 let flags = libc::fcntl(fd, libc::F_GETFD);
                 if flags < 0 {
-                    return Err(format!("could not get flags of inherited fd {}: {}", fd, std::io::Error::last_os_error()));
+                    return Err(format!(
+                        "could not get flags of inherited fd {}: {}",
+                        fd,
+                        std::io::Error::last_os_error()
+                    ));
                 }
                 if (flags & libc::FD_CLOEXEC) != 0 {
-                     return Err(format!("fd {} was not inherited from parent", fd));
+                    return Err(format!("fd {} was not inherited from parent", fd));
                 }
 
                 let mut sock_type: libc::c_int = 0;
                 let mut sock_type_size = std::mem::size_of::<libc::c_int>() as libc::socklen_t;
-                if libc::getsockopt(fd, libc::SOL_SOCKET, libc::SO_TYPE, &mut sock_type as *mut _ as *mut libc::c_void, &mut sock_type_size) != 0 {
-                     return Err(format!("fd {} does not refer to a socket", fd));
+                if libc::getsockopt(
+                    fd,
+                    libc::SOL_SOCKET,
+                    libc::SO_TYPE,
+                    &mut sock_type as *mut _ as *mut libc::c_void,
+                    &mut sock_type_size,
+                ) != 0
+                {
+                    return Err(format!("fd {} does not refer to a socket", fd));
                 }
 
                 let new_fd = libc::fcntl(fd, libc::F_DUPFD_CLOEXEC, 0);
                 if new_fd < 0 {
-                    return Err(format!("could not dup inherited fd {}: {}", fd, std::io::Error::last_os_error()));
+                    return Err(format!(
+                        "could not dup inherited fd {}: {}",
+                        fd,
+                        std::io::Error::last_os_error()
+                    ));
                 }
                 return Ok(OwnedFd::from_raw_fd(new_fd));
             }
@@ -778,9 +982,16 @@ pub fn socket_spec_listen(
             let prefix = format!("{}:", name);
             if spec.starts_with(&prefix) {
                 if !available {
-                     return Err(format!("attempted to listen on unavailable socket type: {}", spec));
+                    return Err(format!(
+                        "attempted to listen on unavailable socket type: {}",
+                        spec
+                    ));
                 }
-                return network_local_server(&spec[prefix.len()..], namespace_id, libc::SOCK_STREAM);
+                return network_local_server(
+                    &spec[prefix.len()..],
+                    namespace_id,
+                    libc::SOCK_STREAM,
+                );
             }
         }
 
@@ -868,7 +1079,8 @@ mod tests {
         assert_eq!(1234, port);
         assert_eq!("[::1]:1234", serial);
 
-        let (hostname, port, serial) = parse_tcp_socket_spec("tcp:[2601:644:8e80:620::fbbc]:2345").unwrap();
+        let (hostname, port, serial) =
+            parse_tcp_socket_spec("tcp:[2601:644:8e80:620::fbbc]:2345").unwrap();
         assert_eq!("2601:644:8e80:620::fbbc", hostname);
         assert_eq!(2345, port);
         assert_eq!("[2601:644:8e80:620::fbbc]:2345", serial);
@@ -886,7 +1098,8 @@ mod tests {
         assert_eq!(5555, port);
         assert_eq!("[::1]:5555", serial);
 
-        let (hostname, port, serial) = parse_tcp_socket_spec("tcp:2601:644:8e80:620::fbbc").unwrap();
+        let (hostname, port, serial) =
+            parse_tcp_socket_spec("tcp:2601:644:8e80:620::fbbc").unwrap();
         assert_eq!("2601:644:8e80:620::fbbc", hostname);
         assert_eq!(5555, port);
         assert_eq!("[2601:644:8e80:620::fbbc]:5555", serial);
@@ -901,7 +1114,10 @@ mod tests {
     #[test]
     fn get_host_socket_spec_port_success() {
         assert_eq!(5555, get_host_socket_spec_port("tcp:5555").unwrap());
-        assert_eq!(5555, get_host_socket_spec_port("tcp:localhost:5555").unwrap());
+        assert_eq!(
+            5555,
+            get_host_socket_spec_port("tcp:localhost:5555").unwrap()
+        );
         assert_eq!(5555, get_host_socket_spec_port("tcp:[::1]:5555").unwrap());
     }
 
@@ -923,7 +1139,9 @@ mod tests {
         let mut port = 0;
         let mut serial = String::new();
         let _server_fd = socket_spec_listen("tcp:localhost:0", Some(&mut port)).unwrap();
-        let _client_fd = socket_spec_connect(&format!("tcp:localhost:{}", port), None, Some(&mut serial)).unwrap();
+        let _client_fd =
+            socket_spec_connect(&format!("tcp:localhost:{}", port), None, Some(&mut serial))
+                .unwrap();
         assert_eq!(serial, format!("localhost:{}", port));
     }
 

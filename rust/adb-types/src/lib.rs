@@ -1,6 +1,6 @@
+use bytes::{Buf, Bytes};
 use std::collections::VecDeque;
 use std::io::Cursor;
-use bytes::{Bytes, Buf};
 
 /// A message header in the ADB protocol.
 #[repr(C)]
@@ -32,7 +32,7 @@ impl Amessage {
 /// In Rust, we use a wrapper around `std::io::Cursor<Vec<u8>>` to provide equivalent
 /// functionality with an idiomatic API.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
-pub struct Block(Cursor<Vec<u8>>);
+pub struct Block(pub Cursor<Vec<u8>>);
 
 impl Block {
     /// Creates a new `Block` with the given capacity.
