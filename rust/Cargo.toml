@@ -9,4 +9,5 @@ members = [
     "rust-adb-pairing-auth",
     "adb-sockets",
     "socket-spec",
+    "adb-protocol",
 ]

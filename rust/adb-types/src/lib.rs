@@ -14,25 +14,120 @@ pub struct Amessage {
     pub magic: u32,
 }
 
+impl Amessage {
+    /// Checks if the magic value is correct for the command.
+    pub fn check_magic(&self) -> bool {
+        self.magic == self.command ^ 0xffffffff
+    }
+
+    /// Updates the magic value based on the command.
+    pub fn update_magic(&mut self) {
+        self.magic = self.command ^ 0xffffffff;
+    }
+}
+
 /// A block of memory used for I/O, with an associated seek position.
 ///
 /// In the original C++ implementation, this was a custom `Block` class.
-/// In Rust, we use `std::io::Cursor<Vec<u8>>` to provide equivalent
-/// functionality as requested.
-///
-/// Translation guide from C++ Block:
-/// - `size()` -> `block.get_ref().len()`
-/// - `data()` -> `block.get_ref().as_ptr()`
-/// - `position()` -> `block.position()`
-/// - `remaining()` -> `block.get_ref().len() - block.position() as usize`
-/// - `rewind()` -> `block.set_position(0)`
-pub type Block = Cursor<Vec<u8>>;
+/// In Rust, we use a wrapper around `std::io::Cursor<Vec<u8>>` to provide equivalent
+/// functionality with an idiomatic API.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct Block(Cursor<Vec<u8>>);
+
+impl Block {
+    /// Creates a new `Block` with the given capacity.
+    pub fn new(capacity: usize) -> Self {
+        Self(Cursor::new(vec![0; capacity]))
+    }
+
+    /// Creates a new `Block` from a `Vec<u8>`.
+    pub fn from_vec(vec: Vec<u8>) -> Self {
+        Self(Cursor::new(vec))
+    }
+
+    /// Returns the total size of the block.
+    pub fn len(&self) -> usize {
+        self.0.get_ref().len()
+    }
+
+    /// Returns true if the block is empty.
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
+    /// Returns the current seek position.
+    pub fn position(&self) -> u64 {
+        self.0.position()
+    }
+
+    /// Sets the seek position.
+    pub fn set_position(&mut self, pos: u64) {
+        self.0.set_position(pos);
+    }
+
+    /// Returns the number of bytes remaining from the current position.
+    pub fn remaining(&self) -> usize {
+        self.len() - self.position() as usize
+    }
+
+    /// Returns true if the current position is at the end of the block.
+    pub fn is_full(&self) -> bool {
+        self.remaining() == 0
+    }
+
+    /// Rewinds the seek position to the beginning.
+    pub fn rewind(&mut self) {
+        self.set_position(0);
+    }
+
+    /// Resizes the block to the new size.
+    pub fn resize(&mut self, new_size: usize) {
+        self.0.get_mut().resize(new_size, 0);
+    }
+
+    /// Returns a reference to the underlying byte slice.
+    pub fn get_ref(&self) -> &[u8] {
+        self.0.get_ref()
+    }
+
+    /// Returns a mutable reference to the underlying byte vector.
+    pub fn get_mut(&mut self) -> &mut Vec<u8> {
+        self.0.get_mut()
+    }
+
+    /// Fills this block from another block, up to the remaining capacity.
+    pub fn fill_from(&mut self, from: &mut Block) -> usize {
+        let to_rem = self.remaining();
+        let from_rem = from.remaining();
+        let size = std::cmp::min(to_rem, from_rem);
+
+        let to_pos = self.position() as usize;
+        let from_pos = from.position() as usize;
+
+        self.get_mut()[to_pos..to_pos + size]
+            .copy_from_slice(&from.get_ref()[from_pos..from_pos + size]);
+
+        self.set_position((to_pos + size) as u64);
+        from.set_position((from_pos + size) as u64);
+
+        size
+    }
+}
 
 /// An ADB packet, consisting of a message header and a payload.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct Apacket {
     pub msg: Amessage,
     pub payload: Block,
+}
+
+/// Calculates the checksum of an apacket payload.
+pub fn calculate_apacket_checksum(packet: &Apacket) -> u32 {
+    packet
+        .payload
+        .get_ref()
+        .iter()
+        .fold(0u32, |acc, &x| acc + x as u32)
 }
 
 /// A sequence of buffers that represents a single contiguous stream of data.
@@ -255,5 +350,24 @@ mod tests {
         vec.trim_front();
         assert_eq!(3, vec.size());
         assert_eq!(b"bar", vec.coalesce().as_slice());
+    }
+
+    #[test]
+    fn test_calculate_apacket_checksum() {
+        let mut packet = Apacket::default();
+        packet.payload = Block::from_vec(vec![1, 2, 3, 4]);
+        assert_eq!(calculate_apacket_checksum(&packet), 10);
+    }
+
+    #[test]
+    fn test_amessage_magic() {
+        let mut msg = Amessage::default();
+        msg.command = 0x434e5953; // A_SYNC
+        msg.update_magic();
+        assert_eq!(msg.magic, 0x434e5953 ^ 0xffffffff);
+        assert!(msg.check_magic());
+
+        msg.magic = 0;
+        assert!(!msg.check_magic());
     }
 }

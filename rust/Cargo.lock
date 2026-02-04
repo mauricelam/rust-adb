@@ -3,6 +3,13 @@
 version = 4
 
 [[package]]
+name = "adb-protocol"
+version = "0.1.0"
+dependencies = [
+ "adb-types",
+]
+
+[[package]]
 name = "adb-socket-spec"
 version = "0.1.0"
 dependencies = [
