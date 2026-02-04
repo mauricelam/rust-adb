@@ -38,6 +38,11 @@ const VMADDR_CID_ANY: libc::c_uint = 0xFFFFFFFF;
 const VMADDR_PORT_ANY: libc::c_uint = 0xFFFFFFFF;
 
 #[cfg(target_os = "linux")]
+const SOCK_CLOEXEC: libc::c_int = libc::SOCK_CLOEXEC;
+#[cfg(not(target_os = "linux"))]
+const SOCK_CLOEXEC: libc::c_int = 0;
+
+#[cfg(target_os = "linux")]
 #[repr(C)]
 #[derive(Default, Copy, Clone)]
 struct sockaddr_vm {
@@ -177,7 +182,7 @@ fn _network_loopback_client(ipv6: bool, port: i32, _type: libc::c_int) -> Result
     unsafe {
         let fd = libc::socket(
             if ipv6 { libc::AF_INET6 } else { libc::AF_INET },
-            _type | libc::O_CLOEXEC,
+            _type | libc::SOCK_CLOEXEC,
             0,
         );
         if fd < 0 {
@@ -249,7 +254,7 @@ fn _network_loopback_server(ipv6: bool, port: i32, _type: libc::c_int) -> Result
     unsafe {
         let fd = libc::socket(
             if ipv6 { libc::AF_INET6 } else { libc::AF_INET },
-            _type | libc::O_CLOEXEC,
+            _type | libc::SOCK_CLOEXEC,
             0,
         );
         if fd < 0 {

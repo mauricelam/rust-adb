@@ -36,6 +36,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "adb-sockets"
+version = "0.1.0"
+dependencies = [
+ "adb-types",
+ "adb_io",
+ "anyhow",
+ "bytes",
+ "env_logger",
+ "fdevent",
+ "log",
+ "mio",
+ "nix",
+ "tempfile",
+ "thiserror",
+]
+
+[[package]]
 name = "adb-types"
 version = "0.1.0"
 dependencies = [
