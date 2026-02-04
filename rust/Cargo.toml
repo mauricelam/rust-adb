@@ -1,10 +1,12 @@
 [workspace]
 resolver = "2"
 members = [
+    "sysdeps",
     "fdevent",
     "adb-types",
     "adb_io",
     "trace",
     "rust-adb-pairing-auth",
     "adb-sockets",
+    "socket-spec",
 ]

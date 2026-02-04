@@ -1,0 +1,15 @@
+[package]
+name = "adb-socket-spec"
+version = "0.1.0"
+edition = "2021"
+
+[features]
+default = ["host"]
+host = []
+
+[dependencies]
+thiserror = "1.0.63"
+libc = "0.2.155"
+
+[dev-dependencies]
+tempfile = "3"
