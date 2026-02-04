@@ -1,7 +1,7 @@
-use anyhow::{Result, anyhow};
-use rsa::pkcs8::{EncodePrivateKey, DecodePrivateKey};
-use rsa::{RsaPrivateKey, traits::PublicKeyParts};
+use anyhow::anyhow;
 use num_bigint_dig::BigUint;
+use rsa::pkcs8::{DecodePrivateKey, EncodePrivateKey};
+use rsa::{traits::PublicKeyParts, RsaPrivateKey};
 
 pub struct Key(RsaPrivateKey);
 
@@ -16,7 +16,7 @@ pub struct AndroidPubkey {
 }
 
 impl Key {
-    pub fn from_pem(pem: &str) -> Result<Self> {
+    pub fn from_pem(pem: &str) -> anyhow::Result<Self> {
         let key = RsaPrivateKey::from_pkcs8_pem(pem)?;
         Ok(Key(key))
     }
@@ -33,7 +33,7 @@ impl Key {
     ///    modulus: [u32; 64],
     ///    rr: [u32; 64],
     ///    exponent: u32,
-    pub fn android_pubkey(&self) -> Result<AndroidPubkey> {
+    pub fn android_pubkey(&self) -> anyhow::Result<AndroidPubkey> {
         let n = self.0.n();
         let e = self.0.e();
 
@@ -75,7 +75,7 @@ impl Key {
     }
 
     /// Return the private key as a PEM encoded string.
-    pub fn to_pem_string(&self) -> Result<String> {
+    pub fn to_pem_string(&self) -> anyhow::Result<String> {
         let pem = self.0.to_pkcs8_pem(Default::default())?;
         Ok(pem.to_string())
     }
@@ -91,13 +91,13 @@ fn calculate_n0inv(n0: u32) -> u32 {
 
 use rcgen::{Certificate, DistinguishedName};
 
-pub fn new_rsa_2048() -> Result<Key> {
+pub fn new_rsa_2048() -> anyhow::Result<Key> {
     let mut rng = rand::thread_rng();
     let key = RsaPrivateKey::new(&mut rng, 2048)?;
     Ok(Key(key))
 }
 
-pub fn generate_x509_certificate(key: &Key) -> Result<Certificate> {
+pub fn generate_x509_certificate(key: &Key) -> anyhow::Result<Certificate> {
     let mut params = rcgen::CertificateParams::default();
     let mut distinguished_name = DistinguishedName::new();
     distinguished_name.push(rcgen::DnType::CountryName, "US");
@@ -119,7 +119,7 @@ pub fn generate_x509_certificate(key: &Key) -> Result<Certificate> {
     Ok(cert)
 }
 
-pub fn x509_to_pem_string(cert: &Certificate) -> Result<String> {
+pub fn x509_to_pem_string(cert: &Certificate) -> anyhow::Result<String> {
     Ok(cert.serialize_pem()?)
 }
 

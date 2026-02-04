@@ -20,10 +20,10 @@
 //! - `original/adb_utils.h`
 //! - `original/adb_utils.cpp`
 
-use std::path::{Path, PathBuf};
-use std::fs;
-use std::sync::{Arc, Mutex, Condvar};
 use adb_types::{Amessage, Apacket};
+use std::fs;
+use std::path::{Path, PathBuf};
+use std::sync::{Arc, Condvar, Mutex};
 
 /// Ported from `original/adb_utils.h`: `StripTrailingNulls`
 pub fn strip_trailing_nulls(s: &str) -> &str {

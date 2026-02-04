@@ -27,7 +27,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
 use adb_types::{Amessage, Apacket, Block};
-use anyhow::{anyhow, Result};
+use anyhow::anyhow;
 use base64::{engine::general_purpose, Engine as _};
 use rsa::pkcs1v15::{SigningKey, VerifyingKey};
 use rsa::signature::{SignatureEncoding, Signer, Verifier};
@@ -47,15 +47,16 @@ lazy_static::lazy_static! {
 const A_AUTH: u32 = 0x48545541;
 
 /// Ported from `original/client/auth.cpp`: `get_user_key_path`
-fn get_user_key_path() -> Result<PathBuf> {
-    let mut path = adb_utils::adb_get_android_dir_path()
-        .ok_or_else(|| anyhow!("Could not find android directory"))?;
-    path.push("adbkey");
-    Ok(path)
+fn get_user_key_path() -> anyhow::Result<PathBuf> {
+    Ok(Path::join(
+        &adb_utils::adb_get_android_dir_path()
+            .ok_or_else(|| anyhow!("Could not find android directory"))?,
+        "adbkey",
+    ))
 }
 
 /// Ported from `original/client/auth.cpp`: `generate_key`
-pub fn adb_auth_keygen(filename: &Path) -> Result<()> {
+pub fn adb_auth_keygen(filename: &Path) -> anyhow::Result<()> {
     let key = new_rsa_2048()?;
     let pem = key.to_pem_string()?;
     fs::write(filename, pem)?;
@@ -85,7 +86,7 @@ pub fn adb_auth_keygen(filename: &Path) -> Result<()> {
 }
 
 /// Ported from `original/client/auth.cpp`: `load_key`
-pub fn load_key(path: &Path) -> Result<()> {
+pub fn load_key(path: &Path) -> anyhow::Result<()> {
     let content = fs::read_to_string(path)?;
     let key = Key::from_pem(&content)?;
 
@@ -95,7 +96,7 @@ pub fn load_key(path: &Path) -> Result<()> {
 }
 
 /// Ported from `original/client/auth.cpp`: `adb_auth_init`
-pub fn adb_auth_init() -> Result<()> {
+pub fn adb_auth_init() -> anyhow::Result<()> {
     let path = get_user_key_path()?;
     if !path.exists() {
         if let Some(parent) = path.parent() {
@@ -108,7 +109,7 @@ pub fn adb_auth_init() -> Result<()> {
 }
 
 /// Ported from `original/client/auth.cpp`: `adb_auth_sign`
-pub fn adb_auth_sign(key: &Key, token: &[u8]) -> Result<Vec<u8>> {
+pub fn adb_auth_sign(key: &Key, token: &[u8]) -> anyhow::Result<Vec<u8>> {
     let signing_key = SigningKey::<Sha1>::new_unprefixed(key.privkey().clone());
     let signature = signing_key
         .try_sign(token)
@@ -150,7 +151,7 @@ pub fn adbd_auth_verify(token: &[u8], sig: &[u8], public_key_line: &str) -> bool
 }
 
 /// Ported from `original/daemon/auth.cpp`: `send_auth_request`
-pub fn send_auth_request<W: std::io::Write>(writer: &mut W) -> Result<[u8; TOKEN_SIZE]> {
+pub fn send_auth_request<W: std::io::Write>(writer: &mut W) -> anyhow::Result<[u8; TOKEN_SIZE]> {
     let mut token = [0u8; TOKEN_SIZE];
     use rand::RngCore;
     rand::thread_rng().fill_bytes(&mut token);
@@ -174,7 +175,7 @@ pub fn send_auth_request<W: std::io::Write>(writer: &mut W) -> Result<[u8; TOKEN
 }
 
 /// Ported from `original/client/auth.cpp`: `send_auth_response`
-pub fn send_auth_response(token: &[u8], key: &Key) -> Result<Apacket> {
+pub fn send_auth_response(token: &[u8], key: &Key) -> anyhow::Result<Apacket> {
     let signature = adb_auth_sign(key, token)?;
 
     let mut p = Apacket::default();
@@ -189,6 +190,8 @@ pub fn send_auth_response(token: &[u8], key: &Key) -> Result<Apacket> {
 
 #[cfg(test)]
 mod tests {
+    use rust_adb_crypto::AndroidPubkey;
+
     use super::*;
 
     #[test]
@@ -199,7 +202,8 @@ mod tests {
         assert!(!sig.is_empty());
 
         let pubkey_struct = key.android_pubkey().unwrap();
-        let pubkey_bytes: [u8; 524] = unsafe { std::mem::transmute(pubkey_struct) };
+        let pubkey_bytes: [u8; std::mem::size_of::<AndroidPubkey>()] =
+            unsafe { std::mem::transmute(pubkey_struct) };
         let pubkey_b64 = general_purpose::STANDARD.encode(pubkey_bytes);
 
         // Verification should work even with full line (with comment)
