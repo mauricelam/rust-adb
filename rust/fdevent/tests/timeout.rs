@@ -16,7 +16,7 @@ struct TimeoutHandler {
 }
 
 impl FdeventHandler for TimeoutHandler {
-    fn on_event(&mut self, event: &mio::event::Event) {
+    fn on_event(&mut self, event: &mio::event::Event, _registry: &mio::Registry) {
         if event.is_readable() {
             let mut events = self.events.lock().unwrap();
             events.push("read".to_string());
@@ -40,9 +40,7 @@ fn timeout() {
     let handler = Box::new(TimeoutHandler {
         events: events.clone(),
     });
-    let token = fdevent
-        .register(&r, handler, Interest::READABLE)
-        .unwrap();
+    let token = fdevent.register(&r, handler, Interest::READABLE).unwrap();
 
     let delta = Duration::from_millis(100);
     fdevent.set_timeout(&r, token, delta).unwrap();

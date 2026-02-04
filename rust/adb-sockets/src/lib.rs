@@ -17,13 +17,13 @@
 //! This crate provides a Rust implementation of ADB's socket management logic.
 //! It is ported from `original/socket.h` and `original/sockets.cpp`.
 
-use std::collections::HashMap;
-use std::sync::{Arc, Mutex, Weak};
-use std::os::unix::io::RawFd;
-use bytes::Bytes;
 use adb_types::{Apacket, IoVector};
-use mio::{Interest, Token, event::Event, unix::SourceFd};
+use bytes::Bytes;
 use fdevent::fdevent::{Fdevent, FdeventHandler};
+use mio::{event::Event, unix::SourceFd, Interest, Token};
+use std::collections::HashMap;
+use std::os::unix::io::RawFd;
+use std::sync::{Arc, Mutex, Weak};
 
 /// Maximum payload size for an ADB packet.
 /// Ported from `MAX_PAYLOAD` in `original/adb.h`.
@@ -156,7 +156,9 @@ impl SocketRegistry {
     pub fn close_all_sockets(&self, transport_id: u64) {
         let ids: Vec<u32> = {
             let inner = self.inner.lock().unwrap();
-            inner.sockets.values()
+            inner
+                .sockets
+                .values()
                 .filter(|s| s.transport_id() == Some(transport_id))
                 .map(|s| s.id())
                 .collect()
@@ -196,7 +198,13 @@ struct LocalSocketInner {
 
 impl LocalSocket {
     /// Creates a new `LocalSocket`.
-    pub fn new(id: u32, fd: RawFd, registry: Arc<SocketRegistry>, mio_registry: mio::Registry, token: Token) -> Self {
+    pub fn new(
+        id: u32,
+        fd: RawFd,
+        registry: Arc<SocketRegistry>,
+        mio_registry: mio::Registry,
+        token: Token,
+    ) -> Self {
         Self {
             inner: Arc::new(Mutex::new(LocalSocketInner {
                 id,
@@ -279,7 +287,11 @@ impl Socket for LocalSocket {
 
     fn peer_id(&self) -> Option<u32> {
         let inner = self.inner.lock().unwrap();
-        inner.peer.as_ref().and_then(|p| p.upgrade()).map(|p| p.id())
+        inner
+            .peer
+            .as_ref()
+            .and_then(|p| p.upgrade())
+            .map(|p| p.id())
     }
 
     fn transport_id(&self) -> Option<u64> {
@@ -306,13 +318,17 @@ impl LocalSocketInner {
         let mut source = SourceFd(&self.fd);
         match (self.current_interests, new_interests) {
             (Some(_), Some(new)) => {
-                self.mio_registry.reregister(&mut source, self.token, new).ok();
+                self.mio_registry
+                    .reregister(&mut source, self.token, new)
+                    .ok();
             }
             (Some(_), None) => {
                 self.mio_registry.deregister(&mut source).ok();
             }
             (None, Some(new)) => {
-                self.mio_registry.register(&mut source, self.token, new).ok();
+                self.mio_registry
+                    .register(&mut source, self.token, new)
+                    .ok();
             }
             (None, None) => {}
         }
@@ -336,9 +352,17 @@ impl LocalSocketInner {
         };
 
         let new = if interest == Interest::READABLE {
-            if cur.is_writable() { Some(Interest::WRITABLE) } else { None }
+            if cur.is_writable() {
+                Some(Interest::WRITABLE)
+            } else {
+                None
+            }
         } else if interest == Interest::WRITABLE {
-            if cur.is_readable() { Some(Interest::READABLE) } else { None }
+            if cur.is_readable() {
+                Some(Interest::READABLE)
+            } else {
+                None
+            }
         } else {
             Some(cur)
         };
@@ -484,7 +508,9 @@ impl RemoteSocket {
 }
 
 impl Socket for RemoteSocket {
-    fn id(&self) -> u32 { self.id }
+    fn id(&self) -> u32 {
+        self.id
+    }
 
     fn enqueue(&self, data: Bytes) -> i32 {
         let inner = self.inner.lock().unwrap();
@@ -539,7 +565,11 @@ impl Socket for RemoteSocket {
 
     fn peer_id(&self) -> Option<u32> {
         let inner = self.inner.lock().unwrap();
-        inner.peer.as_ref().and_then(|p| p.upgrade()).map(|p| p.id())
+        inner
+            .peer
+            .as_ref()
+            .and_then(|p| p.upgrade())
+            .map(|p| p.id())
     }
 
     fn transport_id(&self) -> Option<u64> {
@@ -562,7 +592,9 @@ pub fn create_local_socket(
 
     // SAFETY: fd is a valid file descriptor.
     let borrowed_fd = unsafe { std::os::unix::io::BorrowedFd::borrow_raw(fd) };
-    let token = fdevent.register(&borrowed_fd, Box::new(socket), Interest::READABLE).unwrap();
+    let token = fdevent
+        .register(&borrowed_fd, Box::new(socket), Interest::READABLE)
+        .unwrap();
     socket_arc.inner.lock().unwrap().token = token;
 
     registry.install(socket_arc.clone());
@@ -585,9 +617,7 @@ pub fn create_remote_socket(
 pub mod internal {
     /// Parses a host service string of the format `[prefix:]serial:command`.
     /// Ported from `internal::parse_host_service` in `original/sockets.cpp`.
-    pub fn parse_host_service<'a>(
-        full_service: &'a str,
-    ) -> Option<(&'a str, &'a str)> {
+    pub fn parse_host_service<'a>(full_service: &'a str) -> Option<(&'a str, &'a str)> {
         if full_service.is_empty() {
             return None;
         }
@@ -619,7 +649,9 @@ pub mod internal {
         let mut offset = 0;
         if command_to_parse.starts_with('[') {
             if let Some(ipv6_end) = command_to_parse.find(']') {
-                if command_to_parse.len() > ipv6_end + 1 && &command_to_parse[ipv6_end+1..ipv6_end+2] == ":" {
+                if command_to_parse.len() > ipv6_end + 1
+                    && &command_to_parse[ipv6_end + 1..ipv6_end + 2] == ":"
+                {
                     offset = ipv6_end + 2;
                     found_address = true;
                 }

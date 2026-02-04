@@ -18,7 +18,7 @@
 //! struct MyHandler;
 //!
 //! impl FdeventHandler for MyHandler {
-//!     fn on_event(&mut self, event: &Event) {
+//!     fn on_event(&mut self, event: &Event, _registry: &mio::Registry) {
 //!         if event.is_readable() {
 //!             println!("readable event for token {:?}", event.token());
 //!         }
