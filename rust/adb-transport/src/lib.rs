@@ -1107,6 +1107,9 @@ mod tests {
         fn set_peer(&self, peer: Arc<dyn Socket>) {
             *self.peer_id.lock().unwrap() = Some(peer.id());
         }
+        fn ack(&self, _acked_bytes: Option<i32>) {
+            // TODO
+        }
     }
 
     struct MockServiceCreator {
