@@ -16,14 +16,14 @@ struct TimeoutHandler {
 }
 
 impl FdeventHandler for TimeoutHandler {
-    fn on_event(&mut self, event: &mio::event::Event, _registry: &mio::Registry) {
+    fn on_event(&mut self, event: &mio::event::Event, _fdevent: &mut Fdevent) {
         if event.is_readable() {
             let mut events = self.events.lock().unwrap();
             events.push("read".to_string());
         }
     }
 
-    fn on_timeout(&mut self) {
+    fn on_timeout(&mut self, _fdevent: &mut Fdevent) {
         let mut events = self.events.lock().unwrap();
         events.push("timeout".to_string());
     }
@@ -40,18 +40,22 @@ fn timeout() {
     let handler = Box::new(TimeoutHandler {
         events: events.clone(),
     });
-    let token = fdevent.register(&r, handler, Interest::READABLE).unwrap();
+    let token = fdevent.register(r.into(), handler, Interest::READABLE).unwrap();
 
     let delta = Duration::from_millis(100);
-    fdevent.set_timeout(&r, token, delta).unwrap();
+    fdevent.set_timeout(token, delta).unwrap();
 
     let handle = thread::spawn(move || {
         // First poll: returns when w.write happens.
         fdevent.poll(None).unwrap();
-        // Wait for timeout to expire.
-        thread::sleep(delta * 2);
-        // Second poll: returns when timeout is processed.
+
+        // Wait for timeout to expire twice.
+        thread::sleep(delta + delta / 2);
         fdevent.poll(None).unwrap();
+
+        thread::sleep(delta);
+        fdevent.poll(None).unwrap();
+
         fdevent
     });
 
@@ -59,7 +63,9 @@ fn timeout() {
     let _fdevent = handle.join().unwrap();
 
     let events = events.lock().unwrap();
-    assert_eq!(2, events.len());
+    // Should have: 1 read, 2 timeouts
+    assert_eq!(3, events.len());
     assert_eq!("read", events[0]);
     assert_eq!("timeout", events[1]);
+    assert_eq!("timeout", events[2]);
 }

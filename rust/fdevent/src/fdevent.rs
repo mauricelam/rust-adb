@@ -10,7 +10,7 @@ use mio::unix::SourceFd;
 use mio::{Events, Interest, Poll, Token, Waker};
 use std::collections::HashMap;
 use std::io;
-use std::os::unix::io::AsRawFd;
+use std::os::unix::io::{AsRawFd, OwnedFd};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use thiserror::Error;
@@ -38,10 +38,10 @@ pub trait FdeventHandler: Send {
     /// # Arguments
     ///
     /// * `event` - The `mio::event::Event` containing the details of the event.
-    fn on_event(&mut self, event: &mio::event::Event, registry: &mio::Registry);
+    fn on_event(&mut self, event: &mio::event::Event, fdevent: &mut Fdevent);
 
     /// Called when the timeout set for this file descriptor expires.
-    fn on_timeout(&mut self);
+    fn on_timeout(&mut self, fdevent: &mut Fdevent);
 }
 
 const WAKER_TOKEN: Token = Token(usize::MAX);
@@ -53,7 +53,7 @@ const WAKER_TOKEN: Token = Token(usize::MAX);
 pub struct FdeventHandle {
     /// The queue of functions to be executed on the looper thread.
     /// Ported from `fdevent_context::run_queue_`.
-    run_queue: Arc<Mutex<Vec<Box<dyn FnOnce() + Send>>>>,
+    run_queue: Arc<Mutex<Vec<Box<dyn FnOnce(&mut Fdevent) + Send>>>>,
     /// The waker used to interrupt the poll call when a new function is queued.
     /// Ported from the interrupt mechanism used in `fdevent_context::Interrupt()`.
     waker: Arc<Waker>,
@@ -69,7 +69,7 @@ impl FdeventHandle {
     /// * `f` - The function to be executed.
     pub fn run_on_looper<F>(&self, f: F)
     where
-        F: FnOnce() + Send + 'static,
+        F: FnOnce(&mut Fdevent) + Send + 'static,
     {
         {
             let mut queue = self.run_queue.lock().unwrap();
@@ -95,12 +95,14 @@ pub struct Fdevent {
     /// A map from tokens to their corresponding event handlers.
     /// Ported from `fdevent_context::installed_fdevents_`.
     handlers: HashMap<Token, Box<dyn FdeventHandler>>,
+    /// A map from tokens to their owned file descriptors.
+    fds: HashMap<Token, OwnedFd>,
     /// A map from tokens to their registered timeouts.
     /// Ported from the `timeout` member in the C++ `fdevent` struct.
     timeouts: HashMap<Token, (Instant, Duration)>,
     /// The queue of functions to be executed on the looper thread.
     /// Ported from `fdevent_context::run_queue_`.
-    run_queue: Arc<Mutex<Vec<Box<dyn FnOnce() + Send>>>>,
+    run_queue: Arc<Mutex<Vec<Box<dyn FnOnce(&mut Fdevent) + Send>>>>,
     /// The waker used to interrupt the poll call.
     /// Ported from the interrupt mechanism used in `fdevent_context::Interrupt()`.
     waker: Arc<Waker>,
@@ -122,6 +124,7 @@ impl Fdevent {
             poll,
             events,
             handlers: HashMap::new(),
+            fds: HashMap::new(),
             timeouts: HashMap::new(),
             run_queue: Arc::new(Mutex::new(Vec::new())),
             waker,
@@ -152,9 +155,9 @@ impl Fdevent {
     /// * `fd` - The file descriptor to monitor.
     /// * `handler` - The handler to execute when events occur.
     /// * `interest` - The initial set of events to monitor (e.g., READABLE).
-    pub fn register<T: AsRawFd>(
+    pub fn register(
         &mut self,
-        fd: &T,
+        fd: OwnedFd,
         handler: Box<dyn FdeventHandler>,
         interest: Interest,
     ) -> FdeventResult<Token> {
@@ -171,6 +174,7 @@ impl Fdevent {
         )));
 
         self.handlers.insert(token, handler);
+        self.fds.insert(token, fd);
         Ok(token)
     }
 
@@ -180,15 +184,13 @@ impl Fdevent {
     ///
     /// # Arguments
     ///
-    /// * `fd` - The file descriptor.
     /// * `token` - The token returned by [`Self::register`].
     /// * `interest` - The new set of events to monitor.
-    pub fn reregister<T: AsRawFd>(
-        &mut self,
-        fd: &T,
-        token: Token,
-        interest: Interest,
-    ) -> FdeventResult<()> {
+    pub fn reregister(&mut self, token: Token, interest: Interest) -> FdeventResult<()> {
+        let fd = self.fds.get(&token).ok_or_else(|| {
+            FdeventError::Io(io::Error::new(io::ErrorKind::NotFound, "Token not found"))
+        })?;
+
         #[cfg(unix)]
         self.poll
             .registry()
@@ -204,13 +206,17 @@ impl Fdevent {
 
     /// Unregisters a file descriptor and removes its handler.
     ///
-    /// This corresponds to `fdevent_destroy` in C++.
+    /// This corresponds to `fdevent_destroy` in C++, returning the file
+    /// descriptor that was owned by the `fdevent` object.
     ///
     /// # Arguments
     ///
-    /// * `fd` - The file descriptor.
     /// * `token` - The token returned by [`Self::register`].
-    pub fn unregister<T: AsRawFd>(&mut self, fd: &T, token: Token) -> FdeventResult<()> {
+    pub fn unregister(&mut self, token: Token) -> FdeventResult<OwnedFd> {
+        let fd = self.fds.remove(&token).ok_or_else(|| {
+            FdeventError::Io(io::Error::new(io::ErrorKind::NotFound, "Token not found"))
+        })?;
+
         #[cfg(unix)]
         self.poll
             .registry()
@@ -223,7 +229,7 @@ impl Fdevent {
 
         self.handlers.remove(&token);
         self.timeouts.remove(&token);
-        Ok(())
+        Ok(fd)
     }
 
     /// Sets a timeout for a registered file descriptor.
@@ -233,15 +239,15 @@ impl Fdevent {
     ///
     /// # Arguments
     ///
-    /// * `_fd` - The file descriptor (kept for API compatibility with C++).
     /// * `token` - The token returned by [`Self::register`].
     /// * `timeout` - The timeout duration.
-    pub fn set_timeout<T: AsRawFd>(
-        &mut self,
-        _fd: &T,
-        token: Token,
-        timeout: Duration,
-    ) -> FdeventResult<()> {
+    pub fn set_timeout(&mut self, token: Token, timeout: Duration) -> FdeventResult<()> {
+        if !self.fds.contains_key(&token) {
+            return Err(FdeventError::Io(io::Error::new(
+                io::ErrorKind::NotFound,
+                "Token not found",
+            )));
+        }
         self.timeouts.insert(token, (Instant::now(), timeout));
         Ok(())
     }
@@ -290,16 +296,34 @@ impl Fdevent {
         }
 
         self.poll.poll(&mut self.events, poll_timeout)?;
-        for event in self.events.iter() {
-            if event.token() == WAKER_TOKEN {
+        let now = Instant::now();
+
+        // To allow handlers to call methods on Fdevent (which requires &mut self),
+        // we take the events and handlers out of self temporarily.
+        let events = std::mem::replace(&mut self.events, Events::with_capacity(0));
+        let tokens: Vec<Token> = events.iter().map(|e| e.token()).collect();
+
+        for token in tokens {
+            if token == WAKER_TOKEN {
                 continue;
             }
-            if let Some(handler) = self.handlers.get_mut(&event.token()) {
-                handler.on_event(event, self.poll.registry());
+
+            if let Some(mut handler) = self.handlers.remove(&token) {
+                if let Some(event) = events.iter().find(|e| e.token() == token) {
+                    handler.on_event(event, self);
+                }
+
+                if self.fds.contains_key(&token) && !self.handlers.contains_key(&token) {
+                    self.handlers.insert(token, handler);
+                }
+
+                if let Some(timeout_data) = self.timeouts.get_mut(&token) {
+                    timeout_data.0 = now;
+                }
             }
         }
+        self.events = events;
 
-        let now = Instant::now();
         let mut expired = Vec::new();
         for (token, (start, duration)) in &self.timeouts {
             if now.duration_since(*start) >= *duration {
@@ -308,10 +332,17 @@ impl Fdevent {
         }
 
         for token in expired {
-            if let Some(handler) = self.handlers.get_mut(&token) {
-                handler.on_timeout();
+            if let Some(mut handler) = self.handlers.remove(&token) {
+                handler.on_timeout(self);
+
+                if self.fds.contains_key(&token) && !self.handlers.contains_key(&token) {
+                    self.handlers.insert(token, handler);
+                }
+
+                if let Some(timeout_data) = self.timeouts.get_mut(&token) {
+                    timeout_data.0 = now;
+                }
             }
-            self.timeouts.remove(&token);
         }
 
         self.flush_run_queue();
@@ -323,7 +354,7 @@ impl Fdevent {
     /// This is a convenience method that calls `get_handle().run_on_looper(f)`.
     pub fn run_on_looper<F>(&mut self, f: F)
     where
-        F: FnOnce() + Send + 'static,
+        F: FnOnce(&mut Fdevent) + Send + 'static,
     {
         self.get_handle().run_on_looper(f);
     }
@@ -338,7 +369,7 @@ impl Fdevent {
             let mut pending: Vec<_> = queue.drain(..).collect();
             drop(queue);
             for f in pending.drain(..) {
-                f();
+                f(self);
             }
         }
     }

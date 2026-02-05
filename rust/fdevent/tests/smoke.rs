@@ -4,11 +4,9 @@
 //! chain of socket pairs and passing a message through them.
 
 use fdevent::fdevent::{Fdevent, FdeventHandler};
-use mio::unix::SourceFd;
 use mio::{Interest, Token};
 use std::collections::VecDeque;
 use std::io::{self, Read, Write};
-use std::os::unix::io::AsRawFd;
 use std::os::unix::net::UnixStream;
 use std::sync::{Arc, Mutex};
 use std::thread;
@@ -26,7 +24,7 @@ struct ReaderHandler {
 }
 
 impl FdeventHandler for ReaderHandler {
-    fn on_event(&mut self, _event: &mio::event::Event, registry: &mio::Registry) {
+    fn on_event(&mut self, _event: &mio::event::Event, fdevent: &mut Fdevent) {
         let mut state = self.state.lock().unwrap();
         let mut buf = [0; 1024];
         let mut added = false;
@@ -44,16 +42,10 @@ impl FdeventHandler for ReaderHandler {
             }
         }
         if added {
-            registry
-                .reregister(
-                    &mut SourceFd(&state.writer.as_raw_fd()),
-                    state.writer_token,
-                    Interest::WRITABLE,
-                )
-                .ok();
+            fdevent.reregister(state.writer_token, Interest::WRITABLE).ok();
         }
     }
-    fn on_timeout(&mut self) {}
+    fn on_timeout(&mut self, _fdevent: &mut Fdevent) {}
 }
 
 struct WriterHandler {
@@ -61,7 +53,7 @@ struct WriterHandler {
 }
 
 impl FdeventHandler for WriterHandler {
-    fn on_event(&mut self, _event: &mio::event::Event, registry: &mio::Registry) {
+    fn on_event(&mut self, _event: &mio::event::Event, fdevent: &mut Fdevent) {
         let mut state = self.state.lock().unwrap();
         loop {
             if let Some(b) = state.queue.pop_front() {
@@ -79,21 +71,15 @@ impl FdeventHandler for WriterHandler {
                 }
             } else {
                 // Queue empty, stop listening for WRITABLE
-                registry
-                    .reregister(
-                        &mut SourceFd(&state.writer.as_raw_fd()),
-                        state.writer_token,
-                        Interest::READABLE,
-                    )
-                    .ok();
+                fdevent.reregister(state.writer_token, Interest::READABLE).ok();
                 break;
             }
         }
     }
-    fn on_timeout(&mut self) {}
+    fn on_timeout(&mut self, _fdevent: &mut Fdevent) {}
 }
 
-/// Tests passing a message through a chain of 10 handlers.
+/// Tests passing a message through a chain of 512 handlers.
 #[test]
 fn smoke() {
     let mut fdevent = Fdevent::new().unwrap();
@@ -105,7 +91,7 @@ fn smoke() {
     let mut read_fds = vec![first_r];
     let mut write_fds = Vec::new();
 
-    for _ in 0..10 {
+    for _ in 0..512 {
         let (r, w) = UnixStream::pair().unwrap();
         r.set_nonblocking(true).unwrap();
         w.set_nonblocking(true).unwrap();
@@ -118,10 +104,14 @@ fn smoke() {
     last_w.set_nonblocking(true).unwrap();
     write_fds.push(last_w);
 
-    for i in 0..read_fds.len() {
+    let num_pipes = read_fds.len();
+    for _ in 0..num_pipes {
+        let read_fd = read_fds.remove(0);
+        let write_fd = write_fds.remove(0);
+
         let state = Arc::new(Mutex::new(SharedPipe {
-            reader: read_fds[i].try_clone().unwrap(),
-            writer: write_fds[i].try_clone().unwrap(),
+            reader: read_fd.try_clone().unwrap(),
+            writer: write_fd.try_clone().unwrap(),
             queue: VecDeque::new(),
             writer_token: Token(0), // Temporary
         }));
@@ -130,7 +120,7 @@ fn smoke() {
             state: state.clone(),
         });
         let w_token = fdevent
-            .register(&write_fds[i], writer_handler, Interest::WRITABLE)
+            .register(write_fd.into(), writer_handler, Interest::WRITABLE)
             .unwrap();
         state.lock().unwrap().writer_token = w_token;
 
@@ -138,7 +128,7 @@ fn smoke() {
             state: state.clone(),
         });
         fdevent
-            .register(&read_fds[i], reader_handler, Interest::READABLE)
+            .register(read_fd.into(), reader_handler, Interest::READABLE)
             .unwrap();
     }
 
