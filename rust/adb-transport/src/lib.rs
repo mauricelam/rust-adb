@@ -21,16 +21,16 @@
 //! - original/transport.cpp
 //! - original/adb.cpp (parse_banner)
 
-use std::sync::atomic::{AtomicU64, AtomicBool, AtomicI32, Ordering};
-use std::sync::{Arc, Mutex, OnceLock};
-use std::os::unix::io::OwnedFd;
-use std::io::{Read, Write};
 use std::fs::File;
+use std::io::{Read, Write};
+use std::os::unix::io::OwnedFd;
+use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU64, Ordering};
+use std::sync::{Arc, Mutex, OnceLock};
 
+use adb_protocol::{ConnectionState, TransportType, A_VERSION_MIN, MAX_PAYLOAD};
 use adb_sockets::{Socket, Transport};
 use adb_types::{Amessage, Apacket, Block};
 use rust_adb_crypto::Key;
-use adb_protocol::{TransportType, ConnectionState, MAX_PAYLOAD, A_VERSION_MIN};
 
 /// Ported from original/adb.h: `using TransportId = uint64_t;`
 pub type TransportId = u64;
@@ -357,7 +357,8 @@ impl ATransport {
 
     pub fn update_version(&self, version: u32, max_payload: u32) {
         let version = std::cmp::min(version, adb_protocol::A_VERSION);
-        self.protocol_version.store(version as i32, Ordering::SeqCst);
+        self.protocol_version
+            .store(version as i32, Ordering::SeqCst);
         let max_payload = std::cmp::min(max_payload as usize, adb_protocol::MAX_PAYLOAD);
         *self.max_payload.lock().unwrap() = max_payload;
     }
@@ -384,33 +385,6 @@ impl adb_sockets::Transport for ATransport {
         }
 
         self.send_packet(p);
-    }
-
-    fn get_max_payload(&self) -> usize {
-        self.get_max_payload()
-    }
-
-    fn supports_delayed_ack(&self) -> bool {
-        self.has_feature(FEATURE_DELAYED_ACK)
-    }
-}
-
-impl adb_sockets::Transport for ATransport {
-    fn id(&self) -> u64 {
-        self.id
-    }
-
-    fn send_packet(&self, packet: Apacket) {
-        self.write(packet);
-    }
-
-    fn send_ready(&self, local: u32, remote: u32, ack_bytes: u32) {
-        let mut p = Apacket::default();
-        p.msg.command = adb_protocol::A_OKAY;
-        p.msg.arg0 = local;
-        p.msg.arg1 = remote;
-        p.msg.data_length = ack_bytes;
-        self.write(p);
     }
 
     fn get_max_payload(&self) -> usize {
@@ -639,7 +613,11 @@ fn handle_open(t: &Arc<ATransport>, p: &Apacket) {
     if let Some(s) = s {
         let registry = t.registry.lock().unwrap();
         if let Some(registry) = registry.as_ref() {
-            let peer = adb_sockets::create_remote_socket(p.msg.arg0, t.clone() as Arc<dyn Transport>, registry.clone());
+            let peer = adb_sockets::create_remote_socket(
+                p.msg.arg0,
+                t.clone() as Arc<dyn Transport>,
+                registry.clone(),
+            );
             s.set_peer(peer.clone() as Arc<dyn adb_sockets::Socket>);
             peer.set_peer(s.clone() as Arc<dyn adb_sockets::Socket>);
             s.ready();
@@ -655,8 +633,11 @@ fn handle_okay(t: &Arc<ATransport>, p: &Apacket) {
         if let Some(registry) = registry.as_ref() {
             if let Some(s) = registry.find_local_socket(p.msg.arg1, 0) {
                 if s.peer_id().is_none() {
-                    let peer =
-                        adb_sockets::create_remote_socket(p.msg.arg0, t.clone() as Arc<dyn Transport>, registry.clone());
+                    let peer = adb_sockets::create_remote_socket(
+                        p.msg.arg0,
+                        t.clone() as Arc<dyn Transport>,
+                        registry.clone(),
+                    );
                     s.set_peer(peer.clone() as Arc<dyn adb_sockets::Socket>);
                     peer.set_peer(s.clone() as Arc<dyn adb_sockets::Socket>);
                 }
@@ -981,16 +962,26 @@ mod tests {
     }
 
     impl Socket for MockSocket {
-        fn id(&self) -> u32 { self.id }
+        fn id(&self) -> u32 {
+            self.id
+        }
         fn enqueue(&self, data: bytes::Bytes) -> i32 {
             self.enqueued.lock().unwrap().push(data);
             0
         }
-        fn ready(&self) { self.readied.store(true, Ordering::SeqCst); }
+        fn ready(&self) {
+            self.readied.store(true, Ordering::SeqCst);
+        }
         fn shutdown(&self) {}
-        fn close(&self) { self.closed.store(true, Ordering::SeqCst); }
-        fn peer_id(&self) -> Option<u32> { *self.peer_id.lock().unwrap() }
-        fn transport_id(&self) -> Option<u64> { None }
+        fn close(&self) {
+            self.closed.store(true, Ordering::SeqCst);
+        }
+        fn peer_id(&self) -> Option<u32> {
+            *self.peer_id.lock().unwrap()
+        }
+        fn transport_id(&self) -> Option<u64> {
+            None
+        }
         fn set_peer(&self, peer: Arc<dyn Socket>) {
             *self.peer_id.lock().unwrap() = Some(peer.id());
         }
@@ -1001,7 +992,11 @@ mod tests {
     }
 
     impl ServiceSocketCreator for MockServiceCreator {
-        fn create_local_service_socket(&self, _name: &str, transport: &Arc<ATransport>) -> Option<Arc<dyn Socket>> {
+        fn create_local_service_socket(
+            &self,
+            _name: &str,
+            transport: &Arc<ATransport>,
+        ) -> Option<Arc<dyn Socket>> {
             let registry = transport.registry.lock().unwrap();
             if let Some(registry) = registry.as_ref() {
                 registry.install(self.socket.clone());
@@ -1012,11 +1007,17 @@ mod tests {
 
     #[test]
     fn test_handle_open() {
-        let t = Arc::new(ATransport::new(TransportType::Usb, Box::new(|_| ReconnectResult::Abort), ConnectionState::Device));
+        let t = Arc::new(ATransport::new(
+            TransportType::Usb,
+            Box::new(|_| ReconnectResult::Abort),
+            ConnectionState::Device,
+        ));
         let registry = Arc::new(adb_sockets::SocketRegistry::new());
         *t.registry.lock().unwrap() = Some(registry.clone());
         let mock_socket = Arc::new(MockSocket::new(100));
-        *t.service_creator.lock().unwrap() = Some(Box::new(MockServiceCreator { socket: mock_socket.clone() }));
+        *t.service_creator.lock().unwrap() = Some(Box::new(MockServiceCreator {
+            socket: mock_socket.clone(),
+        }));
 
         let mut p = Apacket::default();
         p.msg.command = adb_protocol::A_OPEN;
@@ -1033,7 +1034,11 @@ mod tests {
 
     #[test]
     fn test_handle_write() {
-        let t = Arc::new(ATransport::new(TransportType::Usb, Box::new(|_| ReconnectResult::Abort), ConnectionState::Device));
+        let t = Arc::new(ATransport::new(
+            TransportType::Usb,
+            Box::new(|_| ReconnectResult::Abort),
+            ConnectionState::Device,
+        ));
         let registry = Arc::new(adb_sockets::SocketRegistry::new());
         *t.registry.lock().unwrap() = Some(registry.clone());
         let mock_socket = Arc::new(MockSocket::new(100));
@@ -1064,11 +1069,21 @@ pub trait Connection: Send + Sync {
     /// Note: Implementation is pending the porting of the `adb::tls::TlsConnection` library.
     fn do_tls_handshake(&self, key: &Key, auth_key: Option<&mut String>) -> bool;
     fn reset(&self);
-    fn supports_detach(&self) -> bool { false }
-    fn attach(&self) -> Result<(), String> { Err("transport type doesn't support attach".to_string()) }
-    fn detach(&self) -> Result<(), String> { Err("transport type doesn't support detach".to_string()) }
-    fn negotiated_speed_mbps(&self) -> u64 { 0 }
-    fn max_speed_mbps(&self) -> u64 { 0 }
+    fn supports_detach(&self) -> bool {
+        false
+    }
+    fn attach(&self) -> Result<(), String> {
+        Err("transport type doesn't support attach".to_string())
+    }
+    fn detach(&self) -> Result<(), String> {
+        Err("transport type doesn't support detach".to_string())
+    }
+    fn negotiated_speed_mbps(&self) -> u64 {
+        0
+    }
+    fn max_speed_mbps(&self) -> u64 {
+        0
+    }
 }
 
 /// Ported from original/transport.h: `struct BlockingConnection`
@@ -1104,7 +1119,8 @@ impl BlockingConnection for FdConnection {
         file.read_exact(&mut header_buf)?;
 
         // SAFETY: Amessage is repr(C) and we've read the correct number of bytes.
-        let msg: Amessage = unsafe { std::ptr::read_unaligned(header_buf.as_ptr() as *const Amessage) };
+        let msg: Amessage =
+            unsafe { std::ptr::read_unaligned(header_buf.as_ptr() as *const Amessage) };
 
         let mut payload = Block::new(msg.data_length as usize);
         if msg.data_length > 0 {
@@ -1117,7 +1133,8 @@ impl BlockingConnection for FdConnection {
     fn write(&self, packet: &Apacket) -> std::io::Result<()> {
         let mut file = self.write_file.lock().unwrap();
         // SAFETY: Amessage is repr(C).
-        let header_bytes: [u8; std::mem::size_of::<Amessage>()] = unsafe { std::mem::transmute(packet.msg) };
+        let header_bytes: [u8; std::mem::size_of::<Amessage>()] =
+            unsafe { std::mem::transmute(packet.msg) };
         file.write_all(&header_bytes)?;
         if !packet.payload.is_empty() {
             file.write_all(packet.payload.get_ref())?;
