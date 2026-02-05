@@ -60,6 +60,7 @@ dependencies = [
 name = "adb-sockets"
 version = "0.1.0"
 dependencies = [
+ "adb-protocol",
  "adb-types",
  "adb_io",
  "anyhow",

@@ -106,16 +106,13 @@ Each step involves porting 1-2 files and implementing a corresponding testing st
     - Port `socket_spec_test.cpp`.
     - Unit tests with a wide range of valid and invalid spec strings.
 
-### Step 6: Sockets Management [In Progress]
+### Step 6: Sockets Management [Done]
 - **Files**: `socket.h`, `sockets.cpp`
 - **Description**: Port the `asocket` structure and management logic.
 - **Testing**:
     - Port `socket_test.cpp`.
     - Add missing tests: `close_socket_with_packet`, `read_from_closing_socket`, `write_error_when_having_packets`, `flush_after_shutdown`, `close_socket_in_CLOSE_WAIT_state`.
     - Integration test with `mock_server.rs` to verify socket creation and data flow.
-- **Notes**:
-    - **Gaps**:
-        - `connect_to_remote` and `connect_to_smartsocket`: These key dispatching functions from `sockets.cpp` are missing.
 
 ### Step 7: ADB Protocol Constants and Packet Reading [Done]
 - **Files**: `adb.h`, `apacket_reader.h`
