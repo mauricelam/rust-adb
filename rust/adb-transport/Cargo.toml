@@ -5,6 +5,7 @@ edition = "2021"
 
 [dependencies]
 adb-protocol = { path = "../adb-protocol" }
+adb-sockets = { path = "../adb-sockets" }
 adb-types = { path = "../adb-types" }
 adb-utils = { path = "../adb-utils" }
 sysdeps = { path = "../sysdeps" }

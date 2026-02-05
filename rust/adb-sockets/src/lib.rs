@@ -17,6 +17,9 @@
 //! This crate provides a Rust implementation of ADB's socket management logic.
 //! It is ported from `original/socket.h` and `original/sockets.cpp`.
 
+use adb_protocol::{
+    A_CLSE, A_OKAY, A_OPEN, A_WRTE, INITIAL_DELAYED_ACK_BYTES, MAX_PAYLOAD,
+};
 use adb_types::{Apacket, Block, IoVector};
 use bytes::Bytes;
 use fdevent::fdevent::{Fdevent, FdeventHandler};
@@ -24,21 +27,6 @@ use mio::{event::Event, unix::SourceFd, Interest, Token};
 use std::collections::HashMap;
 use std::os::unix::io::RawFd;
 use std::sync::{Arc, Mutex, Weak};
-
-/// Maximum payload size for an ADB packet.
-/// Ported from `MAX_PAYLOAD` in `original/adb.h`.
-pub const MAX_PAYLOAD: usize = 1024 * 1024;
-
-// ADB protocol command constants.
-// Ported from `original/adb.h`.
-pub const A_SYNC: u32 = 0x434e5953;
-pub const A_CNXN: u32 = 0x4e584e43;
-pub const A_OPEN: u32 = 0x4e45504f;
-pub const A_OKAY: u32 = 0x59414b4f;
-pub const A_CLSE: u32 = 0x45534c43;
-pub const A_WRTE: u32 = 0x45545257;
-pub const A_AUTH: u32 = 0x48545541;
-pub const A_STLS: u32 = 0x534C5453;
 
 /// Trait representing a generic socket in the ADB system.
 /// This mirrors the `asocket` struct functionality in `original/socket.h`.
@@ -58,6 +46,14 @@ pub trait Socket: Send + Sync {
     fn peer_id(&self) -> Option<u32>;
     /// Returns the transport ID associated with the socket, if any.
     fn transport_id(&self) -> Option<u64>;
+    /// Returns the socket as a `LocalSocket`, if it is one.
+    fn as_local_socket(&self) -> Option<&LocalSocket> {
+        None
+    }
+    /// Detaches the peer from this socket and returns it.
+    fn take_peer(&self) -> Option<Arc<dyn Socket>> {
+        None
+    }
 }
 
 /// Trait representing a transport that can send ADB packets.
@@ -235,6 +231,48 @@ impl LocalSocket {
         let mut inner = self.inner.lock().unwrap();
         inner.transport = Some(transport);
     }
+
+    /// Returns the associated transport, if any.
+    pub fn get_transport(&self) -> Option<Arc<dyn Transport>> {
+        let inner = self.inner.lock().unwrap();
+        inner.transport.clone()
+    }
+
+    /// Returns the file descriptor associated with the socket.
+    pub fn fd(&self) -> RawFd {
+        self.inner.lock().unwrap().fd
+    }
+
+    /// Returns the socket registry associated with the socket.
+    pub fn get_registry(&self) -> Option<Arc<SocketRegistry>> {
+        let inner = self.inner.lock().unwrap();
+        inner.registry.upgrade()
+    }
+}
+
+/// Connects a local socket to a remote service.
+/// Ported from `connect_to_remote` in `original/sockets.cpp`.
+pub fn connect_to_remote(socket: &LocalSocket, destination: &str) {
+    let inner = socket.inner.lock().unwrap();
+    if let Some(transport) = &inner.transport {
+        log::debug!("LS({}): connect({})", inner.id, destination);
+        let mut p = Apacket::default();
+        p.msg.command = A_OPEN;
+        p.msg.arg0 = inner.id;
+
+        if transport.supports_delayed_ack() {
+            p.msg.arg1 = INITIAL_DELAYED_ACK_BYTES as u32;
+        }
+
+        // adbd used to expect a null-terminated string.
+        // Keep doing so to maintain backward compatibility.
+        let mut payload = destination.as_bytes().to_vec();
+        payload.push(0);
+        p.msg.data_length = payload.len() as u32;
+        p.payload = Block(std::io::Cursor::new(payload));
+
+        transport.send_packet(p);
+    }
 }
 
 impl Socket for LocalSocket {
@@ -297,6 +335,15 @@ impl Socket for LocalSocket {
     fn transport_id(&self) -> Option<u64> {
         let inner = self.inner.lock().unwrap();
         inner.transport.as_ref().map(|t| t.id())
+    }
+
+    fn as_local_socket(&self) -> Option<&LocalSocket> {
+        Some(self)
+    }
+
+    fn take_peer(&self) -> Option<Arc<dyn Socket>> {
+        let mut inner = self.inner.lock().unwrap();
+        inner.peer.take().and_then(|p| p.upgrade())
     }
 }
 

@@ -330,6 +330,33 @@ impl ATransport {
     }
 }
 
+impl adb_sockets::Transport for ATransport {
+    fn id(&self) -> u64 {
+        self.id
+    }
+
+    fn send_packet(&self, packet: Apacket) {
+        self.write(packet);
+    }
+
+    fn send_ready(&self, local: u32, remote: u32, ack_bytes: u32) {
+        let mut p = Apacket::default();
+        p.msg.command = adb_protocol::A_OKAY;
+        p.msg.arg0 = local;
+        p.msg.arg1 = remote;
+        p.msg.data_length = ack_bytes;
+        self.write(p);
+    }
+
+    fn get_max_payload(&self) -> usize {
+        self.get_max_payload()
+    }
+
+    fn supports_delayed_ack(&self) -> bool {
+        self.has_feature(FEATURE_DELAYED_ACK)
+    }
+}
+
 pub fn pending_list() -> &'static Mutex<Vec<Arc<ATransport>>> {
     static LIST: OnceLock<Mutex<Vec<Arc<ATransport>>>> = OnceLock::new();
     LIST.get_or_init(|| Mutex::new(Vec::new()))

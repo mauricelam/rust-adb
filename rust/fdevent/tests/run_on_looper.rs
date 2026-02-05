@@ -17,7 +17,7 @@ fn run_on_looper_thread_queued() {
     let handle = thread::spawn(move || {
         for i in 0..1000 {
             let vec_inner = vec_clone.clone();
-            fdevent.run_on_looper(move || {
+            fdevent.run_on_looper(move |_| {
                 let mut v = vec_inner.lock().unwrap();
                 v.push(i);
             });
@@ -43,9 +43,9 @@ fn run_on_looper_thread_reentrant() {
     let b_clone = b.clone();
     let handle = fdevent.get_handle();
 
-    fdevent.run_on_looper(move || {
+    fdevent.run_on_looper(move |_| {
         let b_clone2 = b_clone.clone();
-        handle.run_on_looper(move || {
+        handle.run_on_looper(move |_| {
             let mut b = b_clone2.lock().unwrap();
             *b = true;
         });

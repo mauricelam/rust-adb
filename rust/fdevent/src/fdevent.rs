@@ -53,7 +53,7 @@ const WAKER_TOKEN: Token = Token(usize::MAX);
 pub struct FdeventHandle {
     /// The queue of functions to be executed on the looper thread.
     /// Ported from `fdevent_context::run_queue_`.
-    run_queue: Arc<Mutex<Vec<Box<dyn FnOnce() + Send>>>>,
+    run_queue: Arc<Mutex<Vec<Box<dyn FnOnce(&mut Fdevent) + Send>>>>,
     /// The waker used to interrupt the poll call when a new function is queued.
     /// Ported from the interrupt mechanism used in `fdevent_context::Interrupt()`.
     waker: Arc<Waker>,
@@ -66,10 +66,10 @@ impl FdeventHandle {
     ///
     /// # Arguments
     ///
-    /// * `f` - The function to be executed.
+    /// * `f` - The function to be executed. It receives a reference to the `Fdevent` context.
     pub fn run_on_looper<F>(&self, f: F)
     where
-        F: FnOnce() + Send + 'static,
+        F: FnOnce(&mut Fdevent) + Send + 'static,
     {
         {
             let mut queue = self.run_queue.lock().unwrap();
@@ -100,7 +100,7 @@ pub struct Fdevent {
     timeouts: HashMap<Token, (Instant, Duration)>,
     /// The queue of functions to be executed on the looper thread.
     /// Ported from `fdevent_context::run_queue_`.
-    run_queue: Arc<Mutex<Vec<Box<dyn FnOnce() + Send>>>>,
+    run_queue: Arc<Mutex<Vec<Box<dyn FnOnce(&mut Fdevent) + Send>>>>,
     /// The waker used to interrupt the poll call.
     /// Ported from the interrupt mechanism used in `fdevent_context::Interrupt()`.
     waker: Arc<Waker>,
@@ -323,7 +323,7 @@ impl Fdevent {
     /// This is a convenience method that calls `get_handle().run_on_looper(f)`.
     pub fn run_on_looper<F>(&mut self, f: F)
     where
-        F: FnOnce() + Send + 'static,
+        F: FnOnce(&mut Fdevent) + Send + 'static,
     {
         self.get_handle().run_on_looper(f);
     }
@@ -338,7 +338,7 @@ impl Fdevent {
             let mut pending: Vec<_> = queue.drain(..).collect();
             drop(queue);
             for f in pending.drain(..) {
-                f();
+                f(self);
             }
         }
     }
