@@ -48,7 +48,7 @@ graph TD
 
 Each step involves porting 1-2 files and implementing a corresponding testing strategy.
 
-### Step 1: Trace and FD Management
+### Step 1: Trace and FD Management [Done]
 - **Files**: `adb_trace.h`, `adb_unique_fd.h`
 - **Description**: Port the logging/tracing macros and the `unique_fd` wrapper.
 - **Testing**: 
@@ -59,7 +59,7 @@ Each step involves porting 1-2 files and implementing a corresponding testing st
     - For FD management, prefer to use the rust stdlib. Move semantics and RAII are already tightly baked in to Rust.
     - If it makes sense for callers to use the `tracing` and stdlib APIs directly, simply write some documentation explaining how to do the translation.
 
-### Step 2: System Dependencies and Basic I/O
+### Step 2: System Dependencies and Basic I/O [In Progress]
 - **Files**: `sysdeps.h`, `adb_io.h`
 - **Description**: Port platform-specific abstractions (wrappers for `read`, `write`, `close`) and the `ReadFdExactly`/`WriteFdExactly` utilities.
 - **Testing**:
@@ -76,7 +76,7 @@ Each step involves porting 1-2 files and implementing a corresponding testing st
         - `WriteFdFmt`: Needs to be implemented (possibly as a macro).
         - `set_file_block_mode`: Needs to be ported to `sysdeps` or `adb-utils`.
 
-### Step 3: Event Loop Abstraction
+### Step 3: Event Loop Abstraction [In Progress]
 - **Files**: `fdevent/fdevent.h`
 - **Description**: Port the `fdevent` context and event handling logic. This is critical for the asynchronous nature of ADB.
 - **Testing**:
@@ -92,21 +92,21 @@ Each step involves porting 1-2 files and implementing a corresponding testing st
         - `fdevent_set_timeout`: The original C++ version says timeouts are not defused automatically and trigger repeatedly. The Rust implementation currently removes them after one trigger. This needs to be unified.
         - `Fdevent::unregister`: Should return the `OwnedFd` to match `fdevent_destroy` (which calls `fdevent_release` in C++).
 
-### Step 4: Core Data Structures
+### Step 4: Core Data Structures [Done]
 - **Files**: `types.h`
 - **Description**: Port `Block`, `amessage`, `apacket`, and `IOVector`. These form the backbone of packet handling.
 - **Testing**:
     - Port `types_test.cpp`.
     - Fuzzing `IOVector` operations (append, drop, coalesce).
 
-### Step 5: Socket Specifications
+### Step 5: Socket Specifications [Done]
 - **Files**: `socket_spec.h`
 - **Description**: Port parsing logic for socket specifications (e.g., `tcp:5555`, `localabstract:adb`).
 - **Testing**:
     - Port `socket_spec_test.cpp`.
     - Unit tests with a wide range of valid and invalid spec strings.
 
-### Step 6: Sockets Management
+### Step 6: Sockets Management [In Progress]
 - **Files**: `socket.h`, `sockets.cpp`
 - **Description**: Port the `asocket` structure and management logic.
 - **Testing**:
@@ -117,21 +117,21 @@ Each step involves porting 1-2 files and implementing a corresponding testing st
     - **Gaps**:
         - `connect_to_remote` and `connect_to_smartsocket`: These key dispatching functions from `sockets.cpp` are missing.
 
-### Step 7: ADB Protocol Constants and Packet Reading
+### Step 7: ADB Protocol Constants and Packet Reading [Done]
 - **Files**: `adb.h`, `apacket_reader.h`
 - **Description**: Port protocol constants, versions, and the `apacket_reader` utility.
 - **Testing**:
     - Verify checksum calculations against the C++ implementation.
     - Unit tests for `apacket_reader` with fragmented packet data.
 
-### Step 8: Utilities and Authentication
+### Step 8: Utilities and Authentication [Done]
 - **Files**: `adb_utils.h`, `adb_auth.h`
 - **Description**: Port general utilities (path handling, hex dumping) and the authentication interfaces.
 - **Testing**:
     - Port `adb_utils_test.cpp`.
     - Integration with already ported Rust `crypto` library.
 
-### Step 9: Transport Layer
+### Step 9: Transport Layer [In Progress]
 - **Files**: `transport.h`, `transport.cpp`
 - **Description**: Port the `atransport` class and transport selection logic.
 - **Testing**:
@@ -144,7 +144,7 @@ Each step involves porting 1-2 files and implementing a corresponding testing st
         - TLS handshake implementation is pending.
         - `device_tracker` notification in `update_transports`.
 
-### Step 10: ADB Services
+### Step 10: ADB Services [In Progress]
 - **Files**: `services.h`, `services.cpp`
 - **Description**: Port the high-level service handling (e.g., `shell`, `push`, `pull`).
 - **Testing**:
@@ -158,6 +158,23 @@ Each step involves porting 1-2 files and implementing a corresponding testing st
         - `jdwp`, `track-jdwp`, `track-app`, `sink`, `source`.
         - `reverse_service` and `reconnect_service`.
         - Parsing `service_args` for `shell` (pty, v2, etc.).
+
+## Architectural Guidance for Windows Support
+
+Porting to Windows requires handling several platform-specific nuances:
+
+### Handle vs. Socket Abstraction
+- Windows distinguishes between `HANDLE` (for files, pipes) and `SOCKET`.
+- Use the `OwnedSocket` and `OwnedHandle` types from `std::os::windows::io` for RAII.
+- The `sysdeps` crate should provide a unified `AdbFd` enum or trait to abstract over these types where they are used interchangeably in ADB (like in `adb_read` / `adb_write`).
+
+### API Selection
+- Prefer the `windows-sys` crate for lean, direct access to the Windows API.
+- Use `Overlapped I/O` or `I/O Completion Ports (IOCP)` if moving towards a more performant async model on Windows, although `mio` (which `fdevent` uses) handles much of this under the hood using `WePoll` or `IOCP`.
+
+### Networking
+- `WSAStartup` must be called before any socket operations.
+- `errno` mapping: Windows uses `WSAGetLastError()` for sockets. `sysdeps::errno` must continue to provide a mapping to standard ADB wire protocol error codes.
 
 ## Phase 2: Advanced Features and Protocol Logic
 
