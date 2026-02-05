@@ -17,15 +17,13 @@
 //! This crate provides a Rust implementation of ADB's socket management logic.
 //! It is ported from `original/socket.h` and `original/sockets.cpp`.
 
-use adb_protocol::{
-    A_CLSE, A_OKAY, A_OPEN, A_WRTE, INITIAL_DELAYED_ACK_BYTES, MAX_PAYLOAD,
-};
+use adb_protocol::{A_CLSE, A_OKAY, A_OPEN, A_WRTE, INITIAL_DELAYED_ACK_BYTES, MAX_PAYLOAD};
 use adb_types::{Apacket, Block, IoVector};
 use bytes::Bytes;
 use fdevent::fdevent::{Fdevent, FdeventHandler};
 use mio::{event::Event, unix::SourceFd, Interest, Token};
 use std::collections::HashMap;
-use std::os::unix::io::RawFd;
+use std::os::unix::io::{FromRawFd, OwnedFd, RawFd};
 use std::sync::{Arc, Mutex, Weak};
 
 /// Trait representing a generic socket in the ADB system.
@@ -54,6 +52,8 @@ pub trait Socket: Send + Sync {
     fn take_peer(&self) -> Option<Arc<dyn Socket>> {
         None
     }
+    /// Sets the peer socket.
+    fn set_peer(&self, peer: Arc<dyn Socket>);
 }
 
 /// Trait representing a transport that can send ADB packets.
@@ -220,12 +220,6 @@ impl LocalSocket {
         }
     }
 
-    /// Sets the peer socket.
-    pub fn set_peer(&self, peer: Arc<dyn Socket>) {
-        let mut inner = self.inner.lock().unwrap();
-        inner.peer = Some(Arc::downgrade(&peer));
-    }
-
     /// Sets the associated transport.
     pub fn set_transport(&self, transport: Arc<dyn Transport>) {
         let mut inner = self.inner.lock().unwrap();
@@ -344,6 +338,11 @@ impl Socket for LocalSocket {
     fn take_peer(&self) -> Option<Arc<dyn Socket>> {
         let mut inner = self.inner.lock().unwrap();
         inner.peer.take().and_then(|p| p.upgrade())
+    }
+
+    fn set_peer(&self, peer: Arc<dyn Socket>) {
+        let mut inner = self.inner.lock().unwrap();
+        inner.peer = Some(Arc::downgrade(&peer));
     }
 }
 
@@ -478,7 +477,7 @@ impl LocalSocketInner {
 impl FdeventHandler for LocalSocket {
     /// Handles events from the `fdevent` looper.
     /// Ported from `local_socket_event_func` in `original/sockets.cpp`.
-    fn on_event(&mut self, event: &Event, _registry: &mio::Registry) {
+    fn on_event(&mut self, event: &Event, _fdevent: &mut Fdevent) {
         if event.is_writable() {
             let mut inner = self.inner.lock().unwrap();
             inner.flush_incoming();
@@ -517,7 +516,7 @@ impl FdeventHandler for LocalSocket {
         }
     }
 
-    fn on_timeout(&mut self) {}
+    fn on_timeout(&mut self, _fdevent: &mut Fdevent) {}
 }
 
 /// A remote socket bound to a transport.
@@ -545,12 +544,6 @@ impl RemoteSocket {
                 registry: Arc::downgrade(&registry),
             }),
         }
-    }
-
-    /// Sets the peer socket.
-    pub fn set_peer(&self, peer: Arc<dyn Socket>) {
-        let mut inner = self.inner.lock().unwrap();
-        inner.peer = Some(Arc::downgrade(&peer));
     }
 }
 
@@ -623,6 +616,11 @@ impl Socket for RemoteSocket {
         let inner = self.inner.lock().unwrap();
         Some(inner.transport.id())
     }
+
+    fn set_peer(&self, peer: Arc<dyn Socket>) {
+        let mut inner = self.inner.lock().unwrap();
+        inner.peer = Some(Arc::downgrade(&peer));
+    }
 }
 
 /// Creates a new local socket and registers it with the `fdevent` looper.
@@ -638,9 +636,9 @@ pub fn create_local_socket(
     let socket_arc = Arc::new(socket.clone());
 
     // SAFETY: fd is a valid file descriptor.
-    let borrowed_fd = unsafe { std::os::unix::io::BorrowedFd::borrow_raw(fd) };
+    let owned_fd = unsafe { OwnedFd::from_raw_fd(fd) };
     let token = fdevent
-        .register(&borrowed_fd, Box::new(socket), Interest::READABLE)
+        .register(owned_fd, Box::new(socket), Interest::READABLE)
         .unwrap();
     socket_arc.inner.lock().unwrap().token = token;
 

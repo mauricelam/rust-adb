@@ -18,13 +18,13 @@
 //! struct MyHandler;
 //!
 //! impl FdeventHandler for MyHandler {
-//!     fn on_event(&mut self, event: &Event, _registry: &mio::Registry) {
+//!     fn on_event(&mut self, event: &Event, _fdevent: &mut Fdevent) {
 //!         if event.is_readable() {
 //!             println!("readable event for token {:?}", event.token());
 //!         }
 //!     }
 //!
-//!     fn on_timeout(&mut self) {
+//!     fn on_timeout(&mut self, _fdevent: &mut Fdevent) {
 //!         println!("timeout event");
 //!     }
 //! }
@@ -33,7 +33,7 @@
 //!     let mut fdevent = Fdevent::new()?;
 //!     let (stream, _) = UnixStream::pair()?;
 //!     let handler = Box::new(MyHandler);
-//!     let token = fdevent.register(&stream, handler, Interest::READABLE)?;
+//!     let token = fdevent.register(stream.into(), handler, Interest::READABLE)?;
 //!
 //!     // Poll for events in a loop
 //!     // fdevent.poll(None)?;
