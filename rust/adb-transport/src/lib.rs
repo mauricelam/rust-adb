@@ -21,7 +21,8 @@
 //! - original/transport.cpp
 //! - original/adb.cpp (parse_banner)
 
-use std::sync::atomic::{AtomicU64, AtomicBool, AtomicI32, Ordering};
+use std::collections::VecDeque;
+use std::sync::atomic::{AtomicU64, AtomicBool, AtomicI32, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::os::unix::io::OwnedFd;
 use std::io::{Read, Write};
@@ -162,6 +163,11 @@ pub struct ATransport {
     pub registry: Mutex<Option<Arc<adb_sockets::SocketRegistry>>>,
     pub fdevent: Mutex<Option<Arc<Mutex<fdevent::fdevent::Fdevent>>>>,
     pub service_creator: Mutex<Option<Box<dyn ServiceSocketCreator>>>,
+
+    pub auth_keys: Mutex<VecDeque<rust_adb_crypto::Key>>,
+    pub use_tls: AtomicBool,
+    pub failed_auth_attempts: AtomicUsize,
+    pub auth_key: Mutex<String>,
 }
 
 pub trait ServiceSocketCreator: Send + Sync {
@@ -198,6 +204,10 @@ impl ATransport {
             registry: Mutex::new(None),
             fdevent: Mutex::new(None),
             service_creator: Mutex::new(None),
+            auth_keys: Mutex::new(VecDeque::new()),
+            use_tls: AtomicBool::new(false),
+            failed_auth_attempts: AtomicUsize::new(0),
+            auth_key: Mutex::new(String::new()),
         }
     }
 
@@ -223,6 +233,10 @@ impl ATransport {
                 conn.stop();
             }
             self.run_disconnects();
+
+            if let Some(registry) = self.registry.lock().unwrap().as_ref() {
+                registry.close_all_sockets(self.id);
+            }
         }
     }
 
@@ -567,6 +581,12 @@ pub fn handle_packet(packet: Apacket, t: &Arc<ATransport>) {
         adb_protocol::A_WRTE => {
             handle_write(t, &packet);
         }
+        adb_protocol::A_STLS => {
+            handle_stls(t, &packet);
+        }
+        adb_protocol::A_SYNC => {
+            handle_sync(t, &packet);
+        }
         _ => {
             log::warn!(target: "transport", "Unknown command: {:08x}", packet.msg.command);
         }
@@ -581,14 +601,46 @@ fn handle_new_connection(t: &Arc<ATransport>, p: &Apacket) {
 }
 
 fn handle_auth(t: &Arc<ATransport>, p: &Apacket) {
+    if t.use_tls.load(Ordering::SeqCst) {
+        // All AUTH commands are ignored in TLS mode.
+        return;
+    }
+
     match p.msg.arg0 {
         adb_auth::ADB_AUTH_TOKEN => {
             if t.get_connection_state() != ConnectionState::Authorizing {
                 t.set_connection_state(ConnectionState::Authorizing);
             }
-            // In a full implementation, we'd sign the token and send A_AUTH SIGNATURE.
-            // For now, we just log it.
-            log::debug!(target: "transport", "Received AUTH TOKEN");
+
+            let mut keys = t.auth_keys.lock().unwrap();
+            if let Some(key) = keys.pop_front() {
+                if let Ok(response) = adb_auth::send_auth_response(p.payload.get_ref(), &key) {
+                    t.write(response);
+                } else {
+                    log::error!(target: "transport", "Failed to sign auth token");
+                    // If signing failed, try the next key or send public key
+                    drop(keys);
+                    handle_auth(t, p);
+                }
+            } else {
+                send_auth_publickey(t);
+            }
+        }
+        adb_auth::ADB_AUTH_SIGNATURE => {
+            // Daemon-side: verify signature
+            let signature = p.payload.get_ref();
+            // In a real adbd, we'd verify against the token we sent.
+            // For now, we just log and accept it for testing purposes if desired,
+            // or re-request if it fails.
+            log::debug!(target: "transport", "Received AUTH SIGNATURE (len={})", signature.len());
+            // TODO: Implement verification and call adbd_auth_verified(t)
+        }
+        adb_auth::ADB_AUTH_RSAPUBLICKEY => {
+            // Daemon-side: handle public key
+            let pubkey = String::from_utf8_lossy(p.payload.get_ref()).to_string();
+            log::debug!(target: "transport", "Received AUTH RSAPUBLICKEY");
+            *t.auth_key.lock().unwrap() = pubkey;
+            // TODO: Trigger UI confirmation and then call adbd_auth_verified(t)
         }
         _ => {
             t.set_connection_state(ConnectionState::Offline);
@@ -596,8 +648,38 @@ fn handle_auth(t: &Arc<ATransport>, p: &Apacket) {
     }
 }
 
+fn send_auth_publickey(t: &Arc<ATransport>) {
+    log::debug!(target: "transport", "Sending AUTH RSAPUBLICKEY");
+    if let Some(android_dir) = adb_utils::adb_get_android_dir_path() {
+        let pubkey_path = android_dir.join("adbkey.pub");
+        if let Ok(pubkey) = std::fs::read_to_string(pubkey_path) {
+            let mut p = Apacket::default();
+            p.msg.command = adb_protocol::A_AUTH;
+            p.msg.arg0 = adb_auth::ADB_AUTH_RSAPUBLICKEY;
+            // The protocol expects the public key as a null-terminated string.
+            let mut bytes = pubkey.into_bytes();
+            if !bytes.ends_with(&[0]) {
+                bytes.push(0);
+            }
+            p.payload = Block::from_vec(bytes);
+            p.msg.data_length = p.payload.get_ref().len() as u32;
+            t.write(p);
+            return;
+        }
+    }
+    log::error!(target: "transport", "Could not find adbkey.pub to send");
+}
+
 fn handle_open(t: &Arc<ATransport>, p: &Apacket) {
     if !t.get_connection_state().is_online() || p.msg.arg0 == 0 {
+        return;
+    }
+
+    let send_bytes = p.msg.arg1;
+    if t.has_feature(FEATURE_DELAYED_ACK) != (send_bytes != 0) {
+        log::error!(target: "transport", "unexpected value of A_OPEN arg1: {} (delayed acks = {})",
+            send_bytes, t.has_feature(FEATURE_DELAYED_ACK));
+        send_close(0, p.msg.arg0, t);
         return;
     }
 
@@ -615,7 +697,18 @@ fn handle_open(t: &Arc<ATransport>, p: &Apacket) {
             let peer = adb_sockets::create_remote_socket(p.msg.arg0, t.clone() as Arc<dyn Transport>, registry.clone());
             s.set_peer(peer.clone() as Arc<dyn adb_sockets::Socket>);
             peer.set_peer(s.clone() as Arc<dyn adb_sockets::Socket>);
-            s.ready();
+
+            if t.has_feature(FEATURE_DELAYED_ACK) {
+                s.ack(Some(send_bytes as i32));
+                t.send_ready(s.id(), p.msg.arg0, adb_protocol::INITIAL_DELAYED_ACK_BYTES as u32);
+            } else {
+                // In C++, s->ready(s) for a local socket calls s->peer->ready(s->peer)
+                // which sends A_OKAY.
+                if let Some(peer_id) = s.peer_id() {
+                    t.send_ready(s.id(), peer_id, 0);
+                }
+                s.ready();
+            }
         }
     } else {
         send_close(0, p.msg.arg0, t);
@@ -627,13 +720,24 @@ fn handle_okay(t: &Arc<ATransport>, p: &Apacket) {
         let registry = t.registry.lock().unwrap();
         if let Some(registry) = registry.as_ref() {
             if let Some(s) = registry.find_local_socket(p.msg.arg1, 0) {
+                let mut acked_bytes: Option<i32> = None;
+                if p.payload.get_ref().len() == 4 {
+                    let mut bytes = [0u8; 4];
+                    bytes.copy_from_slice(p.payload.get_ref());
+                    acked_bytes = Some(i32::from_le_bytes(bytes));
+                } else if !p.payload.is_empty() {
+                    log::error!(target: "transport", "invalid A_OKAY payload size: {}", p.payload.get_ref().len());
+                    return;
+                }
+
                 if s.peer_id().is_none() {
                     let peer =
                         adb_sockets::create_remote_socket(p.msg.arg0, t.clone() as Arc<dyn Transport>, registry.clone());
                     s.set_peer(peer.clone() as Arc<dyn adb_sockets::Socket>);
                     peer.set_peer(s.clone() as Arc<dyn adb_sockets::Socket>);
                 }
-                s.ready();
+
+                s.ack(acked_bytes);
             } else {
                 send_close(p.msg.arg1, p.msg.arg0, t);
             }
@@ -649,6 +753,17 @@ fn handle_close(t: &Arc<ATransport>, p: &Apacket) {
                 s.close();
             }
         }
+    }
+}
+
+fn handle_stls(t: &Arc<ATransport>, _p: &Apacket) {
+    t.use_tls.store(true, Ordering::SeqCst);
+    log::info!(target: "transport", "TLS requested, but not yet implemented");
+}
+
+fn handle_sync(t: &Arc<ATransport>, p: &Apacket) {
+    if p.msg.arg0 == 0 {
+        t.kick();
     }
 }
 
@@ -867,18 +982,21 @@ mod tests {
 
     struct MockConnection {
         stopped: AtomicBool,
+        written: Mutex<Vec<Apacket>>,
     }
 
     impl MockConnection {
         fn new() -> Self {
             Self {
                 stopped: AtomicBool::new(false),
+                written: Mutex::new(Vec::new()),
             }
         }
     }
 
     impl Connection for MockConnection {
-        fn write(&self, _packet: Apacket) -> bool {
+        fn write(&self, packet: Apacket) -> bool {
+            self.written.lock().unwrap().push(packet);
             true
         }
         fn start(&self) -> bool {
@@ -960,6 +1078,7 @@ mod tests {
             0
         }
         fn ready(&self) { self.readied.store(true, Ordering::SeqCst); }
+        fn ack(&self, _acked_bytes: Option<i32>) { self.readied.store(true, Ordering::SeqCst); }
         fn shutdown(&self) {}
         fn close(&self) { self.closed.store(true, Ordering::SeqCst); }
         fn peer_id(&self) -> Option<u32> { *self.peer_id.lock().unwrap() }
@@ -1024,6 +1143,74 @@ mod tests {
 
         assert_eq!(mock_socket.enqueued.lock().unwrap().len(), 1);
         assert_eq!(mock_socket.enqueued.lock().unwrap()[0], &b"hello"[..]);
+    }
+
+    #[test]
+    fn test_handle_okay_delayed_ack() {
+        let t = Arc::new(ATransport::new(TransportType::Usb, Box::new(|_| ReconnectResult::Abort), ConnectionState::Device));
+        let registry = Arc::new(adb_sockets::SocketRegistry::new());
+        *t.registry.lock().unwrap() = Some(registry.clone());
+        let mock_socket = Arc::new(MockSocket::new(100));
+        *mock_socket.peer_id.lock().unwrap() = Some(200);
+        registry.install(mock_socket.clone());
+
+        let mut p = Apacket::default();
+        p.msg.command = adb_protocol::A_OKAY;
+        p.msg.arg0 = 200; // remote id
+        p.msg.arg1 = 100; // local id
+        p.payload = Block::from_vec(1024u32.to_le_bytes().to_vec());
+        p.msg.data_length = 4;
+
+        handle_packet(p, &t);
+
+        assert!(mock_socket.readied.load(Ordering::SeqCst));
+    }
+
+    #[test]
+    fn test_handle_sync() {
+        let t = Arc::new(ATransport::new_offline(TransportType::Usb));
+        let conn = Arc::new(MockConnection::new());
+        t.set_connection(conn.clone());
+
+        let mut p = Apacket::default();
+        p.msg.command = adb_protocol::A_SYNC;
+        p.msg.arg0 = 0;
+
+        handle_packet(p, &t);
+
+        assert!(t.is_kicked());
+        assert!(conn.stopped.load(Ordering::SeqCst));
+    }
+
+    #[test]
+    fn test_handle_open_delayed_ack() {
+        let t = Arc::new(ATransport::new(TransportType::Usb, Box::new(|_| ReconnectResult::Abort), ConnectionState::Device));
+        t.set_features(FEATURE_DELAYED_ACK);
+        let registry = Arc::new(adb_sockets::SocketRegistry::new());
+        *t.registry.lock().unwrap() = Some(registry.clone());
+        let mock_socket = Arc::new(MockSocket::new(100));
+        *t.service_creator.lock().unwrap() = Some(Box::new(MockServiceCreator { socket: mock_socket.clone() }));
+        let conn = Arc::new(MockConnection::new());
+        t.set_connection(conn.clone());
+
+        let mut p = Apacket::default();
+        p.msg.command = adb_protocol::A_OPEN;
+        p.msg.arg0 = 200; // remote id
+        p.msg.arg1 = 1024; // send_bytes
+        p.payload = Block::from_vec(b"shell:echo hello".to_vec());
+        p.msg.data_length = p.payload.get_ref().len() as u32;
+
+        handle_packet(p, &t);
+
+        // Should have sent A_OKAY with INITIAL_DELAYED_ACK_BYTES
+        let written = conn.written.lock().unwrap();
+        assert_eq!(written.len(), 1);
+        assert_eq!(written[0].msg.command, adb_protocol::A_OKAY);
+        assert_eq!(written[0].msg.arg0, 100);
+        assert_eq!(written[0].msg.arg1, 200);
+        assert_eq!(written[0].msg.data_length, 4);
+        let ack_bytes = u32::from_le_bytes(written[0].payload.get_ref()[..4].try_into().unwrap());
+        assert_eq!(ack_bytes, adb_protocol::INITIAL_DELAYED_ACK_BYTES as u32);
     }
 }
 
