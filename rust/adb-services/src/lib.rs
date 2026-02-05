@@ -18,6 +18,7 @@
 //! Ported from original/services.h and original/services.cpp.
 
 use adb_io::{send_fail, send_okay, send_protocol_string};
+use adb_protocol::shell_protocol::{ShellId, ShellProtocol};
 use adb_protocol::{ConnectionState, TransportType};
 use adb_socket_spec::{is_socket_spec, socket_spec_connect};
 use adb_sockets::{connect_to_remote, create_local_socket, LocalSocket, Socket, SocketRegistry};
@@ -28,6 +29,7 @@ use adb_transport::{
 use adb_utils::{parse_uint, unhex};
 use bytes::Bytes;
 use fdevent::fdevent::{Fdevent, FdeventHandle};
+use std::io::{Read, Write};
 use std::os::unix::io::{AsRawFd, FromRawFd, IntoRawFd, OwnedFd};
 use std::os::unix::net::UnixStream;
 use std::sync::{Arc, Mutex, Weak};
@@ -220,10 +222,14 @@ pub fn connect_device(address: String, response: &mut String) {
             *t.serial.lock().unwrap() = serial;
 
             let connection = Arc::new(FdConnection::new(fd));
-            t.set_connection(connection);
+            let adapter = Arc::new(adb_transport::BlockingConnectionAdapter::new(connection));
+            t.set_connection(adapter);
 
-            // TODO: In a full implementation, we would start the transport packet loop here.
-            adb_transport::register_transport(t);
+            let t_clone = t.clone();
+            adb_transport::register_transport(t_clone.clone());
+            t_clone.start();
+            adb_transport::send_connect(&t_clone);
+
             *response = format!("connected to {}", address);
         }
         Err(e) => {
@@ -758,6 +764,31 @@ mod tests {
 
         handle.join().unwrap();
     }
+
+    #[test]
+    fn test_shell_service_v2() {
+        let (s1, s2) = UnixStream::pair().unwrap();
+        let s2_fd = OwnedFd::from(s2);
+
+        let handle = std::thread::spawn(move || {
+            shell_service(s2_fd, "v2,raw:echo hello");
+        });
+
+        let mut s1_file = std::fs::File::from(OwnedFd::from(s1));
+        let mut sp = ShellProtocol::new();
+
+        // We expect a Stdout packet with "hello\n"
+        assert!(sp.read(&mut s1_file).unwrap());
+        assert_eq!(sp.id, ShellId::Stdout);
+        assert_eq!(String::from_utf8_lossy(&sp.data).trim(), "hello");
+
+        // We expect an Exit packet
+        assert!(sp.read(&mut s1_file).unwrap());
+        assert_eq!(sp.id, ShellId::Exit);
+        assert_eq!(sp.data[0], 0);
+
+        handle.join().unwrap();
+    }
 }
 
 /// Dispatches a service to a file descriptor.
@@ -834,50 +865,335 @@ pub fn daemon_service_to_socket(
     None
 }
 
+fn open_pty() -> std::io::Result<(OwnedFd, OwnedFd)> {
+    unsafe {
+        let master_fd = libc::posix_openpt(libc::O_RDWR | libc::O_NOCTTY);
+        if master_fd < 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+
+        if libc::grantpt(master_fd) < 0 || libc::unlockpt(master_fd) < 0 {
+            let err = std::io::Error::last_os_error();
+            libc::close(master_fd);
+            return Err(err);
+        }
+
+        let mut buf = [0u8; 1024];
+        if libc::ptsname_r(master_fd, buf.as_mut_ptr() as *mut libc::c_char, buf.len()) != 0 {
+            let err = std::io::Error::last_os_error();
+            libc::close(master_fd);
+            return Err(err);
+        }
+
+        let pts_name = std::ffi::CStr::from_ptr(buf.as_ptr() as *const libc::c_char);
+        let slave_fd = libc::open(pts_name.as_ptr(), libc::O_RDWR | libc::O_NOCTTY);
+        if slave_fd < 0 {
+            let err = std::io::Error::last_os_error();
+            libc::close(master_fd);
+            return Err(err);
+        }
+
+        Ok((
+            OwnedFd::from_raw_fd(master_fd),
+            OwnedFd::from_raw_fd(slave_fd),
+        ))
+    }
+}
+
 /// Service that runs a shell command.
-/// Simplified version of `ShellService` in `original/daemon/services.cpp`.
-pub fn shell_service(fd: OwnedFd, args: &str) {
-    let mut command = "";
-    let mut _subprocess_type = "pty";
-    let mut _protocol = "none";
-    let mut _terminal_type = "dumb";
+/// Ported from `ShellService` in `original/daemon/shell_service.cpp`.
+pub fn shell_service(adb_fd: OwnedFd, args: &str) {
+    let mut adb_fd_opt = Some(adb_fd);
+    let command_str;
+    let mut subprocess_type;
+    let mut protocol = "none";
+    let mut terminal_type = "dumb";
 
     if let Some(colon_idx) = args.find(':') {
         let service_args = &args[..colon_idx];
-        command = &args[colon_idx + 1..];
+        command_str = &args[colon_idx + 1..];
 
-        _subprocess_type = if command.is_empty() { "pty" } else { "raw" };
+        subprocess_type = if command_str.is_empty() { "pty" } else { "raw" };
 
         for arg in service_args.split(',') {
             match arg {
-                K_SHELL_SERVICE_ARG_RAW => _subprocess_type = "raw",
-                K_SHELL_SERVICE_ARG_PTY => _subprocess_type = "pty",
-                K_SHELL_SERVICE_ARG_SHELL_PROTOCOL => _protocol = "v2",
-                _ if arg.starts_with("TERM=") => _terminal_type = &arg[5..],
+                K_SHELL_SERVICE_ARG_RAW => subprocess_type = "raw",
+                K_SHELL_SERVICE_ARG_PTY => subprocess_type = "pty",
+                K_SHELL_SERVICE_ARG_SHELL_PROTOCOL => protocol = "v2",
+                _ if arg.starts_with("TERM=") => terminal_type = &arg[5..],
                 _ => {}
             }
         }
+    } else {
+        command_str = args;
+        subprocess_type = if command_str.is_empty() { "pty" } else { "raw" };
     }
 
-    let mut cmd = if command.is_empty() {
+    let mut make_pty_raw = false;
+    if protocol == "none" && subprocess_type == "raw" {
+        subprocess_type = "pty";
+        make_pty_raw = true;
+    }
+
+    let is_pty = subprocess_type == "pty";
+    let is_v2 = protocol == "v2";
+
+    let mut master_fd_opt: Option<OwnedFd> = None;
+    let child_stdin: std::process::Stdio;
+    let child_stdout: std::process::Stdio;
+    let child_stderr: std::process::Stdio;
+
+    if is_pty {
+        let (master, slave) = open_pty().expect("failed to open pty");
+
+        if make_pty_raw {
+            unsafe {
+                let mut tattr: libc::termios = std::mem::zeroed();
+                libc::tcgetattr(slave.as_raw_fd(), &mut tattr);
+                libc::cfmakeraw(&mut tattr);
+                libc::tcsetattr(slave.as_raw_fd(), libc::TCSADRAIN, &mut tattr);
+            }
+        }
+
+        let slave_clone = slave.try_clone().expect("failed to clone slave fd");
+        let slave_clone2 = slave.try_clone().expect("failed to clone slave fd");
+
+        child_stdin = std::process::Stdio::from(slave);
+        child_stdout = std::process::Stdio::from(slave_clone);
+        child_stderr = std::process::Stdio::from(slave_clone2);
+        master_fd_opt = Some(master);
+    } else if !is_v2 {
+        let adb_fd = adb_fd_opt.take().unwrap();
+        let adb_fd_clone = adb_fd.try_clone().expect("failed to clone adb fd");
+        let adb_fd_clone2 = adb_fd.try_clone().expect("failed to clone adb fd");
+
+        child_stdin = std::process::Stdio::from(adb_fd);
+        child_stdout = std::process::Stdio::from(adb_fd_clone);
+        child_stderr = std::process::Stdio::from(adb_fd_clone2);
+    } else {
+        child_stdin = std::process::Stdio::piped();
+        child_stdout = std::process::Stdio::piped();
+        child_stderr = std::process::Stdio::piped();
+    }
+
+    let mut cmd = if command_str.is_empty() {
         std::process::Command::new("/bin/sh")
     } else {
         let mut c = std::process::Command::new("/bin/sh");
-        c.arg("-c").arg(command);
+        c.arg("-c").arg(command_str);
         c
     };
 
-    let fd_clone = fd.try_clone().expect("failed to clone fd");
-    let fd_clone2 = fd.try_clone().expect("failed to clone fd");
+    if !terminal_type.is_empty() {
+        cmd.env("TERM", terminal_type);
+    }
 
     let mut child = cmd
-        .stdin(std::process::Stdio::from(fd))
-        .stdout(std::process::Stdio::from(fd_clone))
-        .stderr(std::process::Stdio::from(fd_clone2))
+        .stdin(child_stdin)
+        .stdout(child_stdout)
+        .stderr(child_stderr)
         .spawn()
         .expect("failed to spawn shell");
 
-    let _ = child.wait();
+    if !is_v2 && !is_pty {
+        let _ = child.wait();
+        return;
+    }
+
+    let mut adb_file = std::fs::File::from(adb_fd_opt.take().unwrap());
+
+    let mut sub_stdin_file = if is_pty {
+        None
+    } else {
+        child
+            .stdin
+            .take()
+            .map(|s| unsafe { std::fs::File::from_raw_fd(s.into_raw_fd()) })
+    };
+    let mut sub_stdout_file = if is_pty {
+        master_fd_opt.take().map(std::fs::File::from)
+    } else {
+        child
+            .stdout
+            .take()
+            .map(|s| unsafe { std::fs::File::from_raw_fd(s.into_raw_fd()) })
+    };
+    let mut sub_stderr_file = if is_pty {
+        None
+    } else {
+        child
+            .stderr
+            .take()
+            .map(|s| unsafe { std::fs::File::from_raw_fd(s.into_raw_fd()) })
+    };
+
+    let mut pfds = Vec::new();
+    pfds.push(AdbPollFd {
+        fd: adb_file.as_raw_fd(),
+        events: libc::POLLIN,
+        revents: 0,
+    });
+    if let Some(ref f) = sub_stdout_file {
+        pfds.push(AdbPollFd {
+            fd: f.as_raw_fd(),
+            events: libc::POLLIN,
+            revents: 0,
+        });
+    }
+    if let Some(ref f) = sub_stderr_file {
+        pfds.push(AdbPollFd {
+            fd: f.as_raw_fd(),
+            events: libc::POLLIN,
+            revents: 0,
+        });
+    }
+
+    let mut shell_read = ShellProtocol::new();
+
+    loop {
+        let n = adb_poll(&mut pfds, 100);
+
+        if n > 0 {
+            if pfds[0].revents & libc::POLLIN != 0 {
+                if is_v2 {
+                    match shell_read.read(&mut adb_file) {
+                        Ok(true) => {
+                            match shell_read.id {
+                                ShellId::Stdin => {
+                                    let write_file = if is_pty {
+                                        sub_stdout_file.as_mut()
+                                    } else {
+                                        sub_stdin_file.as_mut()
+                                    };
+                                    if let Some(f) = write_file {
+                                        let _ = f.write_all(&shell_read.data);
+                                    }
+                                }
+                                ShellId::WindowSizeChange => {
+                                    if is_pty {
+                                        if let Some(ref f) = sub_stdout_file {
+                                            let s = String::from_utf8_lossy(&shell_read.data);
+                                            if let Some((rows_cols, pixels)) = s.split_once(',') {
+                                                if let (Some((rows, cols)), Some((xpix, ypix))) =
+                                                    (rows_cols.split_once('x'), pixels.split_once('x'))
+                                                {
+                                                    if let (Ok(r), Ok(c), Ok(xp), Ok(yp)) = (
+                                                        rows.parse::<u16>(),
+                                                        cols.parse::<u16>(),
+                                                        xpix.parse::<u16>(),
+                                                        ypix.parse::<u16>(),
+                                                    ) {
+                                                        let ws = libc::winsize {
+                                                            ws_row: r,
+                                                            ws_col: c,
+                                                            ws_xpixel: xp,
+                                                            ws_ypixel: yp,
+                                                        };
+                                                        unsafe {
+                                                            libc::ioctl(
+                                                                f.as_raw_fd(),
+                                                                libc::TIOCSWINSZ,
+                                                                &ws,
+                                                            );
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                                ShellId::CloseStdin => {
+                                    sub_stdin_file.take();
+                                }
+                                _ => {}
+                            }
+                        }
+                        _ => {
+                            let _ = child.kill();
+                            break;
+                        }
+                    }
+                } else {
+                    let mut buf = [0u8; 4096];
+                    match adb_file.read(&mut buf) {
+                        Ok(n) if n > 0 => {
+                            let write_file = if is_pty {
+                                sub_stdout_file.as_mut()
+                            } else {
+                                sub_stdin_file.as_mut()
+                            };
+                            if let Some(f) = write_file {
+                                let _ = f.write_all(&buf[..n]);
+                            }
+                        }
+                        _ => {
+                            let _ = child.kill();
+                            break;
+                        }
+                    }
+                }
+            }
+
+            if pfds.len() > 1 && pfds[1].revents & libc::POLLIN != 0 {
+                let mut buf = [0u8; 4096];
+                if let Some(ref mut f) = sub_stdout_file {
+                    match f.read(&mut buf) {
+                        Ok(n) if n > 0 => {
+                            if is_v2 {
+                                ShellProtocol::write_packet(&mut adb_file, ShellId::Stdout, &buf[..n])
+                                    .unwrap();
+                            } else {
+                                adb_file.write_all(&buf[..n]).unwrap();
+                            }
+                        }
+                        _ => {
+                            pfds[1].fd = -1;
+                            sub_stdout_file.take();
+                        }
+                    }
+                }
+            }
+
+            if pfds.len() > 2 && pfds[2].revents & libc::POLLIN != 0 {
+                let mut buf = [0u8; 4096];
+                if let Some(ref mut f) = sub_stderr_file {
+                    match f.read(&mut buf) {
+                        Ok(n) if n > 0 => {
+                            if is_v2 {
+                                ShellProtocol::write_packet(&mut adb_file, ShellId::Stderr, &buf[..n])
+                                    .unwrap();
+                            } else {
+                                adb_file.write_all(&buf[..n]).unwrap();
+                            }
+                        }
+                        _ => {
+                            pfds[2].fd = -1;
+                            sub_stderr_file.take();
+                        }
+                    }
+                }
+            }
+        } else if n < 0 {
+            break;
+        }
+
+        match child.try_wait() {
+            Ok(Some(status)) => {
+                let exit_code =
+                    status.code().unwrap_or(if status.success() { 0 } else { 1 }) as u8;
+                if is_v2 {
+                    ShellProtocol::write_packet(&mut adb_file, ShellId::Exit, &[exit_code]).unwrap();
+                }
+                break;
+            }
+            _ => {}
+        }
+
+        if sub_stdout_file.is_none() && sub_stderr_file.is_none() {
+            let _ = child.wait();
+            break;
+        }
+    }
 }
 
 /// Dispatches a service to a file descriptor on the daemon side.
