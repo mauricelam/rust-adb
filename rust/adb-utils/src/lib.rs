@@ -25,6 +25,11 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Condvar, Mutex};
 
+/// Ported from `original/adb_utils.cpp`: `unhex`
+pub fn unhex(s: &str) -> Option<u32> {
+    u32::from_str_radix(s, 16).ok()
+}
+
 /// Ported from `original/adb_utils.h`: `StripTrailingNulls`
 pub fn strip_trailing_nulls(s: &str) -> &str {
     s.trim_end_matches('\0')
@@ -275,6 +280,14 @@ impl<T> Default for BlockingQueue<T> {
 mod tests {
     use super::*;
     use tempfile::tempdir;
+
+    #[test]
+    fn test_unhex() {
+        assert_eq!(unhex("0000"), Some(0));
+        assert_eq!(unhex("000a"), Some(10));
+        assert_eq!(unhex("ffff"), Some(65535));
+        assert_eq!(unhex("xyz"), None);
+    }
 
     #[test]
     fn test_strip_trailing_nulls() {
