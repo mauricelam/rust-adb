@@ -3,17 +3,10 @@ use sysdeps::poll::{adb_poll, AdbPollFd};
 use std::os::unix::net::UnixStream;
 use std::io::{Read, Write};
 use std::os::unix::io::AsRawFd;
-use std::sync::Mutex;
 use libc;
-
-/// Global mutex used to serialize tests that are sensitive to process-wide resources.
-/// Specifically, `test_sysdeps_fd_exhaustion` consumes all available file descriptors,
-/// which would cause other tests running in parallel to fail when they try to open sockets.
-static SERIAL_TEST: Mutex<()> = Mutex::new(());
 
 #[test]
 fn test_sysdeps_socketpair_smoke() {
-    let _guard = SERIAL_TEST.lock().unwrap();
     let (mut s1, mut s2) = UnixStream::pair().expect("socketpair failed");
     s1.write_all(b"foo\0").unwrap();
     s2.write_all(b"bar\0").unwrap();
@@ -27,7 +20,6 @@ fn test_sysdeps_socketpair_smoke() {
 
 #[test]
 fn test_sysdeps_fd_exhaustion() {
-    let _guard = SERIAL_TEST.lock().unwrap();
     let mut fds = Vec::new();
     loop {
         match UnixStream::pair() {
@@ -55,7 +47,6 @@ fn test_sysdeps_fd_exhaustion() {
 
 #[test]
 fn test_sysdeps_poll_smoke() {
-    let _guard = SERIAL_TEST.lock().unwrap();
     let (s1, s2) = UnixStream::pair().unwrap();
     let mut pfds = [
         AdbPollFd { fd: s1.as_raw_fd(), events: libc::POLLIN, revents: 0 },
@@ -77,7 +68,6 @@ fn test_sysdeps_poll_smoke() {
 
 #[test]
 fn test_sysdeps_poll_timeout() {
-    let _guard = SERIAL_TEST.lock().unwrap();
     let (s1, _s2) = UnixStream::pair().unwrap();
     let mut pfd = AdbPollFd { fd: s1.as_raw_fd(), events: libc::POLLIN, revents: 0 };
     assert_eq!(adb_poll(std::slice::from_mut(&mut pfd), 100), 0);
@@ -85,7 +75,6 @@ fn test_sysdeps_poll_timeout() {
 
 #[test]
 fn test_sysdeps_poll_invalid_fd() {
-    let _guard = SERIAL_TEST.lock().unwrap();
     let (s1, s2) = UnixStream::pair().unwrap();
     let mut pfds = [
         AdbPollFd { fd: s1.as_raw_fd(), events: libc::POLLIN, revents: 0 },
@@ -103,7 +92,6 @@ fn test_sysdeps_poll_invalid_fd() {
 #[test]
 #[cfg(not(target_os = "macos"))]
 fn test_sysdeps_poll_duplicate_fd() {
-    let _guard = SERIAL_TEST.lock().unwrap();
     let (s1, s2) = UnixStream::pair().unwrap();
     let fd = s1.as_raw_fd();
     let mut pfds = [
@@ -133,7 +121,6 @@ fn test_sysdeps_poll_duplicate_fd() {
 
 #[test]
 fn test_sysdeps_poll_disconnect() {
-    let _guard = SERIAL_TEST.lock().unwrap();
     let (s1, s2) = UnixStream::pair().unwrap();
     let mut pfd = AdbPollFd { fd: s1.as_raw_fd(), events: libc::POLLIN, revents: 0 };
 
@@ -147,7 +134,6 @@ fn test_sysdeps_poll_disconnect() {
 
 #[test]
 fn test_sysdeps_poll_fd_count() {
-    let _guard = SERIAL_TEST.lock().unwrap();
     let num_sockets = 256;
     let mut sockets = Vec::new();
     let mut pfds = Vec::new();
@@ -170,7 +156,6 @@ fn test_sysdeps_poll_fd_count() {
 
 #[test]
 fn test_sysdeps_condition_variable_smoke() {
-    let _guard = SERIAL_TEST.lock().unwrap();
     use std::sync::{Arc, Mutex, Condvar};
     use std::thread;
 
