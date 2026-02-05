@@ -3,10 +3,14 @@ use sysdeps::poll::{adb_poll, AdbPollFd};
 use std::os::unix::net::UnixStream;
 use std::io::{Read, Write};
 use std::os::unix::io::AsRawFd;
+use std::sync::Mutex;
 use libc;
+
+static SERIAL_TEST: Mutex<()> = Mutex::new(());
 
 #[test]
 fn test_sysdeps_socketpair_smoke() {
+    let _guard = SERIAL_TEST.lock().unwrap();
     let (mut s1, mut s2) = UnixStream::pair().expect("socketpair failed");
     s1.write_all(b"foo\0").unwrap();
     s2.write_all(b"bar\0").unwrap();
@@ -19,7 +23,36 @@ fn test_sysdeps_socketpair_smoke() {
 }
 
 #[test]
+fn test_sysdeps_fd_exhaustion() {
+    let _guard = SERIAL_TEST.lock().unwrap();
+    let mut fds = Vec::new();
+    loop {
+        match UnixStream::pair() {
+            Ok((s1, s2)) => {
+                fds.push(s1);
+                fds.push(s2);
+            }
+            Err(e) => {
+                assert_eq!(e.raw_os_error(), Some(libc::EMFILE));
+                break;
+            }
+        }
+    }
+
+    // Now close them all.
+    let first_s1_fd = fds[0].as_raw_fd();
+    let first_s2_fd = fds[1].as_raw_fd();
+    drop(fds);
+
+    // Try again, it should succeed and ideally give us back the same FDs.
+    let (s1, s2) = UnixStream::pair().expect("socketpair failed after recovering from EMFILE");
+    assert_eq!(s1.as_raw_fd(), first_s1_fd);
+    assert_eq!(s2.as_raw_fd(), first_s2_fd);
+}
+
+#[test]
 fn test_sysdeps_poll_smoke() {
+    let _guard = SERIAL_TEST.lock().unwrap();
     let (s1, s2) = UnixStream::pair().unwrap();
     let mut pfds = [
         AdbPollFd { fd: s1.as_raw_fd(), events: libc::POLLIN, revents: 0 },
@@ -41,6 +74,7 @@ fn test_sysdeps_poll_smoke() {
 
 #[test]
 fn test_sysdeps_poll_timeout() {
+    let _guard = SERIAL_TEST.lock().unwrap();
     let (s1, _s2) = UnixStream::pair().unwrap();
     let mut pfd = AdbPollFd { fd: s1.as_raw_fd(), events: libc::POLLIN, revents: 0 };
     assert_eq!(adb_poll(std::slice::from_mut(&mut pfd), 100), 0);
@@ -48,6 +82,7 @@ fn test_sysdeps_poll_timeout() {
 
 #[test]
 fn test_sysdeps_poll_invalid_fd() {
+    let _guard = SERIAL_TEST.lock().unwrap();
     let (s1, s2) = UnixStream::pair().unwrap();
     let mut pfds = [
         AdbPollFd { fd: s1.as_raw_fd(), events: libc::POLLIN, revents: 0 },
@@ -63,7 +98,39 @@ fn test_sysdeps_poll_invalid_fd() {
 }
 
 #[test]
+#[cfg(not(target_os = "macos"))]
+fn test_sysdeps_poll_duplicate_fd() {
+    let _guard = SERIAL_TEST.lock().unwrap();
+    let (s1, s2) = UnixStream::pair().unwrap();
+    let fd = s1.as_raw_fd();
+    let mut pfds = [
+        AdbPollFd {
+            fd,
+            events: libc::POLLIN,
+            revents: 0,
+        },
+        AdbPollFd {
+            fd,
+            events: libc::POLLIN,
+            revents: 0,
+        },
+    ];
+
+    assert_eq!(adb_poll(&mut pfds, 0), 0);
+    assert_eq!(pfds[0].revents, 0);
+    assert_eq!(pfds[1].revents, 0);
+
+    let mut s2_write = s2;
+    s2_write.write_all(b"foo\0").unwrap();
+
+    assert_eq!(adb_poll(&mut pfds, 100), 2);
+    assert_ne!(pfds[0].revents & libc::POLLIN, 0);
+    assert_ne!(pfds[1].revents & libc::POLLIN, 0);
+}
+
+#[test]
 fn test_sysdeps_poll_disconnect() {
+    let _guard = SERIAL_TEST.lock().unwrap();
     let (s1, s2) = UnixStream::pair().unwrap();
     let mut pfd = AdbPollFd { fd: s1.as_raw_fd(), events: libc::POLLIN, revents: 0 };
 
@@ -77,6 +144,7 @@ fn test_sysdeps_poll_disconnect() {
 
 #[test]
 fn test_sysdeps_poll_fd_count() {
+    let _guard = SERIAL_TEST.lock().unwrap();
     let num_sockets = 256;
     let mut sockets = Vec::new();
     let mut pfds = Vec::new();
@@ -99,6 +167,7 @@ fn test_sysdeps_poll_fd_count() {
 
 #[test]
 fn test_sysdeps_condition_variable_smoke() {
+    let _guard = SERIAL_TEST.lock().unwrap();
     use std::sync::{Arc, Mutex, Condvar};
     use std::thread;
 
