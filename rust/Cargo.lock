@@ -39,6 +39,7 @@ dependencies = [
  "adb-types",
  "adb-utils",
  "adb_io",
+ "bytes",
  "env_logger",
  "fdevent",
  "libc",

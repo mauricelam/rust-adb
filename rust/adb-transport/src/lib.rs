@@ -45,6 +45,15 @@ pub fn next_transport_id() -> TransportId {
 /// Ported from original/transport.h: `using FeatureSet = std::vector<std::string>;`
 pub type FeatureSet = Vec<String>;
 
+/// Ported from original/transport.h: `enum TrackerOutputType`
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TrackerOutputType {
+    ShortText,
+    LongText,
+    Protobuf,
+    TextProtobuf,
+}
+
 pub const FEATURE_SHELL2: &str = "shell_v2";
 pub const FEATURE_CMD: &str = "cmd";
 pub const FEATURE_STAT2: &str = "stat_v2";
@@ -573,6 +582,92 @@ pub fn handle_packet(packet: Apacket, t: &Arc<ATransport>) {
     }
 }
 
+fn sanitize(s: &str, alphanumeric: bool) -> String {
+    s.chars()
+        .map(|c| {
+            if alphanumeric {
+                if c.is_alphanumeric() {
+                    c
+                } else {
+                    '_'
+                }
+            } else {
+                if c == '\n' {
+                    '_'
+                } else {
+                    c
+                }
+            }
+        })
+        .collect()
+}
+
+fn append_transport_info(result: &mut String, key: &str, value: &str, alphanumeric: bool) {
+    if value.is_empty() {
+        return;
+    }
+
+    result.push(' ');
+    result.push_str(key);
+    result.push_str(&sanitize(value, alphanumeric));
+}
+
+fn append_transport(t: &ATransport, result: &mut String, long_listing: bool) {
+    let serial = t.serial.lock().unwrap();
+    let serial = if serial.is_empty() {
+        "(no serial number)"
+    } else {
+        &serial
+    };
+
+    let state = t.get_connection_state().to_string();
+
+    if !long_listing {
+        result.push_str(serial);
+        result.push('\t');
+        result.push_str(&state);
+    } else {
+        result.push_str(&format!("{:<22} {}", serial, state));
+
+        append_transport_info(result, "", &t.devpath.lock().unwrap(), false);
+        append_transport_info(result, "product:", &t.product.lock().unwrap(), false);
+        append_transport_info(result, "model:", &t.model.lock().unwrap(), true);
+        append_transport_info(result, "device:", &t.device.lock().unwrap(), false);
+
+        result.push_str(" transport_id:");
+        result.push_str(&t.id.to_string());
+    }
+    result.push('\n');
+}
+
+/// Lists all registered transports in the specified format.
+/// Ported from original/transport.cpp: `std::string list_transports(TrackerOutputType outputType)`
+pub fn list_transports(output_type: TrackerOutputType) -> String {
+    let mut list = transport_list().lock().unwrap().clone();
+    list.sort_by(|a, b| {
+        if a.transport_type != b.transport_type {
+            (a.transport_type as i32).cmp(&(b.transport_type as i32))
+        } else {
+            a.serial.lock().unwrap().cmp(&b.serial.lock().unwrap())
+        }
+    });
+
+    match output_type {
+        TrackerOutputType::ShortText | TrackerOutputType::LongText => {
+            let long_listing = output_type == TrackerOutputType::LongText;
+            let mut result = String::new();
+            for t in list {
+                append_transport(&t, &mut result, long_listing);
+            }
+            result
+        }
+        TrackerOutputType::Protobuf | TrackerOutputType::TextProtobuf => {
+            // TODO: Implement protobuf output if needed.
+            "protobuf output not implemented".to_string()
+        }
+    }
+}
+
 fn handle_new_connection(t: &Arc<ATransport>, p: &Apacket) {
     t.set_connection_state(ConnectionState::Offline);
     t.update_version(p.msg.arg0, p.msg.arg1);
@@ -1067,6 +1162,28 @@ impl FdConnection {
             read_file: Mutex::new(read_file),
             write_file: Mutex::new(write_file),
         }
+    }
+}
+
+impl Connection for FdConnection {
+    fn write(&self, packet: Apacket) -> bool {
+        BlockingConnection::write(self, &packet).is_ok()
+    }
+
+    fn start(&self) -> bool {
+        true
+    }
+
+    fn stop(&self) {
+        self.close();
+    }
+
+    fn do_tls_handshake(&self, key: &Key, auth_key: Option<&mut String>) -> bool {
+        BlockingConnection::do_tls_handshake(self, key, auth_key)
+    }
+
+    fn reset(&self) {
+        BlockingConnection::reset(self);
     }
 }
 

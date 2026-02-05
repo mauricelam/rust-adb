@@ -148,16 +148,17 @@ Each step involves porting 1-2 files and implementing a corresponding testing st
 - **Files**: `services.h`, `services.cpp`
 - **Description**: Port the high-level service handling (e.g., `shell`, `push`, `pull`).
 - **Testing**:
-    - Full integration tests using `test/tests/integration_test.rs`.
+    - Full integration tests using `test/client-server-test/tests/integration_test.rs`.
+    - Unit tests for `device_tracker` and `shell_service` argument parsing.
     - Compare service responses between Rust and C++ implementations.
 - **Notes**:
     - **Gaps (unresolved TODOs)**:
-        - `connect_emulator` and `connect_device`.
-        - `adb_wifi_pair_device`.
-        - `device_tracker` (both short and long text).
-        - `jdwp`, `track-jdwp`, `track-app`, `sink`, `source`.
-        - `reverse_service` and `reconnect_service`.
-        - Parsing `service_args` for `shell` (pty, v2, etc.).
+        - `connect_device`: Currently only registers the transport; need to implement the asynchronous connection loop and packet handling for newly connected devices.
+        - `shell_service`: Basic subprocess execution implemented, but PTY allocation and Shell Protocol v2 (multiplexing) are still missing.
+        - `adb_wifi_pair_device`: Pairing logic using `PairingClient` needs to be fully implemented.
+        - `jdwp`, `track-jdwp`, `track-app`: JDWP management and application tracking services are still placeholders.
+        - `reverse_service`: Reverse port forwarding logic needs to be ported from `adb_listeners.cpp`.
+        - `sync`: The full `sync:` protocol for push/pull is not yet implemented.
 
 ## Architectural Guidance for Windows Support
 
