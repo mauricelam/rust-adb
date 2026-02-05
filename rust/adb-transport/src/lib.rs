@@ -1203,7 +1203,7 @@ mod tests {
             *self.peer_id.lock().unwrap() = Some(peer.id());
         }
         fn ack(&self, _acked_bytes: Option<i32>) {
-            // TODO
+            self.ready();
         }
     }
 

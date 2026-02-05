@@ -711,6 +711,9 @@ mod tests {
                 0
             }
             fn ready(&self) {}
+            fn ack(&self, _acked_bytes: Option<i32>) {
+                self.ready();
+            }
             fn shutdown(&self) {}
             fn close(&self) {}
             fn peer_id(&self) -> Option<u32> {
@@ -969,6 +972,10 @@ impl Socket for DeviceTracker {
         self.update();
     }
 
+    fn ack(&self, _acked_bytes: Option<i32>) {
+        self.ready();
+    }
+
     fn shutdown(&self) {}
 
     fn close(&self) {
@@ -1046,6 +1053,10 @@ impl Socket for SinkSocket {
 
     fn ready(&self) {}
 
+    fn ack(&self, _acked_bytes: Option<i32>) {
+        self.ready();
+    }
+
     fn shutdown(&self) {}
 
     fn close(&self) {
@@ -1103,6 +1114,10 @@ impl Socket for SourceSocket {
                     .fetch_sub(len as u64, std::sync::atomic::Ordering::Relaxed);
             }
         }
+    }
+
+    fn ack(&self, _acked_bytes: Option<i32>) {
+        self.ready();
     }
 
     fn shutdown(&self) {}
