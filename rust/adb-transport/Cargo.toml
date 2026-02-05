@@ -11,6 +11,10 @@ sysdeps = { path = "../sysdeps" }
 trace = { path = "../trace" }
 adb-auth = { path = "../adb-auth" }
 rust-adb-crypto = { path = "../crypto" }
+adb-sockets = { path = "../adb-sockets" }
+fdevent = { path = "../fdevent" }
+bytes = "1"
 thiserror = "1.0.44"
+anyhow = "1.0"
 libc = "0.2"
 log = "0.4"
