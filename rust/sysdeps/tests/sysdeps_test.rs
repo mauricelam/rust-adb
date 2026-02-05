@@ -6,6 +6,9 @@ use std::os::unix::io::AsRawFd;
 use std::sync::Mutex;
 use libc;
 
+/// Global mutex used to serialize tests that are sensitive to process-wide resources.
+/// Specifically, `test_sysdeps_fd_exhaustion` consumes all available file descriptors,
+/// which would cause other tests running in parallel to fail when they try to open sockets.
 static SERIAL_TEST: Mutex<()> = Mutex::new(());
 
 #[test]
