@@ -381,6 +381,18 @@ impl Socket for SmartSocket {
         let mut inner = self.inner.lock().unwrap();
         inner.peer = Some(Arc::downgrade(&peer));
     }
+    fn ack(&self, acked_bytes: Option<i32>) {
+        if let Some(peer) = self
+            .inner
+            .lock()
+            .unwrap()
+            .peer
+            .as_ref()
+            .and_then(|p| p.upgrade())
+        {
+            peer.ack(acked_bytes);
+        }
+    }
 }
 
 /// Connects a local socket to a smart socket for service dispatching.

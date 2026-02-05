@@ -36,6 +36,8 @@ pub trait Socket: Send + Sync {
     fn enqueue(&self, data: Bytes) -> i32;
     /// Called when the peer is ready to receive more data.
     fn ready(&self);
+    /// Called when the peer acknowledges receipt of data.
+    fn ack(&self, acked_bytes: Option<i32>);
     /// Notifies the socket that it should stop sending data.
     fn shutdown(&self);
     /// Closes the socket.
@@ -288,6 +290,18 @@ impl Socket for LocalSocket {
     fn ready(&self) {
         let mut inner = self.inner.lock().unwrap();
         inner.add_interest(Interest::READABLE);
+    }
+
+    fn ack(&self, acked_bytes: Option<i32>) {
+        if let Some(acked) = acked_bytes {
+            if acked >= 0 {
+                let mut inner = self.inner.lock().unwrap();
+                if let Some(available) = inner.available_send_bytes.as_mut() {
+                    *available += acked as i64;
+                }
+            }
+        }
+        self.ready();
     }
 
     fn shutdown(&self) {
@@ -576,6 +590,10 @@ impl Socket for RemoteSocket {
         }
         p.msg.arg1 = self.id;
         inner.transport.send_packet(p);
+    }
+
+    fn ack(&self, _acked_bytes: Option<i32>) {
+        self.ready();
     }
 
     fn shutdown(&self) {
