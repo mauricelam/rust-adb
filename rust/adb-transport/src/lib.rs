@@ -24,12 +24,8 @@
 use std::collections::VecDeque;
 use std::fs::File;
 use std::io::{Read, Write};
-use std::io::{Read, Write};
-use std::os::unix::io::OwnedFd;
 use std::os::unix::io::OwnedFd;
 use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU64, AtomicUsize, Ordering};
-use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU64, Ordering};
-use std::sync::{Arc, Mutex, OnceLock};
 use std::sync::{Arc, Mutex, OnceLock};
 
 use adb_protocol::{ConnectionState, TransportType, A_VERSION_MIN, MAX_PAYLOAD};
@@ -1096,9 +1092,6 @@ mod tests {
             0
         }
         fn ready(&self) {
-            self.readied.store(true, Ordering::SeqCst);
-        }
-        fn ack(&self, _acked_bytes: Option<i32>) {
             self.readied.store(true, Ordering::SeqCst);
         }
         fn shutdown(&self) {}
