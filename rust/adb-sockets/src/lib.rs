@@ -22,7 +22,7 @@ use bytes::Bytes;
 use fdevent::fdevent::{Fdevent, FdeventHandler};
 use mio::{event::Event, unix::SourceFd, Interest, Token};
 use std::collections::HashMap;
-use std::os::unix::io::RawFd;
+use std::os::unix::io::{FromRawFd, OwnedFd, RawFd};
 use std::sync::{Arc, Mutex, Weak};
 
 /// Maximum payload size for an ADB packet.
@@ -431,7 +431,7 @@ impl LocalSocketInner {
 impl FdeventHandler for LocalSocket {
     /// Handles events from the `fdevent` looper.
     /// Ported from `local_socket_event_func` in `original/sockets.cpp`.
-    fn on_event(&mut self, event: &Event, _registry: &mio::Registry) {
+    fn on_event(&mut self, event: &Event, _fdevent: &mut Fdevent) {
         if event.is_writable() {
             let mut inner = self.inner.lock().unwrap();
             inner.flush_incoming();
@@ -470,7 +470,7 @@ impl FdeventHandler for LocalSocket {
         }
     }
 
-    fn on_timeout(&mut self) {}
+    fn on_timeout(&mut self, _fdevent: &mut Fdevent) {}
 }
 
 /// A remote socket bound to a transport.
@@ -591,9 +591,9 @@ pub fn create_local_socket(
     let socket_arc = Arc::new(socket.clone());
 
     // SAFETY: fd is a valid file descriptor.
-    let borrowed_fd = unsafe { std::os::unix::io::BorrowedFd::borrow_raw(fd) };
+    let owned_fd = unsafe { OwnedFd::from_raw_fd(fd) };
     let token = fdevent
-        .register(&borrowed_fd, Box::new(socket), Interest::READABLE)
+        .register(owned_fd, Box::new(socket), Interest::READABLE)
         .unwrap();
     socket_arc.inner.lock().unwrap().token = token;
 
