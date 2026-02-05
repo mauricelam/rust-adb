@@ -4,8 +4,10 @@ use std::os::unix::net::UnixStream;
 use std::io::{Read, Write};
 use std::os::unix::io::AsRawFd;
 use libc;
+use serial_test::serial;
 
 #[test]
+#[serial]
 fn test_sysdeps_socketpair_smoke() {
     let (mut s1, mut s2) = UnixStream::pair().expect("socketpair failed");
     s1.write_all(b"foo\0").unwrap();
@@ -19,6 +21,7 @@ fn test_sysdeps_socketpair_smoke() {
 }
 
 #[test]
+#[serial]
 fn test_sysdeps_fd_exhaustion() {
     let mut fds = Vec::new();
     loop {
@@ -46,6 +49,7 @@ fn test_sysdeps_fd_exhaustion() {
 }
 
 #[test]
+#[serial]
 fn test_sysdeps_poll_smoke() {
     let (s1, s2) = UnixStream::pair().unwrap();
     let mut pfds = [
@@ -67,6 +71,7 @@ fn test_sysdeps_poll_smoke() {
 }
 
 #[test]
+#[serial]
 fn test_sysdeps_poll_timeout() {
     let (s1, _s2) = UnixStream::pair().unwrap();
     let mut pfd = AdbPollFd { fd: s1.as_raw_fd(), events: libc::POLLIN, revents: 0 };
@@ -74,6 +79,7 @@ fn test_sysdeps_poll_timeout() {
 }
 
 #[test]
+#[serial]
 fn test_sysdeps_poll_invalid_fd() {
     let (s1, s2) = UnixStream::pair().unwrap();
     let mut pfds = [
@@ -91,6 +97,7 @@ fn test_sysdeps_poll_invalid_fd() {
 
 #[test]
 #[cfg(not(target_os = "macos"))]
+#[serial]
 fn test_sysdeps_poll_duplicate_fd() {
     let (s1, s2) = UnixStream::pair().unwrap();
     let fd = s1.as_raw_fd();
@@ -120,6 +127,7 @@ fn test_sysdeps_poll_duplicate_fd() {
 }
 
 #[test]
+#[serial]
 fn test_sysdeps_poll_disconnect() {
     let (s1, s2) = UnixStream::pair().unwrap();
     let mut pfd = AdbPollFd { fd: s1.as_raw_fd(), events: libc::POLLIN, revents: 0 };
@@ -133,6 +141,7 @@ fn test_sysdeps_poll_disconnect() {
 }
 
 #[test]
+#[serial]
 fn test_sysdeps_poll_fd_count() {
     let num_sockets = 256;
     let mut sockets = Vec::new();
@@ -155,6 +164,7 @@ fn test_sysdeps_poll_fd_count() {
 }
 
 #[test]
+#[serial]
 fn test_sysdeps_condition_variable_smoke() {
     use std::sync::{Arc, Mutex, Condvar};
     use std::thread;
