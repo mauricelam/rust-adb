@@ -73,6 +73,7 @@ Every new module in `rust/` must have a corresponding integration test in `tests
 - Cryptographic operations should prefer to use the pure-rust implementations in https://github.com/rustcrypto
 - USB operations should prefer to use rusb: https://docs.rs/rusb/latest/rusb/
 - TCP operations should use the standard library implementation
+- As porting steps are done, update PORTING_PLAN.md to reflect the progress. If there are new items that should be done, add them to the plan.
 
 
 ## Inspirations
