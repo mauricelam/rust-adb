@@ -58,6 +58,8 @@ pub trait Socket: Send + Sync {
     fn peer_id(&self) -> Option<u32>;
     /// Returns the transport ID associated with the socket, if any.
     fn transport_id(&self) -> Option<u64>;
+    /// Sets the peer socket.
+    fn set_peer(&self, peer: Arc<dyn Socket>);
 }
 
 /// Trait representing a transport that can send ADB packets.
@@ -224,12 +226,6 @@ impl LocalSocket {
         }
     }
 
-    /// Sets the peer socket.
-    pub fn set_peer(&self, peer: Arc<dyn Socket>) {
-        let mut inner = self.inner.lock().unwrap();
-        inner.peer = Some(Arc::downgrade(&peer));
-    }
-
     /// Sets the associated transport.
     pub fn set_transport(&self, transport: Arc<dyn Transport>) {
         let mut inner = self.inner.lock().unwrap();
@@ -297,6 +293,11 @@ impl Socket for LocalSocket {
     fn transport_id(&self) -> Option<u64> {
         let inner = self.inner.lock().unwrap();
         inner.transport.as_ref().map(|t| t.id())
+    }
+
+    fn set_peer(&self, peer: Arc<dyn Socket>) {
+        let mut inner = self.inner.lock().unwrap();
+        inner.peer = Some(Arc::downgrade(&peer));
     }
 }
 
@@ -499,12 +500,6 @@ impl RemoteSocket {
             }),
         }
     }
-
-    /// Sets the peer socket.
-    pub fn set_peer(&self, peer: Arc<dyn Socket>) {
-        let mut inner = self.inner.lock().unwrap();
-        inner.peer = Some(Arc::downgrade(&peer));
-    }
 }
 
 impl Socket for RemoteSocket {
@@ -575,6 +570,11 @@ impl Socket for RemoteSocket {
     fn transport_id(&self) -> Option<u64> {
         let inner = self.inner.lock().unwrap();
         Some(inner.transport.id())
+    }
+
+    fn set_peer(&self, peer: Arc<dyn Socket>) {
+        let mut inner = self.inner.lock().unwrap();
+        inner.peer = Some(Arc::downgrade(&peer));
     }
 }
 

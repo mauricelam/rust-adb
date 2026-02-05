@@ -27,6 +27,7 @@ use std::os::unix::io::OwnedFd;
 use std::io::{Read, Write};
 use std::fs::File;
 
+use adb_sockets::{Socket, Transport};
 use adb_types::{Amessage, Apacket, Block};
 use rust_adb_crypto::Key;
 use adb_protocol::{TransportType, ConnectionState, MAX_PAYLOAD, A_VERSION_MIN};
@@ -155,7 +156,20 @@ pub struct ATransport {
     protocol_version: AtomicI32,
     max_payload: Mutex<usize>,
 
-    disconnects: Mutex<Vec<Box<dyn DisconnectHandler>>>,
+    disconnects: Mutex<Vec<(u64, Box<dyn DisconnectHandler>)>>,
+    next_disconnect_id: AtomicU64,
+
+    pub registry: Mutex<Option<Arc<adb_sockets::SocketRegistry>>>,
+    pub fdevent: Mutex<Option<Arc<Mutex<fdevent::fdevent::Fdevent>>>>,
+    pub service_creator: Mutex<Option<Box<dyn ServiceSocketCreator>>>,
+}
+
+pub trait ServiceSocketCreator: Send + Sync {
+    fn create_local_service_socket(
+        &self,
+        name: &str,
+        transport: &Arc<ATransport>,
+    ) -> Option<Arc<dyn adb_sockets::Socket>>;
 }
 
 impl ATransport {
@@ -180,6 +194,10 @@ impl ATransport {
             protocol_version: AtomicI32::new(A_VERSION_MIN as i32),
             max_payload: Mutex::new(MAX_PAYLOAD),
             disconnects: Mutex::new(Vec::new()),
+            next_disconnect_id: AtomicU64::new(1),
+            registry: Mutex::new(None),
+            fdevent: Mutex::new(None),
+            service_creator: Mutex::new(None),
         }
     }
 
@@ -228,7 +246,7 @@ impl ATransport {
     }
 
     /// Ported from original/transport.cpp: `bool atransport::HandleRead(std::unique_ptr<apacket> p)`
-    pub fn handle_read(&self, packet: Apacket) -> bool {
+    pub fn handle_read(self: &Arc<Self>, packet: Apacket) -> bool {
         log::debug!(
             target: "transport",
             "{} remote read: {} {}",
@@ -256,13 +274,21 @@ impl ATransport {
         *features = string_to_feature_set(features_string);
     }
 
-    pub fn add_disconnect(&self, handler: Box<dyn DisconnectHandler>) {
-        self.disconnects.lock().unwrap().push(handler);
+    pub fn add_disconnect(&self, handler: Box<dyn DisconnectHandler>) -> u64 {
+        let mut disconnects = self.disconnects.lock().unwrap();
+        let id = self.next_disconnect_id.fetch_add(1, Ordering::SeqCst);
+        disconnects.push((id, handler));
+        id
+    }
+
+    pub fn remove_disconnect(&self, id: u64) {
+        let mut disconnects = self.disconnects.lock().unwrap();
+        disconnects.retain(|(hid, _)| *hid != id);
     }
 
     pub fn run_disconnects(&self) {
         let mut handlers = self.disconnects.lock().unwrap();
-        for handler in handlers.drain(..) {
+        for (_, handler) in handlers.drain(..) {
             handler.on_disconnect(self);
         }
     }
@@ -327,6 +353,45 @@ impl ATransport {
 
     pub fn reconnect(&self) -> ReconnectResult {
         (self.reconnect)(self)
+    }
+
+    pub fn update_version(&self, version: u32, max_payload: u32) {
+        let version = std::cmp::min(version, adb_protocol::A_VERSION);
+        self.protocol_version.store(version as i32, Ordering::SeqCst);
+        let max_payload = std::cmp::min(max_payload as usize, adb_protocol::MAX_PAYLOAD);
+        *self.max_payload.lock().unwrap() = max_payload;
+    }
+}
+
+impl adb_sockets::Transport for ATransport {
+    fn id(&self) -> u64 {
+        self.id
+    }
+
+    fn send_packet(&self, packet: Apacket) {
+        self.write(packet);
+    }
+
+    fn send_ready(&self, local: u32, remote: u32, ack_bytes: u32) {
+        let mut p = Apacket::default();
+        p.msg.command = adb_protocol::A_OKAY;
+        p.msg.arg0 = local;
+        p.msg.arg1 = remote;
+
+        if self.has_feature(FEATURE_DELAYED_ACK) && ack_bytes > 0 {
+            p.msg.data_length = 4;
+            p.payload = Block::from_vec(ack_bytes.to_le_bytes().to_vec());
+        }
+
+        self.send_packet(p);
+    }
+
+    fn get_max_payload(&self) -> usize {
+        self.get_max_payload()
+    }
+
+    fn supports_delayed_ack(&self) -> bool {
+        self.has_feature(FEATURE_DELAYED_ACK)
     }
 }
 
@@ -482,13 +547,152 @@ pub fn parse_banner(banner: &str, t: &ATransport) {
     }
 }
 
-pub fn handle_packet(_packet: Apacket, _t: &ATransport) {
-    // TODO: implement handle_packet logic (A_OPEN, A_CLSE, etc.)
+pub fn handle_packet(packet: Apacket, t: &Arc<ATransport>) {
+    match packet.msg.command {
+        adb_protocol::A_CNXN => {
+            handle_new_connection(t, &packet);
+        }
+        adb_protocol::A_AUTH => {
+            handle_auth(t, &packet);
+        }
+        adb_protocol::A_OPEN => {
+            handle_open(t, &packet);
+        }
+        adb_protocol::A_OKAY => {
+            handle_okay(t, &packet);
+        }
+        adb_protocol::A_CLSE => {
+            handle_close(t, &packet);
+        }
+        adb_protocol::A_WRTE => {
+            handle_write(t, &packet);
+        }
+        _ => {
+            log::warn!(target: "transport", "Unknown command: {:08x}", packet.msg.command);
+        }
+    }
+}
+
+fn handle_new_connection(t: &Arc<ATransport>, p: &Apacket) {
+    t.set_connection_state(ConnectionState::Offline);
+    t.update_version(p.msg.arg0, p.msg.arg1);
+    let banner = String::from_utf8_lossy(p.payload.get_ref());
+    parse_banner(&banner, t);
+}
+
+fn handle_auth(t: &Arc<ATransport>, p: &Apacket) {
+    match p.msg.arg0 {
+        adb_auth::ADB_AUTH_TOKEN => {
+            if t.get_connection_state() != ConnectionState::Authorizing {
+                t.set_connection_state(ConnectionState::Authorizing);
+            }
+            // In a full implementation, we'd sign the token and send A_AUTH SIGNATURE.
+            // For now, we just log it.
+            log::debug!(target: "transport", "Received AUTH TOKEN");
+        }
+        _ => {
+            t.set_connection_state(ConnectionState::Offline);
+        }
+    }
+}
+
+fn handle_open(t: &Arc<ATransport>, p: &Apacket) {
+    if !t.get_connection_state().is_online() || p.msg.arg0 == 0 {
+        return;
+    }
+
+    let address = String::from_utf8_lossy(p.payload.get_ref());
+    let address = address.trim_end_matches('\0');
+
+    let service_creator = t.service_creator.lock().unwrap();
+    let s = service_creator
+        .as_ref()
+        .and_then(|sc| sc.create_local_service_socket(address, t));
+
+    if let Some(s) = s {
+        let registry = t.registry.lock().unwrap();
+        if let Some(registry) = registry.as_ref() {
+            let peer = adb_sockets::create_remote_socket(p.msg.arg0, t.clone() as Arc<dyn Transport>, registry.clone());
+            s.set_peer(peer.clone() as Arc<dyn adb_sockets::Socket>);
+            peer.set_peer(s.clone() as Arc<dyn adb_sockets::Socket>);
+            s.ready();
+        }
+    } else {
+        send_close(0, p.msg.arg0, t);
+    }
+}
+
+fn handle_okay(t: &Arc<ATransport>, p: &Apacket) {
+    if t.get_connection_state().is_online() && p.msg.arg0 != 0 && p.msg.arg1 != 0 {
+        let registry = t.registry.lock().unwrap();
+        if let Some(registry) = registry.as_ref() {
+            if let Some(s) = registry.find_local_socket(p.msg.arg1, 0) {
+                if s.peer_id().is_none() {
+                    let peer =
+                        adb_sockets::create_remote_socket(p.msg.arg0, t.clone() as Arc<dyn Transport>, registry.clone());
+                    s.set_peer(peer.clone() as Arc<dyn adb_sockets::Socket>);
+                    peer.set_peer(s.clone() as Arc<dyn adb_sockets::Socket>);
+                }
+                s.ready();
+            } else {
+                send_close(p.msg.arg1, p.msg.arg0, t);
+            }
+        }
+    }
+}
+
+fn handle_close(t: &Arc<ATransport>, p: &Apacket) {
+    if t.get_connection_state().is_online() && p.msg.arg1 != 0 {
+        let registry = t.registry.lock().unwrap();
+        if let Some(registry) = registry.as_ref() {
+            if let Some(s) = registry.find_local_socket(p.msg.arg1, p.msg.arg0) {
+                s.close();
+            }
+        }
+    }
+}
+
+fn handle_write(t: &Arc<ATransport>, p: &Apacket) {
+    if t.get_connection_state().is_online() && p.msg.arg0 != 0 && p.msg.arg1 != 0 {
+        let registry = t.registry.lock().unwrap();
+        if let Some(registry) = registry.as_ref() {
+            if let Some(s) = registry.find_local_socket(p.msg.arg1, p.msg.arg0) {
+                let data = bytes::Bytes::copy_from_slice(p.payload.get_ref());
+                if s.enqueue(data) == 0 {
+                    t.send_ready(s.id(), p.msg.arg0, 0);
+                }
+            }
+        }
+    }
+}
+
+fn send_close(local: u32, remote: u32, t: &Arc<ATransport>) {
+    let mut p = Apacket::default();
+    p.msg.command = adb_protocol::A_CLSE;
+    p.msg.arg0 = local;
+    p.msg.arg1 = remote;
+    t.write(p);
+}
+
+type TransportObserver = Box<dyn Fn() + Send + Sync>;
+static TRANSPORT_OBSERVERS: OnceLock<Mutex<Vec<TransportObserver>>> = OnceLock::new();
+
+pub fn register_transport_observer(observer: TransportObserver) {
+    TRANSPORT_OBSERVERS
+        .get_or_init(|| Mutex::new(Vec::new()))
+        .lock()
+        .unwrap()
+        .push(observer);
 }
 
 pub fn update_transports() {
     log::debug!(target: "transport", "update_transports");
-    // TODO: Notify `adb track-devices` clients once device_tracker is ported.
+    if let Some(observers) = TRANSPORT_OBSERVERS.get() {
+        let observers = observers.lock().unwrap();
+        for observer in observers.iter() {
+            observer();
+        }
+    }
 }
 
 #[cfg(test)]
@@ -538,6 +742,20 @@ mod tests {
     }
 
     #[test]
+    fn test_connection_state_to_string() {
+        assert_eq!(ConnectionState::Offline.to_string(), "offline");
+        assert_eq!(ConnectionState::Bootloader.to_string(), "bootloader");
+        assert_eq!(ConnectionState::Device.to_string(), "device");
+        assert_eq!(ConnectionState::Host.to_string(), "host");
+        assert_eq!(ConnectionState::Recovery.to_string(), "recovery");
+        assert_eq!(ConnectionState::Rescue.to_string(), "rescue");
+        assert_eq!(ConnectionState::Sideload.to_string(), "sideload");
+        assert_eq!(ConnectionState::Unauthorized.to_string(), "unauthorized");
+        assert_eq!(ConnectionState::Authorizing.to_string(), "authorizing");
+        assert_eq!(ConnectionState::Connecting.to_string(), "connecting");
+    }
+
+    #[test]
     fn test_run_disconnects() {
         let t = ATransport::new_offline(TransportType::Local);
         let counter = Arc::new(Counter {
@@ -551,11 +769,17 @@ mod tests {
             }
         }
 
-        t.add_disconnect(Box::new(Wrapper(counter.clone())));
+        let _id = t.add_disconnect(Box::new(Wrapper(counter.clone())));
         t.run_disconnects();
         assert_eq!(*counter.count.lock().unwrap(), 1);
 
         // Disconnects should have been removed.
+        t.run_disconnects();
+        assert_eq!(*counter.count.lock().unwrap(), 1);
+
+        // Test remove_disconnect
+        let id = t.add_disconnect(Box::new(Wrapper(counter.clone())));
+        t.remove_disconnect(id);
         t.run_disconnects();
         assert_eq!(*counter.count.lock().unwrap(), 1);
     }
@@ -595,11 +819,13 @@ mod tests {
     #[test]
     fn test_parse_banner_features() {
         let t = ATransport::new_offline(TransportType::Local);
-        let banner = "host::ro.product.name=foo;features=woodly,doodly";
+        let banner = "host::ro.product.name=foo;ro.product.model=bar;ro.product.device=baz;features=woodly,doodly";
         parse_banner(banner, &t);
 
         assert_eq!(t.get_connection_state(), ConnectionState::Host);
         assert_eq!(*t.product.lock().unwrap(), "foo");
+        assert_eq!(*t.model.lock().unwrap(), "bar");
+        assert_eq!(*t.device.lock().unwrap(), "baz");
         assert!(t.has_feature("woodly"));
         assert!(t.has_feature("doodly"));
     }
@@ -688,6 +914,117 @@ mod tests {
         assert!(t.is_kicked());
         assert!(conn.stopped.load(Ordering::SeqCst));
     }
+
+    #[test]
+    fn test_handle_cnxn() {
+        let t = Arc::new(ATransport::new_offline(TransportType::Usb));
+        let mut p = Apacket::default();
+        p.msg.command = adb_protocol::A_CNXN;
+        p.msg.arg0 = adb_protocol::A_VERSION;
+        p.msg.arg1 = 1024 * 1024;
+        p.payload = Block::from_vec(b"device::ro.product.name=foo;features=shell_v2".to_vec());
+        p.msg.data_length = p.payload.get_ref().len() as u32;
+
+        handle_packet(p, &t);
+
+        assert_eq!(t.get_connection_state(), ConnectionState::Device);
+        assert_eq!(t.get_protocol_version(), adb_protocol::A_VERSION as i32);
+        assert_eq!(t.get_max_payload(), 1024 * 1024);
+        assert!(t.has_feature("shell_v2"));
+    }
+
+    struct MockSocket {
+        id: u32,
+        peer_id: Mutex<Option<u32>>,
+        enqueued: Mutex<Vec<bytes::Bytes>>,
+        readied: AtomicBool,
+        closed: AtomicBool,
+    }
+
+    impl MockSocket {
+        fn new(id: u32) -> Self {
+            Self {
+                id,
+                peer_id: Mutex::new(None),
+                enqueued: Mutex::new(Vec::new()),
+                readied: AtomicBool::new(false),
+                closed: AtomicBool::new(false),
+            }
+        }
+    }
+
+    impl Socket for MockSocket {
+        fn id(&self) -> u32 { self.id }
+        fn enqueue(&self, data: bytes::Bytes) -> i32 {
+            self.enqueued.lock().unwrap().push(data);
+            0
+        }
+        fn ready(&self) { self.readied.store(true, Ordering::SeqCst); }
+        fn shutdown(&self) {}
+        fn close(&self) { self.closed.store(true, Ordering::SeqCst); }
+        fn peer_id(&self) -> Option<u32> { *self.peer_id.lock().unwrap() }
+        fn transport_id(&self) -> Option<u64> { None }
+        fn set_peer(&self, peer: Arc<dyn Socket>) {
+            *self.peer_id.lock().unwrap() = Some(peer.id());
+        }
+    }
+
+    struct MockServiceCreator {
+        socket: Arc<MockSocket>,
+    }
+
+    impl ServiceSocketCreator for MockServiceCreator {
+        fn create_local_service_socket(&self, _name: &str, transport: &Arc<ATransport>) -> Option<Arc<dyn Socket>> {
+            let registry = transport.registry.lock().unwrap();
+            if let Some(registry) = registry.as_ref() {
+                registry.install(self.socket.clone());
+            }
+            Some(self.socket.clone())
+        }
+    }
+
+    #[test]
+    fn test_handle_open() {
+        let t = Arc::new(ATransport::new(TransportType::Usb, Box::new(|_| ReconnectResult::Abort), ConnectionState::Device));
+        let registry = Arc::new(adb_sockets::SocketRegistry::new());
+        *t.registry.lock().unwrap() = Some(registry.clone());
+        let mock_socket = Arc::new(MockSocket::new(100));
+        *t.service_creator.lock().unwrap() = Some(Box::new(MockServiceCreator { socket: mock_socket.clone() }));
+
+        let mut p = Apacket::default();
+        p.msg.command = adb_protocol::A_OPEN;
+        p.msg.arg0 = 200; // remote id
+        p.payload = Block::from_vec(b"shell:echo hello".to_vec());
+        p.msg.data_length = p.payload.get_ref().len() as u32;
+
+        handle_packet(p, &t);
+
+        assert_eq!(mock_socket.peer_id(), Some(200));
+        assert!(mock_socket.readied.load(Ordering::SeqCst));
+        assert!(registry.find(100).is_some());
+    }
+
+    #[test]
+    fn test_handle_write() {
+        let t = Arc::new(ATransport::new(TransportType::Usb, Box::new(|_| ReconnectResult::Abort), ConnectionState::Device));
+        let registry = Arc::new(adb_sockets::SocketRegistry::new());
+        *t.registry.lock().unwrap() = Some(registry.clone());
+        let mock_socket = Arc::new(MockSocket::new(100));
+        *mock_socket.peer_id.lock().unwrap() = Some(200);
+        registry.install(mock_socket.clone());
+
+        let mut p = Apacket::default();
+        p.msg.command = adb_protocol::A_WRTE;
+        p.msg.arg0 = 200; // remote id
+        p.msg.arg1 = 100; // local id
+        p.payload = Block::from_vec(b"hello".to_vec());
+        p.msg.data_length = p.payload.get_ref().len() as u32;
+
+        handle_packet(p, &t);
+
+        assert_eq!(mock_socket.enqueued.lock().unwrap().len(), 1);
+        assert_eq!(mock_socket.enqueued.lock().unwrap()[0], &b"hello"[..]);
+    }
 }
 
 /// Ported from original/transport.h: `struct Connection`
@@ -762,7 +1099,7 @@ impl BlockingConnection for FdConnection {
     }
 
     fn do_tls_handshake(&self, _key: &Key, _auth_key: Option<&mut String>) -> bool {
-        // TODO: Implement TLS handshake
+        log::warn!(target: "transport", "TLS handshake not yet implemented");
         false
     }
 

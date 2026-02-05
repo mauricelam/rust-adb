@@ -114,6 +114,27 @@ impl ConnectionState {
     }
 }
 
+impl std::fmt::Display for ConnectionState {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let s = match self {
+            ConnectionState::Any => "any",
+            ConnectionState::Connecting => "connecting",
+            ConnectionState::Authorizing => "authorizing",
+            ConnectionState::Unauthorized => "unauthorized",
+            ConnectionState::NoPerm => "no permissions",
+            ConnectionState::Detached => "detached",
+            ConnectionState::Offline => "offline",
+            ConnectionState::Bootloader => "bootloader",
+            ConnectionState::Device => "device",
+            ConnectionState::Host => "host",
+            ConnectionState::Recovery => "recovery",
+            ConnectionState::Sideload => "sideload",
+            ConnectionState::Rescue => "rescue",
+        };
+        write!(f, "{}", s)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -129,5 +150,12 @@ mod tests {
         assert!(ConnectionState::Device.is_online());
         assert!(!ConnectionState::Offline.is_online());
         assert!(!ConnectionState::Connecting.is_online());
+    }
+
+    #[test]
+    fn test_connection_state_display() {
+        assert_eq!(ConnectionState::Offline.to_string(), "offline");
+        assert_eq!(ConnectionState::Device.to_string(), "device");
+        assert_eq!(ConnectionState::Any.to_string(), "any");
     }
 }

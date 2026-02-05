@@ -78,8 +78,12 @@ version = "0.1.0"
 dependencies = [
  "adb-auth",
  "adb-protocol",
+ "adb-sockets",
  "adb-types",
  "adb-utils",
+ "anyhow",
+ "bytes",
+ "fdevent",
  "libc",
  "log",
  "rust-adb-crypto",
