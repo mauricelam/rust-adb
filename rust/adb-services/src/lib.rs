@@ -21,7 +21,10 @@ use adb_io::{send_fail, send_okay, send_protocol_string};
 use adb_protocol::{ConnectionState, TransportType};
 use adb_socket_spec::{is_socket_spec, socket_spec_connect};
 use adb_sockets::{connect_to_remote, create_local_socket, LocalSocket, Socket, SocketRegistry};
-use adb_transport::{acquire_one_transport, ATransport, TransportId};
+use adb_transport::{
+    acquire_one_transport, list_transports, ATransport, FdConnection, TrackerOutputType,
+    TransportId,
+};
 use adb_utils::{parse_uint, unhex};
 use bytes::Bytes;
 use fdevent::fdevent::{Fdevent, FdeventHandle};
@@ -151,11 +154,82 @@ pub fn wait_service(fd: OwnedFd, serial: String, transport_id: TransportId, spec
 
 /// Service that handles device connection.
 /// Ported from `connect_service` in `original/services.cpp`.
-pub fn connect_service(fd: OwnedFd, _host: String) {
+pub fn connect_service(fd: OwnedFd, host: String) {
     let mut file = std::fs::File::from(fd);
-    // TODO: implement connect_emulator and connect_device
-    let response = "connect not implemented in Rust yet".to_string();
+    let mut response = String::new();
+    if host.starts_with("emu:") {
+        connect_emulator(&host[4..], &mut response);
+    } else {
+        connect_device(host, &mut response);
+    }
     let _ = send_protocol_string(&mut file, &response);
+}
+
+/// Connects to an emulator.
+/// Ported from `connect_emulator` in `original/services.cpp`.
+pub fn connect_emulator(port_spec: &str, response: &mut String) {
+    let pieces: Vec<&str> = port_spec.split(',').collect();
+    if pieces.len() != 2 {
+        *response = format!(
+            "unable to parse '{}' as <console port>,<adb port>",
+            port_spec
+        );
+        return;
+    }
+
+    let console_port = pieces[0].parse::<i32>().unwrap_or(0);
+    let adb_port = pieces[1].parse::<i32>().unwrap_or(0);
+    if console_port <= 0 || adb_port <= 0 {
+        *response = format!("Invalid port numbers: {}", port_spec);
+        return;
+    }
+
+    // Preconditions met, try to connect to the emulator.
+    // In Rust we just use connect_device with the adb port.
+    connect_device(format!("localhost:{}", adb_port), response);
+    if response.contains("connected to") {
+        *response = format!(
+            "connected to emulator on ports {},{}",
+            console_port, adb_port
+        );
+    }
+}
+
+/// Connects to a device via its address.
+/// Ported from `connect_device` in `original/client/transport_emulator.cpp`.
+pub fn connect_device(address: String, response: &mut String) {
+    if address.is_empty() {
+        *response = "empty address".to_string();
+        return;
+    }
+
+    let prefix_addr = if address.starts_with("vsock:")
+        || address.starts_with("localfilesystem:")
+        || address.starts_with("tcp:")
+    {
+        address.clone()
+    } else {
+        format!("tcp:{}", address)
+    };
+
+    let mut port = 0;
+    let mut serial = String::new();
+    match socket_spec_connect(&prefix_addr, Some(&mut port), Some(&mut serial)) {
+        Ok(fd) => {
+            let t = Arc::new(ATransport::new_offline(TransportType::Local));
+            *t.serial.lock().unwrap() = serial;
+
+            let connection = Arc::new(FdConnection::new(fd));
+            t.set_connection(connection);
+
+            // TODO: In a full implementation, we would start the transport packet loop here.
+            adb_transport::register_transport(t);
+            *response = format!("connected to {}", address);
+        }
+        Err(e) => {
+            *response = format!("failed to connect to {}: {}", address, e);
+        }
+    }
 }
 
 /// Service that handles device pairing.
@@ -425,12 +499,16 @@ pub fn host_service_to_socket(
     fdevent: &mut Fdevent,
 ) -> Option<Arc<dyn Socket>> {
     if name == "track-devices" {
-        // TODO: return create_device_tracker(SHORT_TEXT)
-        return None;
+        return Some(create_device_tracker(
+            TrackerOutputType::ShortText,
+            registry,
+        ));
     }
     if name == "track-devices-l" {
-        // TODO: return create_device_tracker(LONG_TEXT)
-        return None;
+        return Some(create_device_tracker(TrackerOutputType::LongText, registry));
+    }
+    if name == "track-devices-proto" {
+        return Some(create_device_tracker(TrackerOutputType::Protobuf, registry));
     }
 
     if let Some(spec) = name.strip_prefix("wait-for-") {
@@ -614,6 +692,72 @@ mod tests {
 
         handle.join().unwrap();
     }
+
+    #[test]
+    fn test_device_tracker() {
+        let registry = Arc::new(SocketRegistry::new());
+        let tracker = create_device_tracker(TrackerOutputType::ShortText, registry.clone());
+
+        struct MockSocket {
+            id: u32,
+            data: std::sync::Mutex<Vec<bytes::Bytes>>,
+        }
+        impl Socket for MockSocket {
+            fn id(&self) -> u32 {
+                self.id
+            }
+            fn enqueue(&self, data: bytes::Bytes) -> i32 {
+                self.data.lock().unwrap().push(data);
+                0
+            }
+            fn ready(&self) {}
+            fn ack(&self, _acked_bytes: Option<i32>) {
+                self.ready();
+            }
+            fn shutdown(&self) {}
+            fn close(&self) {}
+            fn peer_id(&self) -> Option<u32> {
+                None
+            }
+            fn transport_id(&self) -> Option<u64> {
+                None
+            }
+            fn set_peer(&self, _peer: Arc<dyn Socket>) {}
+        }
+
+        let mock_peer = Arc::new(MockSocket {
+            id: 200,
+            data: std::sync::Mutex::new(Vec::new()),
+        });
+
+        tracker.set_peer(mock_peer.clone());
+        tracker.ready();
+
+        let data = mock_peer.data.lock().unwrap();
+        assert_eq!(data.len(), 1);
+        // Check that it starts with 4 hex digits representing the length.
+        let len_str = std::str::from_utf8(&data[0][0..4]).unwrap();
+        let len = usize::from_str_radix(len_str, 16).unwrap();
+        assert_eq!(len, data[0].len() - 4);
+    }
+
+    #[test]
+    fn test_shell_service_args() {
+        let (s1, s2) = UnixStream::pair().unwrap();
+        let s2_fd = OwnedFd::from(s2);
+
+        // Test with raw argument
+        let handle = std::thread::spawn(move || {
+            shell_service(s2_fd, "raw:echo hello");
+        });
+
+        let mut s1_file = std::fs::File::from(OwnedFd::from(s1));
+        let mut buf = [0u8; 64];
+        let n = s1_file.read(&mut buf).unwrap();
+        assert_eq!(String::from_utf8_lossy(&buf[..n]).trim(), "hello");
+
+        handle.join().unwrap();
+    }
 }
 
 /// Dispatches a service to a file descriptor.
@@ -641,24 +785,79 @@ pub fn service_to_fd(name: &str, _transport: Option<&Arc<ATransport>>) -> std::i
 /// Dispatches a service to a socket on the daemon side.
 /// Ported from `daemon_service_to_socket` in `original/daemon/services.cpp`.
 pub fn daemon_service_to_socket(
-    _name: &str,
+    name: &str,
     _transport: &Arc<ATransport>,
 ) -> Option<Arc<dyn Socket>> {
-    // TODO: implement jdwp, track-jdwp, track-app, sink, source
+    if name == "jdwp" {
+        // TODO: implement create_jdwp_service_socket
+        return None;
+    }
+    if name == "track-jdwp" {
+        // TODO: implement create_jdwp_tracker_service_socket
+        return None;
+    }
+    if name == "track-app" {
+        // TODO: implement create_app_tracker_service_socket
+        return None;
+    }
+
+    if let Some(count_str) = name.strip_prefix("sink:") {
+        if let Ok(count) = count_str.parse::<u64>() {
+            let registry = _transport.registry.lock().unwrap().as_ref()?.clone();
+            let id = registry.alloc_id();
+            let socket = Arc::new(SinkSocket {
+                id,
+                registry: registry.clone(),
+                peer: std::sync::Mutex::new(None),
+                bytes_left: std::sync::atomic::AtomicU64::new(count),
+            });
+            registry.install(socket.clone());
+            return Some(socket);
+        }
+    }
+
+    if let Some(count_str) = name.strip_prefix("source:") {
+        if let Ok(count) = count_str.parse::<u64>() {
+            let registry = _transport.registry.lock().unwrap().as_ref()?.clone();
+            let id = registry.alloc_id();
+            let socket = Arc::new(SourceSocket {
+                id,
+                registry: registry.clone(),
+                peer: std::sync::Mutex::new(None),
+                bytes_left: std::sync::atomic::AtomicU64::new(count),
+            });
+            registry.install(socket.clone());
+            return Some(socket);
+        }
+    }
+
     None
 }
 
 /// Service that runs a shell command.
 /// Simplified version of `ShellService` in `original/daemon/services.cpp`.
 pub fn shell_service(fd: OwnedFd, args: &str) {
-    let (command, _type, _protocol) = if let Some(colon_idx) = args.find(':') {
-        let _service_args = &args[..colon_idx];
-        let command = &args[colon_idx + 1..];
-        // TODO: parse service_args for pty, v2, etc.
-        (command, "raw", "none")
-    } else {
-        ("", "pty", "none")
-    };
+    let mut command = "";
+    let mut _subprocess_type = "pty";
+    let mut _protocol = "none";
+    let mut _terminal_type = "dumb";
+
+    if let Some(colon_idx) = args.find(':') {
+        let service_args = &args[..colon_idx];
+        command = &args[colon_idx + 1..];
+
+        _subprocess_type = if command.is_empty() { "pty" } else { "raw" };
+
+        for arg in service_args.split(',') {
+            match arg {
+                K_SHELL_SERVICE_ARG_RAW => _subprocess_type = "raw",
+                K_SHELL_SERVICE_ARG_PTY => _subprocess_type = "pty",
+                K_SHELL_SERVICE_ARG_SHELL_PROTOCOL => _protocol = "v2",
+                _ if arg.starts_with("TERM=") => _terminal_type = &arg[5..],
+                _ => {}
+            }
+        }
+    }
 
     let mut cmd = if command.is_empty() {
         std::process::Command::new("/bin/sh")
@@ -707,14 +906,238 @@ pub fn daemon_service_to_fd(name: &str, _transport: &Arc<ATransport>) -> Option<
         })
         .ok();
     }
-    if name.starts_with("reverse:") {
-        // TODO: implement reverse_service
-        return None;
+    if let Some(cmd) = name.strip_prefix("reverse:") {
+        return reverse_service(cmd, _transport);
     }
     if name == "reconnect" {
-        // TODO: implement reconnect_service
-        return None;
+        let t = Arc::downgrade(_transport);
+        return create_service_thread("reconnect", move |fd| {
+            reconnect_service(fd, t.upgrade().as_ref());
+        })
+        .ok();
     }
 
     None
+}
+
+struct DeviceTracker {
+    id: u32,
+    output_type: TrackerOutputType,
+    registry: Arc<SocketRegistry>,
+    peer: std::sync::Mutex<Option<Arc<dyn Socket>>>,
+}
+
+impl DeviceTracker {
+    fn new(id: u32, output_type: TrackerOutputType, registry: Arc<SocketRegistry>) -> Arc<Self> {
+        let tracker = Arc::new(Self {
+            id,
+            output_type,
+            registry,
+            peer: std::sync::Mutex::new(None),
+        });
+
+        let tracker_weak = Arc::downgrade(&tracker);
+        adb_transport::register_transport_observer(Box::new(move || {
+            if let Some(tracker) = tracker_weak.upgrade() {
+                tracker.update();
+            }
+        }));
+
+        tracker
+    }
+
+    fn update(&self) {
+        let list = list_transports(self.output_type);
+        if let Some(peer) = self.peer.lock().unwrap().as_ref() {
+            let mut data = Vec::with_capacity(list.len() + 4);
+            data.extend_from_slice(format!("{:04x}", list.len()).as_bytes());
+            data.extend_from_slice(list.as_bytes());
+            peer.enqueue(bytes::Bytes::from(data));
+        }
+    }
+}
+
+impl Socket for DeviceTracker {
+    fn id(&self) -> u32 {
+        self.id
+    }
+
+    fn enqueue(&self, _data: bytes::Bytes) -> i32 {
+        // Tracker doesn't accept data from peer.
+        self.close();
+        -1
+    }
+
+    fn ready(&self) {
+        self.update();
+    }
+
+    fn ack(&self, _acked_bytes: Option<i32>) {
+        self.ready();
+    }
+
+    fn shutdown(&self) {}
+
+    fn close(&self) {
+        if let Some(peer) = self.peer.lock().unwrap().take() {
+            peer.close();
+        }
+        self.registry.remove(self.id);
+    }
+
+    fn peer_id(&self) -> Option<u32> {
+        self.peer.lock().unwrap().as_ref().map(|p| p.id())
+    }
+
+    fn transport_id(&self) -> Option<u64> {
+        None
+    }
+
+    fn set_peer(&self, peer: Arc<dyn Socket>) {
+        *self.peer.lock().unwrap() = Some(peer);
+    }
+}
+
+/// Creates a device tracker socket.
+/// Ported from `create_device_tracker` in `original/transport.cpp`.
+pub fn create_device_tracker(
+    output_type: TrackerOutputType,
+    registry: Arc<SocketRegistry>,
+) -> Arc<dyn Socket> {
+    let id = registry.alloc_id();
+    let tracker = DeviceTracker::new(id, output_type, registry.clone());
+    registry.install(tracker.clone());
+    tracker
+}
+
+/// Service that handles reverse forwarding requests.
+/// Ported from `reverse_service` in `original/daemon/services.cpp`.
+pub fn reverse_service(_command: &str, _transport: &Arc<ATransport>) -> Option<OwnedFd> {
+    // TODO: Implement reverse_service by porting handle_forward_request from adb_listeners.cpp.
+    None
+}
+
+/// Service that handles reconnection.
+pub fn reconnect_service(fd: OwnedFd, transport: Option<&Arc<ATransport>>) {
+    let mut file = std::fs::File::from(fd);
+    let _ = send_protocol_string(&mut file, "done");
+    if let Some(t) = transport {
+        t.kick();
+    } else {
+        adb_transport::kick_all_transports();
+    }
+}
+
+struct SinkSocket {
+    id: u32,
+    registry: Arc<SocketRegistry>,
+    peer: std::sync::Mutex<Option<Arc<dyn Socket>>>,
+    bytes_left: std::sync::atomic::AtomicU64,
+}
+
+impl Socket for SinkSocket {
+    fn id(&self) -> u32 {
+        self.id
+    }
+
+    fn enqueue(&self, data: bytes::Bytes) -> i32 {
+        let left = self.bytes_left.load(std::sync::atomic::Ordering::Relaxed);
+        if left <= data.len() as u64 {
+            self.close();
+            return -1;
+        }
+        self.bytes_left
+            .fetch_sub(data.len() as u64, std::sync::atomic::Ordering::Relaxed);
+        0
+    }
+
+    fn ready(&self) {}
+
+    fn ack(&self, _acked_bytes: Option<i32>) {
+        self.ready();
+    }
+
+    fn shutdown(&self) {}
+
+    fn close(&self) {
+        if let Some(peer) = self.peer.lock().unwrap().take() {
+            peer.close();
+        }
+        self.registry.remove(self.id);
+    }
+
+    fn peer_id(&self) -> Option<u32> {
+        self.peer.lock().unwrap().as_ref().map(|p| p.id())
+    }
+
+    fn transport_id(&self) -> Option<u64> {
+        None
+    }
+
+    fn set_peer(&self, peer: Arc<dyn Socket>) {
+        *self.peer.lock().unwrap() = Some(peer);
+    }
+}
+
+struct SourceSocket {
+    id: u32,
+    registry: Arc<SocketRegistry>,
+    peer: std::sync::Mutex<Option<Arc<dyn Socket>>>,
+    bytes_left: std::sync::atomic::AtomicU64,
+}
+
+impl Socket for SourceSocket {
+    fn id(&self) -> u32 {
+        self.id
+    }
+
+    fn enqueue(&self, _data: bytes::Bytes) -> i32 {
+        -1
+    }
+
+    fn ready(&self) {
+        let left = self.bytes_left.load(std::sync::atomic::Ordering::Relaxed);
+        if left == 0 {
+            self.close();
+            return;
+        }
+
+        if let Some(peer) = self.peer.lock().unwrap().as_ref() {
+            let len = std::cmp::min(left, 1024 * 1024) as usize;
+            if len == 0 {
+                self.close();
+                return;
+            }
+            let data = vec![0u8; len];
+            if peer.enqueue(bytes::Bytes::from(data)) == 0 {
+                self.bytes_left
+                    .fetch_sub(len as u64, std::sync::atomic::Ordering::Relaxed);
+            }
+        }
+    }
+
+    fn ack(&self, _acked_bytes: Option<i32>) {
+        self.ready();
+    }
+
+    fn shutdown(&self) {}
+
+    fn close(&self) {
+        if let Some(peer) = self.peer.lock().unwrap().take() {
+            peer.close();
+        }
+        self.registry.remove(self.id);
+    }
+
+    fn peer_id(&self) -> Option<u32> {
+        self.peer.lock().unwrap().as_ref().map(|p| p.id())
+    }
+
+    fn transport_id(&self) -> Option<u64> {
+        None
+    }
+
+    fn set_peer(&self, peer: Arc<dyn Socket>) {
+        *self.peer.lock().unwrap() = Some(peer);
+    }
 }

@@ -653,8 +653,9 @@ pub fn create_local_socket(
     let socket = LocalSocket::new(id, fd, registry.clone(), mio_registry, Token(0));
     let socket_arc = Arc::new(socket.clone());
 
-    // SAFETY: fd is a valid file descriptor.
-    let owned_fd = unsafe { OwnedFd::from_raw_fd(fd) };
+    // SAFETY: fd is a valid file descriptor. We dup it so that both fdevent and
+    // LocalSocket can manage their own lifecycles.
+    let owned_fd = unsafe { OwnedFd::from_raw_fd(nix::unistd::dup(fd).unwrap()) };
     let token = fdevent
         .register(owned_fd, Box::new(socket), Interest::READABLE)
         .unwrap();
