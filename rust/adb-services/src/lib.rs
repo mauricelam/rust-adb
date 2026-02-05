@@ -17,18 +17,18 @@
 //! ADB Services implementation.
 //! Ported from original/services.h and original/services.cpp.
 
+use adb_io::{send_fail, send_okay, send_protocol_string};
 use adb_protocol::{ConnectionState, TransportType};
+use adb_socket_spec::{is_socket_spec, socket_spec_connect};
 use adb_sockets::{connect_to_remote, create_local_socket, LocalSocket, Socket, SocketRegistry};
 use adb_transport::{acquire_one_transport, ATransport, TransportId};
 use adb_utils::{parse_uint, unhex};
 use bytes::Bytes;
 use fdevent::fdevent::{Fdevent, FdeventHandle};
-use sysdeps::poll::{adb_poll, AdbPollFd};
-use adb_io::{send_fail, send_okay, send_protocol_string};
-use adb_socket_spec::{is_socket_spec, socket_spec_connect};
 use std::os::unix::io::{AsRawFd, FromRawFd, IntoRawFd, OwnedFd};
 use std::os::unix::net::UnixStream;
 use std::sync::{Arc, Mutex, Weak};
+use sysdeps::poll::{adb_poll, AdbPollFd};
 
 pub const K_SHELL_SERVICE_ARG_RAW: &str = "raw";
 pub const K_SHELL_SERVICE_ARG_PTY: &str = "pty";
@@ -58,12 +58,7 @@ where
 
 /// Service that waits for a transport to reach a certain state.
 /// Ported from `wait_service` in `original/services.cpp`.
-pub fn wait_service(
-    fd: OwnedFd,
-    serial: String,
-    transport_id: TransportId,
-    spec: String,
-) {
+pub fn wait_service(fd: OwnedFd, serial: String, transport_id: TransportId, spec: String) {
     let mut file = std::fs::File::from(fd);
     let components: Vec<&str> = spec.split('-').collect();
     if components.len() < 2 {
@@ -187,11 +182,7 @@ struct SmartSocketInner {
 }
 
 impl SmartSocket {
-    pub fn new(
-        id: u32,
-        registry: Arc<SocketRegistry>,
-        fdevent: FdeventHandle,
-    ) -> Self {
+    pub fn new(id: u32, registry: Arc<SocketRegistry>, fdevent: FdeventHandle) -> Self {
         Self {
             id,
             inner: Mutex::new(SmartSocketInner {
@@ -312,13 +303,9 @@ impl Socket for SmartSocket {
             let mut dispatched = false;
             if !service.is_empty() {
                 // Handle host request.
-                if let Some(s2) = host_service_to_socket(
-                    service,
-                    serial,
-                    transport_id,
-                    registry.clone(),
-                    fdevent,
-                ) {
+                if let Some(s2) =
+                    host_service_to_socket(service, serial, transport_id, registry.clone(), fdevent)
+                {
                     if let Some(ls) = local_socket_arc {
                         let mut file = unsafe { std::fs::File::from_raw_fd(ls.fd()) };
                         let _ = adb_io::send_okay(&mut file);
@@ -331,7 +318,10 @@ impl Socket for SmartSocket {
                 } else {
                     if let Some(ls) = local_socket_arc {
                         let mut file = unsafe { std::fs::File::from_raw_fd(ls.fd()) };
-                        let _ = adb_io::send_fail(&mut file, &format!("unknown host service '{}'", service));
+                        let _ = adb_io::send_fail(
+                            &mut file,
+                            &format!("unknown host service '{}'", service),
+                        );
                         std::mem::forget(file);
                         ls.close();
                         dispatched = true;
@@ -372,7 +362,13 @@ impl Socket for SmartSocket {
         }
     }
     fn peer_id(&self) -> Option<u32> {
-        self.inner.lock().unwrap().peer.as_ref().and_then(|p| p.upgrade()).map(|p| p.id())
+        self.inner
+            .lock()
+            .unwrap()
+            .peer
+            .as_ref()
+            .and_then(|p| p.upgrade())
+            .map(|p| p.id())
     }
     fn take_peer(&self) -> Option<Arc<dyn Socket>> {
         let mut inner = self.inner.lock().unwrap();
@@ -380,6 +376,10 @@ impl Socket for SmartSocket {
     }
     fn transport_id(&self) -> Option<u64> {
         self.inner.lock().unwrap().transport.as_ref().map(|t| t.id)
+    }
+    fn set_peer(&self, peer: Arc<dyn Socket>) {
+        let mut inner = self.inner.lock().unwrap();
+        inner.peer = Some(Arc::downgrade(&peer));
     }
 }
 
@@ -458,10 +458,10 @@ pub fn host_service_to_socket(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::io::{Read, Write};
-    use std::time::Duration;
     use adb_protocol::TransportType;
     use adb_transport::{register_transport, ATransport};
+    use std::io::{Read, Write};
+    use std::time::Duration;
 
     #[test]
     fn test_create_service_thread() {
