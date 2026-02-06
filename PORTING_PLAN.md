@@ -142,7 +142,8 @@ Each step involves porting 1-2 files and implementing a corresponding testing st
     - **Gaps (unresolved TODOs)**:
         - `FdConnection::do_tls_handshake` is currently a stub.
         - USB transport (`UsbConnection`) is missing.
-        - `device_tracker` notification in `update_transports`.
+    - **Resolved Gaps**:
+        - `device_tracker` notification in `update_transports`: Correctly implemented via `register_transport_observer`.
 
 ### Step 10: ADB Services [Done]
 - **Files**: `services.h`, `services.cpp`
@@ -156,9 +157,11 @@ Each step involves porting 1-2 files and implementing a corresponding testing st
     - Implemented Shell V2 protocol (multiplexing stdout/stderr/exit status) and PTY support.
     - Implemented Reverse Forwarding (forward, killforward, list-forward).
     - **Remaining Gaps**:
-        - `connect_emulator` and `connect_device` (stubbed).
         - `adb_wifi_pair_device` (stubbed).
-        - `track-app`, `sink`, `source`, `cmd`, `abb`, `abb_exec` (to be addressed in future phases if needed).
+        - `track-app`, `cmd`, `abb`, `abb_exec` (to be addressed in future phases if needed).
+    - **Resolved Gaps**:
+        - `connect_emulator` and `connect_device`: Fully implemented in `adb-services`.
+        - `sink` and `source` services: Implemented via `SinkSocket` and `SourceSocket`.
 
 ## Architectural Guidance for Windows Support
 
