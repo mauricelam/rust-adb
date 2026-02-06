@@ -477,27 +477,6 @@ pub fn kick_all_transports() {
     }
 }
 
-pub fn list_transports(long_format: bool) -> String {
-    let list = transport_list().lock().unwrap();
-    let mut result = String::new();
-    for t in list.iter() {
-        let serial = t.serial.lock().unwrap();
-        let state = t.get_connection_state().to_string();
-        if long_format {
-            let product = t.product.lock().unwrap();
-            let model = t.model.lock().unwrap();
-            let device = t.device.lock().unwrap();
-            result.push_str(&format!(
-                "{}\t{}\tproduct:{}\tmodel:{}\tdevice:{}\ttransport_id:{}\n",
-                serial, state, product, model, device, t.id
-            ));
-        } else {
-            result.push_str(&format!("{}\t{}\n", serial, state));
-        }
-    }
-    result
-}
-
 pub fn acquire_one_transport(
     transport_type: TransportType,
     serial: Option<&str>,
