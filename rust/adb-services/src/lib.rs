@@ -39,6 +39,13 @@ use std::os::unix::io::{AsRawFd, FromRawFd, IntoRawFd};
 #[cfg(windows)]
 use std::os::windows::io::{AsRawSocket, FromRawHandle, IntoRawHandle};
 
+/// Initializes ADB services, including setting up the smartsocket callback.
+pub fn init_adb_services() {
+    adb_listeners::set_smart_socket_callback(Arc::new(|socket, fdevent| {
+        connect_to_smartsocket(socket, fdevent);
+    }));
+}
+
 pub const K_SHELL_SERVICE_ARG_RAW: &str = "raw";
 pub const K_SHELL_SERVICE_ARG_PTY: &str = "pty";
 pub const K_SHELL_SERVICE_ARG_SHELL_PROTOCOL: &str = "v2";
