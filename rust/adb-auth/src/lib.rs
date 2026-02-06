@@ -26,7 +26,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
-use adb_types::{Amessage, Apacket, Block};
+use adb_types::{Apacket, Block};
 use anyhow::anyhow;
 use base64::{engine::general_purpose, Engine as _};
 use rsa::pkcs1v15::{SigningKey, VerifyingKey};
@@ -42,9 +42,76 @@ pub const TOKEN_SIZE: usize = 20;
 
 lazy_static::lazy_static! {
     static ref G_KEYS: Mutex<HashMap<String, Key>> = Mutex::new(HashMap::new());
+    static ref G_AUTHORIZED_KEYS: Mutex<Vec<String>> = Mutex::new(Vec::new());
 }
 
+static G_AUTHORIZED_KEYS_LOADED: std::sync::Once = std::sync::Once::new();
+
 const A_AUTH: u32 = 0x48545541;
+
+pub fn get_adb_keys_path() -> Option<PathBuf> {
+    if let Ok(path) = std::env::var("ADB_VENDOR_KEYS") {
+        return Some(PathBuf::from(path));
+    }
+
+    let mut path = adb_utils::adb_get_android_dir_path()?;
+    path.push("adb_keys");
+    Some(path)
+}
+
+/// Ported from `original/daemon/auth.cpp`: `IteratePublicKeys` equivalent
+pub fn load_authorized_keys() -> anyhow::Result<()> {
+    let path = get_adb_keys_path().ok_or_else(|| anyhow!("Could not determine adb_keys path"))?;
+    if !path.exists() {
+        return Ok(());
+    }
+
+    let content = fs::read_to_string(path)?;
+    let mut keys = G_AUTHORIZED_KEYS.lock().unwrap();
+    keys.clear();
+    for line in content.lines() {
+        let line = line.trim();
+        if !line.is_empty() && !line.starts_with('#') {
+            if !keys.contains(&line.to_string()) {
+                keys.push(line.to_string());
+            }
+        }
+    }
+    Ok(())
+}
+
+pub fn ensure_authorized_keys_loaded() {
+    G_AUTHORIZED_KEYS_LOADED.call_once(|| {
+        if let Err(e) = load_authorized_keys() {
+            log::error!("Failed to load authorized keys: {}", e);
+        }
+    });
+}
+
+pub fn save_authorized_key(key: &str) -> anyhow::Result<()> {
+    ensure_authorized_keys_loaded();
+
+    let mut keys = G_AUTHORIZED_KEYS.lock().unwrap();
+    if keys.contains(&key.to_string()) {
+        return Ok(());
+    }
+
+    let path = get_adb_keys_path().ok_or_else(|| anyhow!("Could not determine adb_keys path"))?;
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+
+    let mut file = fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&path)?;
+
+    use std::io::Write;
+    writeln!(file, "{}", key)?;
+
+    keys.push(key.to_string());
+    Ok(())
+}
 
 /// Ported from `original/client/auth.cpp`: `get_user_key_path`
 fn get_user_key_path() -> anyhow::Result<PathBuf> {
@@ -150,28 +217,31 @@ pub fn adbd_auth_verify(token: &[u8], sig: &[u8], public_key_line: &str) -> bool
     verifying_key.verify(token, &signature).is_ok()
 }
 
+pub fn adbd_auth_verify_all(token: &[u8], sig: &[u8]) -> bool {
+    ensure_authorized_keys_loaded();
+    let keys = G_AUTHORIZED_KEYS.lock().unwrap();
+    for key in keys.iter() {
+        if adbd_auth_verify(token, sig, key) {
+            return true;
+        }
+    }
+    false
+}
+
 /// Ported from `original/daemon/auth.cpp`: `send_auth_request`
-pub fn send_auth_request<W: std::io::Write>(writer: &mut W) -> anyhow::Result<[u8; TOKEN_SIZE]> {
+pub fn send_auth_request() -> (Apacket, [u8; TOKEN_SIZE]) {
     let mut token = [0u8; TOKEN_SIZE];
     use rand::RngCore;
     rand::thread_rng().fill_bytes(&mut token);
 
-    let mut msg = Amessage::default();
-    msg.command = A_AUTH;
-    msg.arg0 = ADB_AUTH_TOKEN;
-    msg.data_length = TOKEN_SIZE as u32;
-    msg.magic = msg.command ^ 0xffffffff;
+    let mut p = Apacket::default();
+    p.msg.command = A_AUTH;
+    p.msg.arg0 = ADB_AUTH_TOKEN;
+    p.msg.data_length = TOKEN_SIZE as u32;
+    p.msg.magic = p.msg.command ^ 0xffffffff;
+    p.payload = Block::from_vec(token.to_vec());
 
-    // In a real implementation, we'd write the message and the payload.
-    // Ported from adb_io.cpp logic (WriteFdExactly).
-
-    // SAFETY: Amessage is #[repr(C)] and has a fixed size.
-    // Transmuting it to a byte array for writing to the wire is safe.
-    let msg_bytes: [u8; std::mem::size_of::<Amessage>()] = unsafe { std::mem::transmute(msg) };
-    writer.write_all(&msg_bytes)?;
-    writer.write_all(&token)?;
-
-    Ok(token)
+    (p, token)
 }
 
 /// Ported from `original/client/auth.cpp`: `send_auth_response`
@@ -213,5 +283,64 @@ mod tests {
         let public_key_line = format!("{}{}", pubkey_b64, comment);
 
         assert!(adbd_auth_verify(token, &sig, &public_key_line));
+    }
+
+    #[test]
+    fn test_adbd_auth_verify_all() {
+        let key = new_rsa_2048().unwrap();
+        let token = b"12345678901234567890";
+        let sig = adb_auth_sign(&key, token).unwrap();
+
+        let pubkey_struct = key.android_pubkey().unwrap();
+        let pubkey_bytes: [u8; std::mem::size_of::<AndroidPubkey>()] =
+            unsafe { std::mem::transmute(pubkey_struct) };
+        let pubkey_b64 = general_purpose::STANDARD.encode(pubkey_bytes);
+        let public_key_line = format!("{} adb@host", pubkey_b64);
+
+        {
+            let mut keys = G_AUTHORIZED_KEYS.lock().unwrap();
+            keys.clear();
+            keys.push("invalid_key".to_string());
+            keys.push(public_key_line);
+        }
+
+        assert!(adbd_auth_verify_all(token, &sig));
+    }
+
+    #[test]
+    fn test_load_save_authorized_keys() {
+        let dir = tempfile::tempdir().unwrap();
+        let adb_keys_path = dir.path().join("adb_keys");
+        std::env::set_var("ADB_VENDOR_KEYS", &adb_keys_path);
+
+        let test_key = "test_key_line";
+        save_authorized_key(test_key).unwrap();
+
+        {
+            let keys = G_AUTHORIZED_KEYS.lock().unwrap();
+            assert_eq!(keys.len(), 1);
+            assert_eq!(keys[0], test_key);
+        }
+
+        // Clear and reload
+        {
+            let mut keys = G_AUTHORIZED_KEYS.lock().unwrap();
+            keys.clear();
+        }
+        load_authorized_keys().unwrap();
+        {
+            let keys = G_AUTHORIZED_KEYS.lock().unwrap();
+            assert_eq!(keys.len(), 1);
+            assert_eq!(keys[0], test_key);
+        }
+
+        // Test duplicate prevention
+        save_authorized_key(test_key).unwrap();
+        {
+            let keys = G_AUTHORIZED_KEYS.lock().unwrap();
+            assert_eq!(keys.len(), 1);
+        }
+
+        std::env::remove_var("ADB_VENDOR_KEYS");
     }
 }
