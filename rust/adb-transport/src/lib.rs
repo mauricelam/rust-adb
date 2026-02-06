@@ -22,11 +22,13 @@
 //! - original/adb.cpp (parse_banner)
 
 use std::collections::VecDeque;
-use std::fs::File;
+
 use std::io::{Read, Write};
-use std::os::unix::io::OwnedFd;
+use std::net::TcpStream;
+use std::os::unix::io::{AsRawFd, OwnedFd};
 use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, OnceLock, Weak};
+use std::time::SystemTime;
 
 use adb_protocol::{ConnectionState, TransportType, A_VERSION_MIN, MAX_PAYLOAD};
 use adb_sockets::{Socket, Transport};
@@ -169,12 +171,15 @@ pub struct ATransport {
     disconnects: Mutex<Vec<(u64, Box<dyn DisconnectHandler>)>>,
     next_disconnect_id: AtomicU64,
 
+    pub use_tls: AtomicBool,
+    pub tls_version: AtomicI32,
+    pub keys: Mutex<VecDeque<Arc<Key>>>,
+
     pub registry: Mutex<Option<Arc<adb_sockets::SocketRegistry>>>,
     pub fdevent: Mutex<Option<Arc<Mutex<fdevent::fdevent::Fdevent>>>>,
     pub service_creator: Mutex<Option<Box<dyn ServiceSocketCreator>>>,
 
     pub auth_keys: Mutex<VecDeque<rust_adb_crypto::Key>>,
-    pub use_tls: AtomicBool,
     pub failed_auth_attempts: AtomicUsize,
     pub auth_key: Mutex<String>,
 }
@@ -210,11 +215,13 @@ impl ATransport {
             max_payload: Mutex::new(MAX_PAYLOAD),
             disconnects: Mutex::new(Vec::new()),
             next_disconnect_id: AtomicU64::new(1),
+            use_tls: AtomicBool::new(false),
+            tls_version: AtomicI32::new(adb_protocol::A_STLS_VERSION as i32),
+            keys: Mutex::new(VecDeque::new()),
             registry: Mutex::new(None),
             fdevent: Mutex::new(None),
             service_creator: Mutex::new(None),
             auth_keys: Mutex::new(VecDeque::new()),
-            use_tls: AtomicBool::new(false),
             failed_auth_attempts: AtomicUsize::new(0),
             auth_key: Mutex::new(String::new()),
         }
@@ -279,9 +286,14 @@ impl ATransport {
         update_transports();
     }
 
-    pub fn set_connection(&self, connection: Arc<dyn Connection>) {
+    pub fn set_connection(self: &Arc<Self>, connection: Arc<dyn Connection>) {
+        connection.set_transport(Arc::downgrade(self));
         let mut conn_lock = self.connection.lock().unwrap();
         *conn_lock = Some(connection);
+    }
+
+    pub fn get_key(&self) -> Option<Arc<Key>> {
+        self.keys.lock().unwrap().front().cloned()
     }
 
     /// Ported from original/transport.cpp: `bool atransport::HandleRead(std::unique_ptr<apacket> p)`
@@ -724,6 +736,38 @@ pub fn list_transports(output_type: TrackerOutputType) -> String {
     }
 }
 
+fn handle_stls(t: &Arc<ATransport>, _p: &Apacket) {
+    if t.use_tls.swap(true, Ordering::SeqCst) {
+        // Already in TLS mode, nothing to do.
+        return;
+    }
+
+    // In a real host implementation, we'd send the request if we haven't already.
+    send_tls_request(t);
+
+    let t_clone = t.clone();
+    std::thread::spawn(move || {
+        let conn = t_clone.connection.lock().unwrap().as_ref().cloned();
+        if let Some(conn) = conn {
+            let key = t_clone.get_key().unwrap_or_else(|| {
+                Arc::new(rust_adb_crypto::new_rsa_2048().expect("failed to generate temp key"))
+            });
+            if !conn.do_tls_handshake(&key, None) {
+                log::error!(target: "transport", "TLS handshake failed");
+                t_clone.kick();
+            }
+        }
+    });
+}
+
+fn send_tls_request(t: &Arc<ATransport>) {
+    let mut p = Apacket::default();
+    p.msg.command = adb_protocol::A_STLS;
+    p.msg.arg0 = adb_protocol::A_STLS_VERSION;
+    p.msg.update_magic();
+    t.write(p);
+}
+
 fn handle_new_connection(t: &Arc<ATransport>, p: &Apacket) {
     t.set_connection_state(ConnectionState::Offline);
     t.update_version(p.msg.arg0, p.msg.arg1);
@@ -896,11 +940,6 @@ fn handle_close(t: &Arc<ATransport>, p: &Apacket) {
             }
         }
     }
-}
-
-fn handle_stls(t: &Arc<ATransport>, _p: &Apacket) {
-    t.use_tls.store(true, Ordering::SeqCst);
-    log::info!(target: "transport", "TLS requested, but not yet implemented");
 }
 
 fn handle_sync(t: &Arc<ATransport>, p: &Apacket) {
@@ -1137,6 +1176,7 @@ mod tests {
     }
 
     impl Connection for MockConnection {
+        fn set_transport(&self, _transport: Weak<ATransport>) {}
         fn write(&self, packet: Apacket) -> bool {
             self.written.lock().unwrap().push(packet);
             true
@@ -1466,16 +1506,143 @@ mod tests {
         let ack_bytes = u32::from_le_bytes(written[0].payload.get_ref()[..4].try_into().unwrap());
         assert_eq!(ack_bytes, adb_protocol::INITIAL_DELAYED_ACK_BYTES as u32);
     }
+
+    #[test]
+    fn test_tls_handshake() {
+        use std::io::{Read, Write};
+        use std::net::{TcpListener, TcpStream};
+
+        let listener = TcpListener::bind("127.0.0.1:0").expect("Failed to bind");
+        let addr = listener.local_addr().expect("Failed to get address");
+
+        let server_key = rust_adb_crypto::new_rsa_2048().expect("Failed to generate server key");
+        let server_cert = rust_adb_crypto::generate_x509_certificate(&server_key)
+            .expect("Failed to generate server cert");
+
+        let server_thread = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("Failed to accept");
+
+            // 1. Read STLS packet
+            let mut buf = [0u8; 24];
+            stream.read_exact(&mut buf).expect("Failed to read STLS");
+
+            // 2. Respond with STLS packet
+            stream.write_all(&buf).expect("Failed to write STLS");
+
+            // 3. Perform TLS handshake as server
+            let key = server_key;
+            let cert = server_cert;
+            let cert_pem = rust_adb_crypto::x509_to_pem_string(&cert).expect("Failed to PEM cert");
+            let key_pem = key.to_pem_string().expect("Failed to PEM key");
+
+            let certs = rustls_pemfile::certs(&mut cert_pem.as_bytes())
+                .expect("Failed to parse certs")
+                .into_iter()
+                .map(rustls::Certificate)
+                .collect::<Vec<_>>();
+            let priv_key = rustls_pemfile::pkcs8_private_keys(&mut key_pem.as_bytes())
+                .expect("Failed to parse keys")
+                .into_iter()
+                .map(rustls::PrivateKey)
+                .next()
+                .expect("No private key");
+
+            let config = rustls::ServerConfig::builder()
+                .with_safe_defaults()
+                .with_client_cert_verifier(Arc::new(AdbClientCertVerifier))
+                .with_single_cert(certs, priv_key)
+                .expect("Failed to build server config");
+
+            let mut conn = rustls::ServerConnection::new(Arc::new(config))
+                .expect("Failed to create server connection");
+            while conn.is_handshaking() {
+                while conn.wants_write() {
+                    conn.write_tls(&mut stream)
+                        .expect("Server write TLS failed");
+                }
+                if conn.is_handshaking() && conn.wants_read() {
+                    if conn.read_tls(&mut stream).expect("Server read TLS failed") == 0 {
+                        break;
+                    }
+                    if let Err(_) = conn.process_new_packets() {
+                        break;
+                    }
+                }
+            }
+
+            // 4. Send some encrypted data (Apacket)
+            let mut p = Apacket::default();
+            p.msg.command = adb_protocol::A_CNXN;
+            p.payload = Block::from_vec(b"secure hello".to_vec());
+            p.msg.data_length = p.payload.get_ref().len() as u32;
+
+            let header_bytes: [u8; 24] = unsafe { std::mem::transmute(p.msg) };
+            conn.writer()
+                .write_all(&header_bytes)
+                .expect("Server write header failed");
+            conn.writer()
+                .write_all(p.payload.get_ref())
+                .expect("Server write payload failed");
+
+            while conn.wants_write() {
+                conn.write_tls(&mut stream)
+                    .expect("Server flush TLS failed");
+            }
+        });
+
+        let stream = TcpStream::connect(addr).expect("Failed to connect");
+        let fd = OwnedFd::from(stream);
+        let fd_conn = Arc::new(FdConnection::new(fd));
+        let adapter = Arc::new(BlockingConnectionAdapter::new(fd_conn.clone()));
+        let transport = Arc::new(ATransport::new(
+            TransportType::Local,
+            Box::new(|_| ReconnectResult::Abort),
+            ConnectionState::Connecting,
+        ));
+        transport.set_connection(adapter.clone());
+
+        adapter.start(Arc::downgrade(&transport));
+
+        // Initiate upgrade
+        handle_stls(&transport, &Apacket::default());
+
+        // Wait for handshake to complete with a timeout.
+        let start = std::time::Instant::now();
+        while fd_conn.tls.lock().unwrap().is_none() {
+            if start.elapsed().as_secs() > 10 {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(100));
+        }
+
+        // Verify TLS is active
+        let active = fd_conn.tls.lock().unwrap().is_some();
+        assert!(active);
+
+        // Try reading secure data. The background thread should pick it up.
+        let start = std::time::Instant::now();
+        while transport.get_connection_state() != ConnectionState::Host {
+            if start.elapsed().as_secs() > 10 {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(100));
+        }
+
+        assert_eq!(transport.get_connection_state(), ConnectionState::Host);
+        assert_eq!(*transport.product.lock().unwrap(), ""); // Default for A_CNXN with my payload
+
+        adapter.stop();
+        server_thread.join().expect("Server thread panicked");
+    }
 }
 
 /// Ported from original/transport.h: `struct Connection`
 pub trait Connection: Send + Sync {
+    fn set_transport(&self, transport: Weak<ATransport>);
     fn write(&self, packet: Apacket) -> bool;
     fn start(&self, transport: Weak<ATransport>) -> bool;
     fn stop(&self);
     /// Performs the TLS handshake for secure ADB connections.
-    ///
-    /// Note: Implementation is pending the porting of the `adb::tls::TlsConnection` library.
     fn do_tls_handshake(&self, key: &Key, auth_key: Option<&mut String>) -> bool;
     fn reset(&self);
     fn supports_detach(&self) -> bool {
@@ -1495,6 +1662,155 @@ pub trait Connection: Send + Sync {
     }
 }
 
+/// Ported from original/transport.h: `struct BlockingConnectionAdapter`
+pub struct BlockingConnectionAdapter {
+    underlying: Arc<dyn BlockingConnection>,
+    transport: Mutex<Option<Weak<ATransport>>>,
+    read_thread: Mutex<Option<std::thread::JoinHandle<()>>>,
+    write_thread: Mutex<Option<std::thread::JoinHandle<()>>>,
+    write_queue: Arc<(Mutex<VecDeque<Apacket>>, std::sync::Condvar)>,
+    stopped: Arc<AtomicBool>,
+}
+
+impl BlockingConnectionAdapter {
+    pub fn new(underlying: Arc<dyn BlockingConnection>) -> Self {
+        Self {
+            underlying,
+            transport: Mutex::new(None),
+            read_thread: Mutex::new(None),
+            write_thread: Mutex::new(None),
+            write_queue: Arc::new((Mutex::new(VecDeque::new()), std::sync::Condvar::new())),
+            stopped: Arc::new(AtomicBool::new(false)),
+        }
+    }
+}
+
+impl Connection for BlockingConnectionAdapter {
+    fn set_transport(&self, transport: Weak<ATransport>) {
+        *self.transport.lock().unwrap() = Some(transport);
+    }
+
+    fn write(&self, packet: Apacket) -> bool {
+        let (lock, cv) = &*self.write_queue;
+        let mut queue = lock.lock().unwrap();
+        queue.push_back(packet);
+        cv.notify_one();
+        true
+    }
+
+    fn start(&self, transport: Weak<ATransport>) -> bool {
+        *self.transport.lock().unwrap() = Some(transport.clone());
+        let stopped = self.stopped.clone();
+        let underlying = self.underlying.clone();
+        let transport_weak = Some(transport);
+        let write_queue = self.write_queue.clone();
+
+        stopped.store(false, Ordering::SeqCst);
+
+        let mut read_thread_lock = self.read_thread.lock().unwrap();
+        let should_start_read = match &*read_thread_lock {
+            None => true,
+            Some(h) => h.is_finished(),
+        };
+
+        if should_start_read {
+            if let Some(h) = read_thread_lock.take() {
+                let _ = h.join();
+            }
+            let t_weak_read = transport_weak.clone();
+            let stopped_read = stopped.clone();
+            let underlying_read = underlying.clone();
+
+            *read_thread_lock = Some(std::thread::spawn(move || {
+                while !stopped_read.load(Ordering::SeqCst) {
+                    match underlying_read.read() {
+                        Ok(packet) => {
+                            let got_stls_cmd = packet.msg.command == adb_protocol::A_STLS;
+                            if let Some(t_weak) = &t_weak_read {
+                                if let Some(t) = t_weak.upgrade() {
+                                    t.handle_read(packet);
+                                }
+                            }
+                            if got_stls_cmd {
+                                break;
+                            }
+                        }
+                        Err(_) => break,
+                    }
+                }
+            }));
+        }
+
+        let mut write_thread_lock = self.write_thread.lock().unwrap();
+        let should_start_write = match &*write_thread_lock {
+            None => true,
+            Some(h) => h.is_finished(),
+        };
+
+        if should_start_write {
+            if let Some(h) = write_thread_lock.take() {
+                let _ = h.join();
+            }
+            let stopped_write = stopped;
+            let underlying_write = underlying;
+            let write_queue_write = write_queue;
+
+            *write_thread_lock = Some(std::thread::spawn(move || {
+                let (lock, cv) = &*write_queue_write;
+                while !stopped_write.load(Ordering::SeqCst) {
+                    let mut queue = match lock.lock() {
+                        Ok(q) => q,
+                        Err(_) => break,
+                    };
+                    while queue.is_empty() && !stopped_write.load(Ordering::SeqCst) {
+                        queue = match cv.wait(queue) {
+                            Ok(q) => q,
+                            Err(_) => return,
+                        };
+                    }
+                    if stopped_write.load(Ordering::SeqCst) {
+                        break;
+                    }
+                    if let Some(packet) = queue.pop_front() {
+                        drop(queue);
+                        if underlying_write.write(&packet).is_err() {
+                            break;
+                        }
+                    }
+                }
+            }));
+        }
+
+        true
+    }
+
+    fn stop(&self) {
+        self.stopped.store(true, Ordering::SeqCst);
+        let (_, cv) = &*self.write_queue;
+        cv.notify_all();
+        self.underlying.close();
+    }
+
+    fn do_tls_handshake(&self, key: &Key, auth_key: Option<&mut String>) -> bool {
+        let handle = self.read_thread.lock().unwrap().take();
+        if let Some(h) = handle {
+            let _ = h.join();
+        }
+
+        if self.underlying.do_tls_handshake(key, auth_key) {
+            if let Some(t_weak) = self.transport.lock().unwrap().clone() {
+                self.start(t_weak);
+            }
+            return true;
+        }
+        false
+    }
+
+    fn reset(&self) {
+        self.underlying.reset();
+    }
+}
+
 /// Ported from original/transport.h: `struct BlockingConnection`
 pub trait BlockingConnection: Send + Sync {
     fn read(&self) -> std::io::Result<Apacket>;
@@ -1504,134 +1820,161 @@ pub trait BlockingConnection: Send + Sync {
     fn reset(&self);
 }
 
-/// Ported from original/transport.h: `struct BlockingConnectionAdapter`
-pub struct BlockingConnectionAdapter {
-    underlying: Arc<dyn BlockingConnection>,
-    transport: Mutex<Weak<ATransport>>,
-    write_queue: Arc<Mutex<VecDeque<Apacket>>>,
-    cv: Arc<std::sync::Condvar>,
-    stopped: Arc<AtomicBool>,
-}
-
-impl BlockingConnectionAdapter {
-    pub fn new(underlying: Arc<dyn BlockingConnection>) -> Self {
-        Self {
-            underlying,
-            transport: Mutex::new(Weak::new()),
-            write_queue: Arc::new(Mutex::new(VecDeque::new())),
-            cv: Arc::new(std::sync::Condvar::new()),
-            stopped: Arc::new(AtomicBool::new(false)),
-        }
-    }
-}
-
-impl Connection for BlockingConnectionAdapter {
-    fn write(&self, packet: Apacket) -> bool {
-        let mut queue = self.write_queue.lock().unwrap();
-        queue.push_back(packet);
-        self.cv.notify_one();
-        true
-    }
-
-    fn start(&self, transport: Weak<ATransport>) -> bool {
-        *self.transport.lock().unwrap() = transport.clone();
-
-        let transport_read = transport.clone();
-        let underlying_read = self.underlying.clone();
-        let stopped_read = self.stopped.clone();
-        std::thread::Builder::new()
-            .name("transport read".to_string())
-            .spawn(move || {
-                while let Some(t) = transport_read.upgrade() {
-                    let t: Arc<ATransport> = t;
-                    if stopped_read.load(Ordering::SeqCst) {
-                        break;
-                    }
-                    match underlying_read.read() {
-                        Ok(packet) => {
-                            if !t.handle_read(packet) {
-                                break;
-                            }
-                        }
-                        Err(e) => {
-                            if !stopped_read.load(Ordering::SeqCst) {
-                                t.handle_error(&e.to_string());
-                            }
-                            break;
-                        }
-                    }
-                }
-            })
-            .unwrap();
-
-        let transport_write = transport.clone();
-        let underlying_write = self.underlying.clone();
-        let write_queue = self.write_queue.clone();
-        let cv = self.cv.clone();
-        let stopped_write = self.stopped.clone();
-        std::thread::Builder::new()
-            .name("transport write".to_string())
-            .spawn(move || {
-                while let Some(t) = transport_write.upgrade() {
-                    let t: Arc<ATransport> = t;
-                    let mut queue = write_queue.lock().unwrap();
-                    while !stopped_write.load(Ordering::SeqCst) && queue.is_empty() {
-                        queue = cv.wait(queue).unwrap();
-                    }
-
-                    if stopped_write.load(Ordering::SeqCst) {
-                        break;
-                    }
-
-                    if let Some(packet) = queue.pop_front() {
-                        drop(queue);
-                        if let Err(e) = underlying_write.write(&packet) {
-                            if !stopped_write.load(Ordering::SeqCst) {
-                                t.handle_error(&e.to_string());
-                            }
-                            break;
-                        }
-                    }
-                }
-            })
-            .unwrap();
-
-        true
-    }
-
-    fn stop(&self) {
-        self.stopped.store(true, Ordering::SeqCst);
-        self.cv.notify_all();
-        self.underlying.close();
-    }
-
-    fn do_tls_handshake(&self, key: &Key, auth_key: Option<&mut String>) -> bool {
-        self.underlying.do_tls_handshake(key, auth_key)
-    }
-
-    fn reset(&self) {
-        self.underlying.reset();
-    }
-}
-
 /// Ported from original/transport.h: `struct FdConnection`
 pub struct FdConnection {
-    read_file: Mutex<File>,
-    write_file: Mutex<File>,
+    file: TcpStream,
+    tls: Mutex<Option<rustls::Connection>>,
 }
 
 impl FdConnection {
     pub fn new(fd: OwnedFd) -> Self {
-        let read_file = File::from(fd.try_clone().expect("Failed to clone fd"));
-        let write_file = File::from(fd);
         Self {
-            read_file: Mutex::new(read_file),
-            write_file: Mutex::new(write_file),
+            file: TcpStream::from(fd),
+            tls: Mutex::new(None),
+        }
+    }
+
+    fn set_nonblocking(&self, nonblocking: bool) -> std::io::Result<()> {
+        self.file.set_nonblocking(nonblocking)
+    }
+
+    fn wait_for_ready(&self, events: i16) -> std::io::Result<()> {
+        let pfd = sysdeps::poll::AdbPollFd {
+            fd: self.file.as_raw_fd(),
+            events,
+            revents: 0,
+        };
+        let res = sysdeps::poll::adb_poll(&mut [pfd], 5000); // 5s timeout
+        if res == -1 {
+            return Err(std::io::Error::last_os_error());
+        }
+        if res == 0 {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::TimedOut,
+                "poll timed out",
+            ));
+        }
+        Ok(())
+    }
+
+    fn read_fully(&self, buf: &mut [u8]) -> std::io::Result<()> {
+        let mut pos = 0;
+        while pos < buf.len() {
+            match (&self.file).read(&mut buf[pos..]) {
+                Ok(0) => {
+                    return Err(std::io::Error::new(
+                        std::io::ErrorKind::UnexpectedEof,
+                        "EOF",
+                    ))
+                }
+                Ok(n) => pos += n,
+                Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                    self.wait_for_ready(libc::POLLIN)?;
+                }
+                Err(e) => return Err(e),
+            }
+        }
+        Ok(())
+    }
+
+    fn write_fully(&self, buf: &[u8]) -> std::io::Result<()> {
+        let mut pos = 0;
+        while pos < buf.len() {
+            match (&self.file).write(&buf[pos..]) {
+                Ok(0) => {
+                    return Err(std::io::Error::new(
+                        std::io::ErrorKind::WriteZero,
+                        "Write zero",
+                    ))
+                }
+                Ok(n) => pos += n,
+                Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                    self.wait_for_ready(libc::POLLOUT)?;
+                }
+                Err(e) => return Err(e),
+            }
+        }
+        Ok(())
+    }
+}
+
+impl FdConnection {
+    fn read_tls_blocking(&self, buf: &mut [u8]) -> std::io::Result<()> {
+        let mut pos = 0;
+        while pos < buf.len() {
+            let mut tls_lock = self.tls.lock().unwrap();
+            let tls = tls_lock
+                .as_mut()
+                .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::Other, "TLS not active"))?;
+
+            // 1. Try to read from the decrypted buffer
+            match tls.reader().read(&mut buf[pos..]) {
+                Ok(n) if n > 0 => {
+                    pos += n;
+                    continue;
+                }
+                _ => {
+                    // Fall through to read from network
+                }
+            }
+
+            // 2. Need more data from the network
+            match tls.read_tls(&mut &self.file) {
+                Ok(0) => {
+                    return Err(std::io::Error::new(
+                        std::io::ErrorKind::UnexpectedEof,
+                        "TLS EOF",
+                    ))
+                }
+                Ok(_) => {
+                    if let Err(e) = tls.process_new_packets() {
+                        return Err(std::io::Error::new(std::io::ErrorKind::Other, e));
+                    }
+                }
+                Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                    drop(tls_lock);
+                    self.wait_for_ready(libc::POLLIN)?;
+                }
+                Err(e) => return Err(e),
+            }
+        }
+        Ok(())
+    }
+
+    fn write_tls_blocking(&self, buf: &[u8]) -> std::io::Result<()> {
+        {
+            let mut tls_lock = self.tls.lock().unwrap();
+            let tls = tls_lock
+                .as_mut()
+                .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::Other, "TLS not active"))?;
+            tls.writer().write_all(buf)?;
+        }
+
+        loop {
+            let mut tls_lock = self.tls.lock().unwrap();
+            let tls = tls_lock
+                .as_mut()
+                .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::Other, "TLS not active"))?;
+
+            if !tls.wants_write() {
+                return Ok(());
+            }
+
+            match tls.write_tls(&mut &self.file) {
+                Ok(_) => {}
+                Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                    drop(tls_lock);
+                    self.wait_for_ready(libc::POLLOUT)?;
+                }
+                Err(e) => return Err(e),
+            }
         }
     }
 }
 
 impl Connection for FdConnection {
+    fn set_transport(&self, _transport: Weak<ATransport>) {}
+
     fn write(&self, packet: Apacket) -> bool {
         BlockingConnection::write(self, &packet).is_ok()
     }
@@ -1655,30 +1998,45 @@ impl Connection for FdConnection {
 
 impl BlockingConnection for FdConnection {
     fn read(&self) -> std::io::Result<Apacket> {
-        let mut header_buf = [0u8; std::mem::size_of::<Amessage>()];
-        let mut file = self.read_file.lock().unwrap();
-        file.read_exact(&mut header_buf)?;
+        let is_tls = self.tls.lock().unwrap().is_some();
+        if is_tls {
+            let mut header_buf = [0u8; std::mem::size_of::<Amessage>()];
+            self.read_tls_blocking(&mut header_buf)?;
 
-        // SAFETY: Amessage is repr(C) and we've read the correct number of bytes.
-        let msg: Amessage =
-            unsafe { std::ptr::read_unaligned(header_buf.as_ptr() as *const Amessage) };
+            // SAFETY: Amessage is repr(C) and we've read the correct number of bytes.
+            let msg: Amessage =
+                unsafe { std::ptr::read_unaligned(header_buf.as_ptr() as *const Amessage) };
 
-        let mut payload = Block::new(msg.data_length as usize);
-        if msg.data_length > 0 {
-            file.read_exact(payload.get_mut())?;
+            let mut payload = Block::new(msg.data_length as usize);
+            if msg.data_length > 0 {
+                self.read_tls_blocking(payload.get_mut())?;
+            }
+
+            Ok(Apacket { msg, payload })
+        } else {
+            let mut header_buf = [0u8; std::mem::size_of::<Amessage>()];
+            self.read_fully(&mut header_buf)?;
+
+            // SAFETY: Amessage is repr(C) and we've read the correct number of bytes.
+            let msg: Amessage =
+                unsafe { std::ptr::read_unaligned(header_buf.as_ptr() as *const Amessage) };
+
+            let mut payload = Block::new(msg.data_length as usize);
+            if msg.data_length > 0 {
+                self.read_fully(payload.get_mut())?;
+            }
+
+            Ok(Apacket { msg, payload })
         }
-
-        Ok(Apacket { msg, payload })
     }
 
     fn write(&self, packet: &Apacket) -> std::io::Result<()> {
-        let mut file = self.write_file.lock().unwrap();
         // SAFETY: Amessage is repr(C).
         let header_bytes: [u8; std::mem::size_of::<Amessage>()] =
             unsafe { std::mem::transmute(packet.msg) };
-        file.write_all(&header_bytes)?;
+        (&self.file).write_all(&header_bytes)?;
         if !packet.payload.is_empty() {
-            file.write_all(packet.payload.get_ref())?;
+            (&self.file).write_all(packet.payload.get_ref())?;
         }
         Ok(())
     }
@@ -1694,5 +2052,40 @@ impl BlockingConnection for FdConnection {
 
     fn reset(&self) {
         self.close();
+    }
+}
+
+struct AdbServerCertVerifier;
+
+impl rustls::client::ServerCertVerifier for AdbServerCertVerifier {
+    fn verify_server_cert(
+        &self,
+        _end_entity: &rustls::Certificate,
+        _intermediates: &[rustls::Certificate],
+        _server_name: &rustls::ServerName,
+        _scts: &mut dyn Iterator<Item = &[u8]>,
+        _ocsp_response: &[u8],
+        _now: SystemTime,
+    ) -> Result<rustls::client::ServerCertVerified, rustls::Error> {
+        Ok(rustls::client::ServerCertVerified::assertion())
+    }
+}
+
+#[cfg(test)]
+struct AdbClientCertVerifier;
+
+#[cfg(test)]
+impl rustls::server::ClientCertVerifier for AdbClientCertVerifier {
+    fn client_auth_root_subjects(&self) -> &[rustls::DistinguishedName] {
+        &[]
+    }
+
+    fn verify_client_cert(
+        &self,
+        _end_entity: &rustls::Certificate,
+        _intermediates: &[rustls::Certificate],
+        _now: SystemTime,
+    ) -> Result<rustls::server::ClientCertVerified, rustls::Error> {
+        Ok(rustls::server::ClientCertVerified::assertion())
     }
 }
