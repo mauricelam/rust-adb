@@ -22,6 +22,7 @@ use adb_protocol::shell_protocol::{ShellId, ShellProtocol};
 use adb_protocol::{ConnectionState, TransportType};
 use adb_socket_spec::{is_socket_spec, socket_spec_connect};
 use adb_sockets::{connect_to_remote, create_local_socket, LocalSocket, Socket, SocketRegistry};
+use adb_mdns::AdbMdns;
 use adb_transport::{
     acquire_one_transport, ATransport, FdConnection, TrackerOutputType, TransportId,
 };
@@ -29,7 +30,7 @@ use adb_utils::{parse_uint, unhex};
 use bytes::Bytes;
 use fdevent::fdevent::{Fdevent, FdeventHandle};
 use std::io::{Read, Write};
-use std::sync::{Arc, Mutex, Weak};
+use std::sync::{Arc, Mutex, OnceLock, Weak};
 use sysdeps::poll::{adb_poll, AdbPollFd, POLLIN};
 use sysdeps::AdbFd;
 
@@ -58,7 +59,9 @@ pub mod reverse_service;
 /// Module handling JDWP services.
 pub mod jdwp_service;
 
-/// Module handling reverse forwarding services.
+/// Module handling file sync services.
+pub mod file_sync_service;
+pub mod file_sync_client;
 
 /// Creates a socket pair, starts a new thread with the provided function,
 /// and returns one end of the socket pair as an `AdbFd`.
@@ -1097,8 +1100,8 @@ pub fn daemon_service_to_fd(name: &str, transport: &Arc<ATransport>) -> Option<A
         .ok();
     }
     if name.starts_with("sync:") {
-        return create_service_thread("sync", |mut fd| {
-            let _ = send_fail(&mut fd, "sync service not implemented in Rust yet");
+        return create_service_thread("sync", |fd| {
+            file_sync_service::file_sync_service(fd);
         })
         .ok();
     }
@@ -1209,6 +1212,35 @@ pub fn reconnect_service(mut fd: AdbFd, transport: Option<&Arc<ATransport>>) {
     } else {
         adb_transport::kick_all_transports();
     }
+}
+
+static G_MDNS: OnceLock<Arc<AdbMdns>> = OnceLock::new();
+
+/// Initializes MDNS discovery.
+/// Ported from original/client/mdnsresponder_client.cpp: `StartMdnsResponderDiscovery`
+pub fn init_mdns() -> anyhow::Result<()> {
+    let mdns = Arc::new(AdbMdns::new()?);
+    G_MDNS
+        .set(mdns.clone())
+        .map_err(|_| anyhow::anyhow!("MDNS already initialized"))?;
+
+    mdns.browse(Some(Arc::new(|info| {
+        log::info!("Discovered MDNS service: {:?}", info);
+        // Extract IP and port
+        if let Some(ip) = info.ip_addresses.get(0) {
+            let address = format!("{}:{}", ip, info.port);
+            let mut response = String::new();
+            connect_device(address, &mut response);
+            log::info!("Auto-connect response: {}", response);
+        }
+    })))?;
+
+    Ok(())
+}
+
+/// Returns the MDNS discovery service.
+pub fn get_mdns() -> Option<Arc<AdbMdns>> {
+    G_MDNS.get().cloned()
 }
 
 struct SinkSocket {

@@ -213,15 +213,19 @@ Once the core layers are fully ported and verified, the next phase will focus on
 - **Description**: Port the listener management logic for both host and daemon.
 - **Testing**: Port `adb_listeners_test.cpp` and verify listener creation/deletion.
 
-### Step 15: File Sync Protocol
+### Step 15: File Sync Protocol [Done]
 - **Files**: `file_sync_protocol.h`
 - **Description**: Implement the full `sync:` service and the file transfer protocol.
 - **Testing**: Integration tests for `push`, `pull`, `stat`, and `list` operations.
 
-### Step 16: MDNS Support
+### Step 16: MDNS Support [Done]
 - **Files**: `adb_mdns.h`, `adb_mdns.cpp`
 - **Description**: Port MDNS discovery and service registration logic.
 - **Testing**: Verify discovery of MDNS-enabled devices.
+- **Notes**:
+    - Implemented `adb-mdns` crate using `mdns-sd` for pure-rust mDNS support.
+    - Ported `MdnsInstance` and parsing logic from `mdns_utils.cpp`.
+    - Integrated auto-connect logic into `adb-services`.
 
 ### Step 17: USB Transport Implementation [Done]
 - **Description**: Implement `UsbConnection` for host (libusb/WinUSB) and daemon (FunctionFS).

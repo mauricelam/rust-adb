@@ -5,3 +5,4 @@ edition = "2021"
 
 [dependencies]
 adb-types = { path = "../adb-types" }
+zerocopy = { version = "0.8.38", features = ["derive"] }
