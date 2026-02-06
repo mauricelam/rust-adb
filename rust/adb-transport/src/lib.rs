@@ -1355,6 +1355,82 @@ mod tests {
     }
 
     #[test]
+    fn test_blocking_connection_adapter() {
+        struct MockBlockingConnection {
+            read_packets: Mutex<VecDeque<Apacket>>,
+            written_packets: Arc<Mutex<Vec<Apacket>>>,
+            cv: Arc<std::sync::Condvar>,
+        }
+
+        impl BlockingConnection for MockBlockingConnection {
+            fn read(&self) -> std::io::Result<Apacket> {
+                let mut queue = self.read_packets.lock().unwrap();
+                while queue.is_empty() {
+                    queue = self.cv.wait(queue).unwrap();
+                }
+                Ok(queue.pop_front().unwrap())
+            }
+            fn write(&self, packet: &Apacket) -> std::io::Result<()> {
+                self.written_packets.lock().unwrap().push(packet.clone());
+                Ok(())
+            }
+            fn do_tls_handshake(&self, _key: &Key, _auth_key: Option<&mut String>) -> bool {
+                true
+            }
+            fn close(&self) {}
+            fn reset(&self) {}
+        }
+
+        let written = Arc::new(Mutex::new(Vec::new()));
+        let cv = Arc::new(std::sync::Condvar::new());
+        let mock = Arc::new(MockBlockingConnection {
+            read_packets: Mutex::new(VecDeque::new()),
+            written_packets: written.clone(),
+            cv: cv.clone(),
+        });
+
+        let adapter = BlockingConnectionAdapter::new(mock.clone());
+        let transport = Arc::new(ATransport::new_offline(TransportType::Usb));
+        transport.set_connection_state(ConnectionState::Device);
+        let mock_socket = Arc::new(MockSocket::new(100));
+        let registry = Arc::new(adb_sockets::SocketRegistry::new());
+        *transport.registry.lock().unwrap() = Some(registry.clone());
+        registry.install(mock_socket.clone());
+
+        adapter.start(Arc::downgrade(&transport));
+
+        // Test write
+        let mut p = Apacket::default();
+        p.msg.command = adb_protocol::A_WRTE;
+        p.msg.arg0 = 200;
+        p.msg.arg1 = 100;
+        adapter.write(p);
+
+        // Give it a moment to process the write
+        std::thread::sleep(std::time::Duration::from_millis(100));
+        assert_eq!(written.lock().unwrap().len(), 1);
+        assert_eq!(written.lock().unwrap()[0].msg.command, adb_protocol::A_WRTE);
+
+        // Test read
+        let mut p2 = Apacket::default();
+        p2.msg.command = adb_protocol::A_OKAY;
+        p2.msg.arg0 = 200;
+        p2.msg.arg1 = 100;
+        p2.msg.update_magic();
+        {
+            let mut queue = mock.read_packets.lock().unwrap();
+            queue.push_back(p2);
+            cv.notify_one();
+        }
+
+        // Give it a moment to process the read
+        std::thread::sleep(std::time::Duration::from_millis(100));
+        assert!(mock_socket.readied.load(Ordering::SeqCst));
+
+        adapter.stop();
+    }
+
+    #[test]
     fn test_handle_open_delayed_ack() {
         let t = Arc::new(ATransport::new(
             TransportType::Usb,
