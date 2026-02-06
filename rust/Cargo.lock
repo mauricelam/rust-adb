@@ -39,6 +39,7 @@ dependencies = [
  "adb-types",
  "adb-utils",
  "adb_io",
+ "bytes",
  "env_logger",
  "fdevent",
  "libc",
@@ -59,6 +60,7 @@ dependencies = [
 name = "adb-sockets"
 version = "0.1.0"
 dependencies = [
+ "adb-protocol",
  "adb-types",
  "adb_io",
  "anyhow",

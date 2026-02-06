@@ -66,7 +66,7 @@ impl FdeventHandle {
     ///
     /// # Arguments
     ///
-    /// * `f` - The function to be executed.
+    /// * `f` - The function to be executed. It receives a reference to the `Fdevent` context.
     pub fn run_on_looper<F>(&self, f: F)
     where
         F: FnOnce(&mut Fdevent) + Send + 'static,

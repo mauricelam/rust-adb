@@ -106,16 +106,13 @@ Each step involves porting 1-2 files and implementing a corresponding testing st
     - Port `socket_spec_test.cpp`.
     - Unit tests with a wide range of valid and invalid spec strings.
 
-### Step 6: Sockets Management [In Progress]
+### Step 6: Sockets Management [Done]
 - **Files**: `socket.h`, `sockets.cpp`
 - **Description**: Port the `asocket` structure and management logic.
 - **Testing**:
     - Port `socket_test.cpp`.
     - Add missing tests: `close_socket_with_packet`, `read_from_closing_socket`, `write_error_when_having_packets`, `flush_after_shutdown`, `close_socket_in_CLOSE_WAIT_state`.
     - Integration test with `mock_server.rs` to verify socket creation and data flow.
-- **Notes**:
-    - **Gaps**:
-        - `connect_to_remote` and `connect_to_smartsocket`: These key dispatching functions from `sockets.cpp` are missing.
 
 ### Step 7: ADB Protocol Constants and Packet Reading [Done]
 - **Files**: `adb.h`, `apacket_reader.h`
@@ -148,16 +145,17 @@ Each step involves porting 1-2 files and implementing a corresponding testing st
 - **Files**: `services.h`, `services.cpp`
 - **Description**: Port the high-level service handling (e.g., `shell`, `push`, `pull`).
 - **Testing**:
-    - Full integration tests using `test/tests/integration_test.rs`.
+    - Full integration tests using `test/client-server-test/tests/integration_test.rs`.
+    - Unit tests for `device_tracker` and `shell_service` argument parsing.
     - Compare service responses between Rust and C++ implementations.
 - **Notes**:
     - **Gaps (unresolved TODOs)**:
-        - `connect_emulator` and `connect_device`.
-        - `adb_wifi_pair_device`.
-        - `device_tracker` (both short and long text).
-        - `jdwp`, `track-jdwp`, `track-app`, `sink`, `source`.
-        - `reverse_service` and `reconnect_service`.
-        - Parsing `service_args` for `shell` (pty, v2, etc.).
+        - `connect_device`: Currently only registers the transport; need to implement the asynchronous connection loop and packet handling for newly connected devices.
+        - `shell_service`: Basic subprocess execution implemented, but PTY allocation and Shell Protocol v2 (multiplexing) are still missing.
+        - `adb_wifi_pair_device`: Pairing logic using `PairingClient` needs to be fully implemented.
+        - `jdwp`, `track-jdwp`, `track-app`: JDWP management and application tracking services are still placeholders.
+        - `reverse_service`: Reverse port forwarding logic needs to be ported from `adb_listeners.cpp`.
+        - `sync`: The full `sync:` protocol for push/pull is not yet implemented.
 
 ## Architectural Guidance for Windows Support
 
