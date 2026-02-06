@@ -1,7 +1,7 @@
 use std::sync::{Arc, Mutex, atomic::{AtomicBool, Ordering}};
 use std::thread;
 use std::time::Duration;
-use std::os::unix::io::{RawFd, IntoRawFd};
+use std::os::unix::io::{AsRawFd, IntoRawFd, RawFd};
 use adb_sockets::{SocketRegistry, create_local_socket, Socket, internal};
 use fdevent::fdevent::Fdevent;
 use nix::sys::socket::{socketpair, AddressFamily, SockType, SockFlag};
@@ -23,26 +23,24 @@ fn test_smoke() {
     let (last_a_owned, last_b_owned) = socketpair(AddressFamily::Unix, SockType::Stream, None, SockFlag::empty()).unwrap();
 
     let first_a = first_a_owned.into_raw_fd();
-    let first_b = first_b_owned.into_raw_fd();
-    let last_a = last_a_owned.into_raw_fd();
+    let first_b = first_b_owned;
+    let last_a = last_a_owned;
     let last_b = last_b_owned.into_raw_fd();
 
     // Only set the ends managed by fdevent to non-blocking
-    set_nonblocking(first_b);
-    set_nonblocking(last_a);
+    set_nonblocking(first_b.as_raw_fd());
+    set_nonblocking(last_a.as_raw_fd());
 
     let mut prev_tail = create_local_socket(first_b, registry.clone(), &mut fdevent);
 
     const INTERMEDIATE_COUNT: usize = 50;
     for _ in 0..INTERMEDIATE_COUNT {
         let (pair_a_owned, pair_b_owned) = socketpair(AddressFamily::Unix, SockType::Stream, None, SockFlag::empty()).unwrap();
-        let pair_a = pair_a_owned.into_raw_fd();
-        let pair_b = pair_b_owned.into_raw_fd();
-        set_nonblocking(pair_a);
-        set_nonblocking(pair_b);
+        set_nonblocking(pair_a_owned.as_raw_fd());
+        set_nonblocking(pair_b_owned.as_raw_fd());
 
-        let head = create_local_socket(pair_a, registry.clone(), &mut fdevent);
-        let tail = create_local_socket(pair_b, registry.clone(), &mut fdevent);
+        let head = create_local_socket(pair_a_owned, registry.clone(), &mut fdevent);
+        let tail = create_local_socket(pair_b_owned, registry.clone(), &mut fdevent);
 
         prev_tail.set_peer(head.clone() as Arc<dyn Socket>);
         head.set_peer(prev_tail.clone() as Arc<dyn Socket>);
@@ -129,10 +127,9 @@ fn test_connect_to_remote() {
     let mut fdevent = Fdevent::new().unwrap();
     let (s1_owned, _s2_owned) =
         socketpair(AddressFamily::Unix, SockType::Stream, None, SockFlag::empty()).unwrap();
-    let s1 = s1_owned.into_raw_fd();
-    set_nonblocking(s1);
+    set_nonblocking(s1_owned.as_raw_fd());
 
-    let socket = create_local_socket(s1, registry, &mut fdevent);
+    let socket = create_local_socket(s1_owned, registry, &mut fdevent);
     let packets = Arc::new(Mutex::new(Vec::new()));
     let transport = Arc::new(MockTransport {
         packets: packets.clone(),
@@ -150,16 +147,17 @@ fn test_connect_to_remote() {
 
 #[test]
 fn test_close_socket_with_packet() {
+    let _ = env_logger::builder().is_test(true).try_init();
     let registry = Arc::new(SocketRegistry::new());
     let mut fdevent = Fdevent::new().unwrap();
     let (s1_owned, s2_owned) =
         socketpair(AddressFamily::Unix, SockType::Stream, None, SockFlag::empty()).unwrap();
-    let s1 = s1_owned.into_raw_fd();
+    let s1 = s1_owned.as_raw_fd();
     let s2 = s2_owned.into_raw_fd();
     set_nonblocking(s1);
     set_nonblocking(s2);
 
-    let socket = create_local_socket(s1, registry.clone(), &mut fdevent);
+    let socket = create_local_socket(s1_owned, registry.clone(), &mut fdevent);
 
     // Fill the socket buffer so write blocks.
     let data = vec![0u8; 1024 * 1024];
@@ -184,7 +182,9 @@ fn test_close_socket_with_packet() {
     let start = std::time::Instant::now();
     while start.elapsed() < Duration::from_secs(1) {
         fdevent.poll(Some(Duration::from_millis(10))).unwrap();
-        if fcntl(s1, FcntlArg::F_GETFD).is_err() {
+        let res = fcntl(s1, FcntlArg::F_GETFD);
+        println!("Polling... fcntl({}) = {:?}", s1, res);
+        if res.is_err() {
             break;
         }
     }
@@ -201,12 +201,12 @@ fn test_read_from_closing_socket() {
     let mut fdevent = Fdevent::new().unwrap();
     let (s1_owned, s2_owned) =
         socketpair(AddressFamily::Unix, SockType::Stream, None, SockFlag::empty()).unwrap();
-    let s1 = s1_owned.into_raw_fd();
+    let s1 = s1_owned.as_raw_fd();
     let s2 = s2_owned.into_raw_fd();
     set_nonblocking(s1);
     set_nonblocking(s2);
 
-    let socket = create_local_socket(s1, registry.clone(), &mut fdevent);
+    let socket = create_local_socket(s1_owned, registry.clone(), &mut fdevent);
 
     // Block s1.
     let data = vec![0u8; 1024 * 1024];
@@ -245,11 +245,11 @@ fn test_write_error_when_having_packets() {
     let mut fdevent = Fdevent::new().unwrap();
     let (s1_owned, s2_owned) =
         socketpair(AddressFamily::Unix, SockType::Stream, None, SockFlag::empty()).unwrap();
-    let s1 = s1_owned.into_raw_fd();
+    let s1 = s1_owned.as_raw_fd();
     let s2 = s2_owned.into_raw_fd();
     set_nonblocking(s1);
 
-    let socket = create_local_socket(s1, registry.clone(), &mut fdevent);
+    let socket = create_local_socket(s1_owned, registry.clone(), &mut fdevent);
 
     // Fill the socket buffer so write blocks.
     let data = vec![0u8; 1024 * 1024];
@@ -280,12 +280,12 @@ fn test_flush_after_shutdown() {
     let mut fdevent = Fdevent::new().unwrap();
     let (s1_owned, s2_owned) =
         socketpair(AddressFamily::Unix, SockType::Stream, None, SockFlag::empty()).unwrap();
-    let s1 = s1_owned.into_raw_fd();
+    let s1 = s1_owned.as_raw_fd();
     let s2 = s2_owned.into_raw_fd();
     set_nonblocking(s1);
     set_nonblocking(s2);
 
-    let socket = create_local_socket(s1, registry.clone(), &mut fdevent);
+    let socket = create_local_socket(s1_owned, registry.clone(), &mut fdevent);
 
     // Block.
     let data = vec![0u8; 1024 * 1024];
@@ -313,11 +313,11 @@ fn test_close_socket_in_close_wait_state() {
     let mut fdevent = Fdevent::new().unwrap();
     let (s1_owned, s2_owned) =
         socketpair(AddressFamily::Unix, SockType::Stream, None, SockFlag::empty()).unwrap();
-    let s1 = s1_owned.into_raw_fd();
+    let s1 = s1_owned.as_raw_fd();
     let s2 = s2_owned.into_raw_fd();
     set_nonblocking(s1);
 
-    let socket = create_local_socket(s1, registry.clone(), &mut fdevent);
+    let socket = create_local_socket(s1_owned, registry.clone(), &mut fdevent);
     assert!(registry.find(socket.id()).is_some());
 
     // Close s2 to simulate remote EOF.

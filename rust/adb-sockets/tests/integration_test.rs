@@ -2,7 +2,7 @@ use adb_sockets::{create_local_socket, create_remote_socket, Socket, SocketRegis
 use adb_types::Apacket;
 use fdevent::fdevent::Fdevent;
 use nix::sys::socket::{socketpair, AddressFamily, SockFlag, SockType};
-use std::os::unix::io::IntoRawFd;
+use std::os::unix::io::{AsRawFd, IntoRawFd};
 use std::sync::{
     atomic::{AtomicBool, Ordering},
     Arc, Mutex,
@@ -42,13 +42,13 @@ fn test_remote_to_local_flow() {
         SockFlag::empty(),
     )
     .unwrap();
-    let pair_a = pair_a_owned.into_raw_fd();
+    let pair_a = pair_a_owned;
     let pair_b = pair_b_owned.into_raw_fd();
 
     // Set pair_a to non-blocking as it will be managed by fdevent
-    let flags = nix::fcntl::fcntl(pair_a, nix::fcntl::FcntlArg::F_GETFL).unwrap();
+    let flags = nix::fcntl::fcntl(pair_a.as_raw_fd(), nix::fcntl::FcntlArg::F_GETFL).unwrap();
     nix::fcntl::fcntl(
-        pair_a,
+        pair_a.as_raw_fd(),
         nix::fcntl::FcntlArg::F_SETFL(
             nix::fcntl::OFlag::from_bits_truncate(flags) | nix::fcntl::OFlag::O_NONBLOCK,
         ),

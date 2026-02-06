@@ -7,6 +7,7 @@ use fdevent::fdevent::{Fdevent, FdeventHandler};
 use mio::{Interest, Token};
 use std::collections::VecDeque;
 use std::io::{self, Read, Write};
+use std::os::unix::io::OwnedFd;
 use std::os::unix::net::UnixStream;
 use std::sync::{Arc, Mutex};
 use std::thread;
@@ -120,7 +121,11 @@ fn smoke() {
             state: state.clone(),
         });
         let w_token = fdevent
-            .register(write_fd.into(), writer_handler, Interest::WRITABLE)
+            .register(
+                Arc::new(OwnedFd::from(write_fd)),
+                writer_handler,
+                Interest::WRITABLE,
+            )
             .unwrap();
         state.lock().unwrap().writer_token = w_token;
 
@@ -128,7 +133,11 @@ fn smoke() {
             state: state.clone(),
         });
         fdevent
-            .register(read_fd.into(), reader_handler, Interest::READABLE)
+            .register(
+                Arc::new(OwnedFd::from(read_fd)),
+                reader_handler,
+                Interest::READABLE,
+            )
             .unwrap();
     }
 

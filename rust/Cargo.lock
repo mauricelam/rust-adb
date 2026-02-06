@@ -44,6 +44,8 @@ dependencies = [
  "fdevent",
  "libc",
  "log",
+ "mio",
+ "nix",
  "sysdeps",
 ]
 

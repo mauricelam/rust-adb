@@ -23,8 +23,7 @@ use adb_protocol::{ConnectionState, TransportType};
 use adb_socket_spec::{is_socket_spec, socket_spec_connect};
 use adb_sockets::{connect_to_remote, create_local_socket, LocalSocket, Socket, SocketRegistry};
 use adb_transport::{
-    acquire_one_transport, list_transports, ATransport, FdConnection, TrackerOutputType,
-    TransportId,
+    acquire_one_transport, ATransport, FdConnection, TrackerOutputType, TransportId,
 };
 use adb_utils::{parse_uint, unhex};
 use bytes::Bytes;
@@ -41,6 +40,14 @@ pub const K_SHELL_SERVICE_ARG_SHELL_PROTOCOL: &str = "v2";
 
 pub const K_MINADBD_SERVICES_EXIT_SUCCESS: &str = "DONEDONE";
 pub const K_MINADBD_SERVICES_EXIT_FAILURE: &str = "FAILFAIL";
+
+/// Module handling reverse forwarding services.
+pub mod reverse_service;
+
+/// Module handling JDWP services.
+pub mod jdwp_service;
+
+/// Module handling reverse forwarding services.
 
 /// Creates a socket pair, starts a new thread with the provided function,
 /// and returns one end of the socket pair as an `OwnedFd`.
@@ -495,8 +502,16 @@ pub fn connect_to_smartsocket(socket: Arc<LocalSocket>, fdevent: &mut Fdevent) {
     socket.ready();
 }
 
-/// Dispatches a host-side service to a socket.
-/// Ported from `host_service_to_socket` in `original/services.cpp`.
+pub fn create_device_tracker(
+    output_type: TrackerOutputType,
+    registry: Arc<SocketRegistry>,
+) -> Arc<dyn Socket> {
+    let id = registry.alloc_id();
+    let tracker = DeviceTracker::new(id, output_type, registry.clone());
+    registry.install(tracker.clone());
+    tracker
+}
+
 pub fn host_service_to_socket(
     name: &str,
     serial: &str,
@@ -524,7 +539,7 @@ pub fn host_service_to_socket(
             wait_service(fd, serial, transport_id, spec);
         })
         .ok()?;
-        return Some(create_local_socket(fd.into_raw_fd(), registry, fdevent));
+        return Some(create_local_socket(fd, registry, fdevent));
     }
 
     if let Some(host) = name.strip_prefix("connect:") {
@@ -533,7 +548,7 @@ pub fn host_service_to_socket(
             connect_service(fd, host);
         })
         .ok()?;
-        return Some(create_local_socket(fd.into_raw_fd(), registry, fdevent));
+        return Some(create_local_socket(fd, registry, fdevent));
     }
 
     if let Some(pair_spec) = name.strip_prefix("pair:") {
@@ -544,7 +559,7 @@ pub fn host_service_to_socket(
                 pair_service(fd, host, password);
             })
             .ok()?;
-            return Some(create_local_socket(fd.into_raw_fd(), registry, fdevent));
+            return Some(create_local_socket(fd, registry, fdevent));
         }
     }
 
@@ -628,8 +643,8 @@ mod tests {
     fn test_connect_to_smartsocket() {
         let registry = Arc::new(SocketRegistry::new());
         let mut fdevent = Fdevent::new().unwrap();
-        let (s1, _s2) = UnixStream::pair().unwrap();
-        let client_socket = create_local_socket(s1.into_raw_fd(), registry.clone(), &mut fdevent);
+        let (s1, s2) = UnixStream::pair().unwrap();
+        let client_socket = create_local_socket(OwnedFd::from(s1), registry.clone(), &mut fdevent);
 
         connect_to_smartsocket(client_socket.clone(), &mut fdevent);
 
@@ -638,6 +653,7 @@ mod tests {
         let peer = registry.find(peer_id).unwrap();
         // The peer should be a SmartSocket.
         assert_eq!(peer.peer_id(), Some(client_socket.id()));
+        let _ = s2;
     }
 
     #[test]
@@ -654,7 +670,7 @@ mod tests {
         let registry = Arc::new(SocketRegistry::new());
         let mut fdevent = Fdevent::new().unwrap();
         let (s1, s2) = UnixStream::pair().unwrap();
-        let client_socket = create_local_socket(s1.into_raw_fd(), registry.clone(), &mut fdevent);
+        let client_socket = create_local_socket(OwnedFd::from(s1), registry.clone(), &mut fdevent);
 
         connect_to_smartsocket(client_socket.clone(), &mut fdevent);
 
@@ -813,28 +829,36 @@ pub fn service_to_fd(name: &str, _transport: Option<&Arc<ATransport>>) -> std::i
     }
 }
 
-/// Dispatches a service to a socket on the daemon side.
+use crate::jdwp_service::{register_jdwp_observer, JdwpTracker};
+
+/// Dispatches a daemon-side service request to a socket.
 /// Ported from `daemon_service_to_socket` in `original/daemon/services.cpp`.
 pub fn daemon_service_to_socket(
     name: &str,
-    _transport: &Arc<ATransport>,
+    transport: &Arc<ATransport>,
 ) -> Option<Arc<dyn Socket>> {
+    let registry = transport.registry.lock().unwrap().as_ref()?.clone();
     if name == "jdwp" {
-        // TODO: implement create_jdwp_service_socket
-        return None;
+        let id = registry.alloc_id();
+        let s = Arc::new(JdwpTracker::new(id, registry.clone(), false));
+        registry.install(s.clone());
+        return Some(s);
     }
     if name == "track-jdwp" {
-        // TODO: implement create_jdwp_tracker_service_socket
-        return None;
-    }
-    if name == "track-app" {
-        // TODO: implement create_app_tracker_service_socket
-        return None;
+        let id = registry.alloc_id();
+        let s = Arc::new(JdwpTracker::new(id, registry.clone(), true));
+        let s_weak = Arc::downgrade(&s);
+        register_jdwp_observer(Box::new(move || {
+            if let Some(s) = s_weak.upgrade() {
+                s.send_jdwp_list();
+            }
+        }));
+        registry.install(s.clone());
+        return Some(s);
     }
 
     if let Some(count_str) = name.strip_prefix("sink:") {
         if let Ok(count) = count_str.parse::<u64>() {
-            let registry = _transport.registry.lock().unwrap().as_ref()?.clone();
             let id = registry.alloc_id();
             let socket = Arc::new(SinkSocket {
                 id,
@@ -849,7 +873,6 @@ pub fn daemon_service_to_socket(
 
     if let Some(count_str) = name.strip_prefix("source:") {
         if let Ok(count) = count_str.parse::<u64>() {
-            let registry = _transport.registry.lock().unwrap().as_ref()?.clone();
             let id = registry.alloc_id();
             let socket = Arc::new(SourceSocket {
                 id,
@@ -1206,7 +1229,7 @@ pub fn shell_service(adb_fd: OwnedFd, args: &str) {
 
 /// Dispatches a service to a file descriptor on the daemon side.
 /// Ported from `daemon_service_to_fd` in `original/daemon/services.cpp`.
-pub fn daemon_service_to_fd(name: &str, _transport: &Arc<ATransport>) -> Option<OwnedFd> {
+pub fn daemon_service_to_fd(name: &str, transport: &Arc<ATransport>) -> Option<OwnedFd> {
     if let Some(args) = name.strip_prefix("shell") {
         let args = args.to_string();
         return create_service_thread("shell", move |fd| {
@@ -1231,113 +1254,21 @@ pub fn daemon_service_to_fd(name: &str, _transport: &Arc<ATransport>) -> Option<
         .ok();
     }
     if let Some(cmd) = name.strip_prefix("reverse:") {
-        return reverse_service(cmd, _transport);
+        let cmd = cmd.to_string();
+        let transport_clone = transport.clone();
+        return create_service_thread("reverse", move |fd| {
+            reverse_service::reverse_service(fd, &cmd, transport_clone);
+        })
+        .ok();
     }
     if name == "reconnect" {
-        let t = Arc::downgrade(_transport);
+        let t = Arc::downgrade(transport);
         return create_service_thread("reconnect", move |fd| {
             reconnect_service(fd, t.upgrade().as_ref());
         })
         .ok();
     }
 
-    None
-}
-
-struct DeviceTracker {
-    id: u32,
-    output_type: TrackerOutputType,
-    registry: Arc<SocketRegistry>,
-    peer: std::sync::Mutex<Option<Arc<dyn Socket>>>,
-}
-
-impl DeviceTracker {
-    fn new(id: u32, output_type: TrackerOutputType, registry: Arc<SocketRegistry>) -> Arc<Self> {
-        let tracker = Arc::new(Self {
-            id,
-            output_type,
-            registry,
-            peer: std::sync::Mutex::new(None),
-        });
-
-        let tracker_weak = Arc::downgrade(&tracker);
-        adb_transport::register_transport_observer(Box::new(move || {
-            if let Some(tracker) = tracker_weak.upgrade() {
-                tracker.update();
-            }
-        }));
-
-        tracker
-    }
-
-    fn update(&self) {
-        let list = list_transports(self.output_type);
-        if let Some(peer) = self.peer.lock().unwrap().as_ref() {
-            let mut data = Vec::with_capacity(list.len() + 4);
-            data.extend_from_slice(format!("{:04x}", list.len()).as_bytes());
-            data.extend_from_slice(list.as_bytes());
-            peer.enqueue(bytes::Bytes::from(data));
-        }
-    }
-}
-
-impl Socket for DeviceTracker {
-    fn id(&self) -> u32 {
-        self.id
-    }
-
-    fn enqueue(&self, _data: bytes::Bytes) -> i32 {
-        // Tracker doesn't accept data from peer.
-        self.close();
-        -1
-    }
-
-    fn ready(&self) {
-        self.update();
-    }
-
-    fn ack(&self, _acked_bytes: Option<i32>) {
-        self.ready();
-    }
-
-    fn shutdown(&self) {}
-
-    fn close(&self) {
-        if let Some(peer) = self.peer.lock().unwrap().take() {
-            peer.close();
-        }
-        self.registry.remove(self.id);
-    }
-
-    fn peer_id(&self) -> Option<u32> {
-        self.peer.lock().unwrap().as_ref().map(|p| p.id())
-    }
-
-    fn transport_id(&self) -> Option<u64> {
-        None
-    }
-
-    fn set_peer(&self, peer: Arc<dyn Socket>) {
-        *self.peer.lock().unwrap() = Some(peer);
-    }
-}
-
-/// Creates a device tracker socket.
-/// Ported from `create_device_tracker` in `original/transport.cpp`.
-pub fn create_device_tracker(
-    output_type: TrackerOutputType,
-    registry: Arc<SocketRegistry>,
-) -> Arc<dyn Socket> {
-    let id = registry.alloc_id();
-    let tracker = DeviceTracker::new(id, output_type, registry.clone());
-    registry.install(tracker.clone());
-    tracker
-}
-
-/// Service that handles reverse forwarding requests.
-/// Ported from `reverse_service` in `original/daemon/services.cpp`.
-pub fn reverse_service(_command: &str, _transport: &Arc<ATransport>) -> Option<OwnedFd> {
-    // TODO: Implement reverse_service by porting handle_forward_request from adb_listeners.cpp.
     None
 }
 
@@ -1438,6 +1369,84 @@ impl Socket for SourceSocket {
                     .fetch_sub(len as u64, std::sync::atomic::Ordering::Relaxed);
             }
         }
+    }
+
+    fn ack(&self, _acked_bytes: Option<i32>) {
+        self.ready();
+    }
+
+    fn shutdown(&self) {}
+
+    fn close(&self) {
+        if let Some(peer) = self.peer.lock().unwrap().take() {
+            peer.close();
+        }
+        self.registry.remove(self.id);
+    }
+
+    fn peer_id(&self) -> Option<u32> {
+        self.peer.lock().unwrap().as_ref().map(|p| p.id())
+    }
+
+    fn transport_id(&self) -> Option<u64> {
+        None
+    }
+
+    fn set_peer(&self, peer: Arc<dyn Socket>) {
+        *self.peer.lock().unwrap() = Some(peer);
+    }
+}
+
+struct DeviceTracker {
+    id: u32,
+    output_type: TrackerOutputType,
+    registry: Arc<SocketRegistry>,
+    peer: std::sync::Mutex<Option<Arc<dyn Socket>>>,
+}
+
+impl DeviceTracker {
+    fn new(id: u32, output_type: TrackerOutputType, registry: Arc<SocketRegistry>) -> Arc<Self> {
+        let tracker = Arc::new(Self {
+            id,
+            output_type,
+            registry,
+            peer: std::sync::Mutex::new(None),
+        });
+
+        let tracker_weak = Arc::downgrade(&tracker);
+        adb_transport::register_transport_observer(Box::new(move || {
+            if let Some(tracker) = tracker_weak.upgrade() {
+                tracker.update();
+            }
+        }));
+
+        tracker
+    }
+
+    fn update(&self) {
+        let list = adb_transport::list_transports(self.output_type);
+        if let Some(peer) = self.peer.lock().unwrap().as_ref() {
+            let mut data = Vec::with_capacity(list.len() + 4);
+            data.extend_from_slice(format!("{:04x}", list.len()).as_bytes());
+            data.extend_from_slice(list.as_bytes());
+            peer.enqueue(bytes::Bytes::from(data));
+        }
+    }
+}
+
+impl Socket for DeviceTracker {
+    fn id(&self) -> u32 {
+        self.id
+    }
+
+    fn enqueue(&self, _data: bytes::Bytes) -> i32 {
+        // Tracker doesn't accept data from peer.
+        self.close();
+        -1
+    }
+
+    fn ready(&self) {
+        self.update();
     }
 
     fn ack(&self, _acked_bytes: Option<i32>) {

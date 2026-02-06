@@ -5,6 +5,7 @@
 use fdevent::fdevent::{Fdevent, FdeventHandler};
 use mio::Interest;
 use std::io::Write;
+use std::os::unix::io::OwnedFd;
 use std::os::unix::net::UnixStream;
 use std::sync::{Arc, Mutex};
 use std::thread;
@@ -40,7 +41,9 @@ fn timeout() {
     let handler = Box::new(TimeoutHandler {
         events: events.clone(),
     });
-    let token = fdevent.register(r.into(), handler, Interest::READABLE).unwrap();
+    let token = fdevent
+        .register(Arc::new(OwnedFd::from(r)), handler, Interest::READABLE)
+        .unwrap();
 
     let delta = Duration::from_millis(100);
     fdevent.set_timeout(token, delta).unwrap();
