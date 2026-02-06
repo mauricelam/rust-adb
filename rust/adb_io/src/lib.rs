@@ -26,6 +26,37 @@ pub fn write_exactly<W: Write>(writer: &mut W, buf: &[u8]) -> std::io::Result<()
     writer.write_all(buf)
 }
 
+/// Same as `write_exactly`, but for string slices.
+pub fn write_exactly_str<W: Write>(writer: &mut W, s: &str) -> std::io::Result<()> {
+    write_exactly(writer, s.as_bytes())
+}
+
+/// Formats a string and writes it to the writer.
+///
+/// Corresponds to the C++ function `WriteFdFmt` in `original/adb_io.cpp`.
+#[macro_export]
+macro_rules! write_fd_fmt {
+    ($writer:expr, $($arg:tt)*) => {
+        $crate::write_exactly($writer, format!($($arg)*).as_bytes())
+    };
+}
+
+/// Given a client socket, wait for orderly/graceful shutdown.
+///
+/// Returns `Ok(true)` if orderly/graceful shutdown has occurred with no additional data.
+/// Returns `Ok(false)` if data was unexpectedly received.
+/// Returns `Err` if a read error occurred.
+///
+/// Corresponds to the C++ function `ReadOrderlyShutdown` in `original/adb_io.cpp`.
+pub fn read_orderly_shutdown<R: Read>(reader: &mut R) -> std::io::Result<bool> {
+    let mut buf = [0; 16];
+    match reader.read(&mut buf) {
+        Ok(0) => Ok(true),
+        Ok(_) => Ok(false),
+        Err(e) => Err(e),
+    }
+}
+
 /// Sends a protocol string, which is a 4-byte hex length followed by the string data.
 /// The total length of the string cannot exceed 65535 bytes (0xFFFF).
 ///
@@ -183,5 +214,55 @@ mod tests {
         let mut buf = Vec::new();
         file.read_to_end(&mut buf).unwrap();
         assert_eq!(&buf, b"Fooba");
+    }
+
+    #[test]
+    fn test_write_exactly_str() {
+        let mut writer = Vec::new();
+        write_exactly_str(&mut writer, "hello").unwrap();
+        assert_eq!(writer, b"hello");
+    }
+
+    #[test]
+    fn test_write_fd_fmt() {
+        let mut writer = Vec::new();
+        write_fd_fmt!(&mut writer, "foo {} {}", "bar", 123).unwrap();
+        assert_eq!(writer, b"foo bar 123");
+    }
+
+    #[test]
+    fn test_read_orderly_shutdown_success() {
+        let mut reader = Cursor::new(b"");
+        assert_eq!(read_orderly_shutdown(&mut reader).unwrap(), true);
+    }
+
+    #[test]
+    fn test_read_orderly_shutdown_unexpected_data() {
+        let mut reader = Cursor::new(b"data");
+        assert_eq!(read_orderly_shutdown(&mut reader).unwrap(), false);
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn test_write_exactly_enospc() {
+        use std::fs::OpenOptions;
+        if let Ok(mut file) = OpenOptions::new().write(true).open("/dev/full") {
+            let result = write_exactly(&mut file, b"foo");
+            assert!(result.is_err());
+            assert_eq!(result.unwrap_err().raw_os_error(), Some(libc::ENOSPC));
+        }
+    }
+
+    #[test]
+    fn test_pipe_read_write() {
+        use std::os::unix::net::UnixStream;
+        let (mut s1, mut s2) = UnixStream::pair().unwrap();
+
+        let data = b"some data to send through pipe";
+        write_exactly(&mut s1, data).unwrap();
+
+        let mut buf = vec![0u8; data.len()];
+        read_exactly(&mut s2, &mut buf).unwrap();
+        assert_eq!(buf, data);
     }
 }
