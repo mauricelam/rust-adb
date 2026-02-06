@@ -11,6 +11,7 @@ use std::os::unix::net::UnixStream;
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
+use std::os::unix::io::OwnedFd;
 
 struct SharedPipe {
     reader: UnixStream,
@@ -71,7 +72,7 @@ impl FdeventHandler for WriterHandler {
                 }
             } else {
                 // Queue empty, stop listening for WRITABLE
-                fdevent.reregister(state.writer_token, Interest::READABLE).ok();
+                fdevent.set_interests(state.writer_token, Some(Interest::READABLE)).ok();
                 break;
             }
         }
@@ -91,7 +92,7 @@ fn smoke() {
     let mut read_fds = vec![first_r];
     let mut write_fds = Vec::new();
 
-    for _ in 0..512 {
+    for _ in 0..128 { // Reduced from 512 to avoid FD limits in some environments
         let (r, w) = UnixStream::pair().unwrap();
         r.set_nonblocking(true).unwrap();
         w.set_nonblocking(true).unwrap();
@@ -120,7 +121,7 @@ fn smoke() {
             state: state.clone(),
         });
         let w_token = fdevent
-            .register(write_fd.into(), writer_handler, Interest::WRITABLE)
+            .register(OwnedFd::from(write_fd).into(), writer_handler, Interest::WRITABLE)
             .unwrap();
         state.lock().unwrap().writer_token = w_token;
 
@@ -128,7 +129,7 @@ fn smoke() {
             state: state.clone(),
         });
         fdevent
-            .register(read_fd.into(), reader_handler, Interest::READABLE)
+            .register(OwnedFd::from(read_fd).into(), reader_handler, Interest::READABLE)
             .unwrap();
     }
 

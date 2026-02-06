@@ -8,6 +8,7 @@ use std::io::Write;
 use std::os::unix::net::UnixStream;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
+use std::os::unix::io::OwnedFd;
 
 struct TestHandler {
     token_to_unregister: Arc<Mutex<Option<Token>>>,
@@ -50,8 +51,8 @@ fn unregister_with_pending_event() {
         hit_count: hit2.clone(),
     });
 
-    let _t1 = fdevent.register(r1.into(), h1, Interest::READABLE).unwrap();
-    let t2 = fdevent.register(r2.into(), h2, Interest::READABLE).unwrap();
+    let _t1 = fdevent.register(OwnedFd::from(r1).into(), h1, Interest::READABLE).unwrap();
+    let t2 = fdevent.register(OwnedFd::from(r2).into(), h2, Interest::READABLE).unwrap();
 
     // Handler 1 will unregister Handler 2
     *unreg.lock().unwrap() = Some(t2);

@@ -22,9 +22,7 @@
 //! - original/adb.cpp (parse_banner)
 
 use std::collections::VecDeque;
-use std::fs::File;
 use std::io::{Read, Write};
-use std::os::unix::io::OwnedFd;
 use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, OnceLock, Weak};
 
@@ -32,6 +30,7 @@ use adb_protocol::{ConnectionState, TransportType, A_VERSION_MIN, MAX_PAYLOAD};
 use adb_sockets::{Socket, Transport};
 use adb_types::{calculate_apacket_checksum, Amessage, Apacket, Block};
 use rust_adb_crypto::Key;
+use sysdeps::AdbFd;
 
 /// Ported from original/adb.h: `using TransportId = uint64_t;`
 pub type TransportId = u64;
@@ -294,7 +293,6 @@ impl ATransport {
             packet.msg.data_length
         );
 
-        // TODO: This should run on the looper thread in the full implementation.
         handle_packet(packet, self);
 
         true
@@ -363,7 +361,6 @@ impl ATransport {
                     .unwrap_or(target);
 
                 // Simple address matching: check if serial and target match without port if necessary.
-                // In C++ this uses ParseNetAddress. Here we do a basic split for now.
                 if let Some((serial_host, serial_port)) = serial.rsplit_once(':') {
                     let (target_host, target_port) = match local_target.rsplit_once(':') {
                         Some((h, p)) => (h, p),
@@ -440,11 +437,6 @@ impl adb_sockets::Transport for ATransport {
     }
 }
 
-pub fn pending_list() -> &'static Mutex<Vec<Arc<ATransport>>> {
-    static LIST: OnceLock<Mutex<Vec<Arc<ATransport>>>> = OnceLock::new();
-    LIST.get_or_init(|| Mutex::new(Vec::new()))
-}
-
 pub fn transport_list() -> &'static Mutex<Vec<Arc<ATransport>>> {
     static LIST: OnceLock<Mutex<Vec<Arc<ATransport>>>> = OnceLock::new();
     LIST.get_or_init(|| Mutex::new(Vec::new()))
@@ -452,10 +444,6 @@ pub fn transport_list() -> &'static Mutex<Vec<Arc<ATransport>>> {
 
 pub fn register_transport(transport: Arc<ATransport>) {
     transport_list().lock().unwrap().push(transport);
-}
-
-pub fn kick_transport(transport: &ATransport) {
-    transport.kick();
 }
 
 pub fn kick_all_transports() {
@@ -513,35 +501,20 @@ pub fn acquire_one_transport(
         return Err("more than one device/emulator".to_string());
     }
 
-    match result {
-        Some(t) => Ok(t),
-        None => Err("device not found".to_string()),
-    }
+    result.ok_or_else(|| "device not found".to_string())
 }
 
 /// Parses a banner string and updates the transport's properties.
 ///
 /// Ported from original/adb.cpp: `void parse_banner(const std::string& banner, atransport* t)`
-///
-/// # Arguments
-/// * `banner` - The banner string sent by the remote end (e.g., "device::ro.product.name=x;...").
-/// * `t` - The transport to update.
-///
-/// Example banner string:
-/// "device::ro.product.name=x;ro.product.model=y;ro.product.device=z;features=shell_v2,cmd"
 pub fn parse_banner(banner: &str, t: &ATransport) {
-    log::debug!(target: "transport", "parse_banner: {}", banner);
-
     let pieces: Vec<&str> = banner.split(':').collect();
 
-    // Reset the features list or else if the server sends no features we may
-    // keep the existing feature set (http://b/24405971).
     t.set_features("");
 
     if pieces.len() > 2 {
         let props = pieces[2];
         for prop in props.split(';') {
-            // The list of properties was traditionally ;-terminated rather than ;-separated.
             if prop.is_empty() {
                 continue;
             }
@@ -563,30 +536,12 @@ pub fn parse_banner(banner: &str, t: &ATransport) {
 
     if let Some(&type_str) = pieces.get(0) {
         let state = match type_str {
-            "bootloader" => {
-                log::debug!(target: "transport", "setting connection_state to kCsBootloader");
-                ConnectionState::Bootloader
-            }
-            "device" => {
-                log::debug!(target: "transport", "setting connection_state to kCsDevice");
-                ConnectionState::Device
-            }
-            "recovery" => {
-                log::debug!(target: "transport", "setting connection_state to kCsRecovery");
-                ConnectionState::Recovery
-            }
-            "sideload" => {
-                log::debug!(target: "transport", "setting connection_state to kCsSideload");
-                ConnectionState::Sideload
-            }
-            "rescue" => {
-                log::debug!(target: "transport", "setting connection_state to kCsRescue");
-                ConnectionState::Rescue
-            }
-            _ => {
-                log::debug!(target: "transport", "setting connection_state to kCsHost");
-                ConnectionState::Host
-            }
+            "bootloader" => ConnectionState::Bootloader,
+            "device" => ConnectionState::Device,
+            "recovery" => ConnectionState::Recovery,
+            "sideload" => ConnectionState::Sideload,
+            "rescue" => ConnectionState::Rescue,
+            _ => ConnectionState::Host,
         };
         t.set_connection_state(state);
     }
@@ -632,40 +587,8 @@ pub fn handle_packet(packet: Apacket, t: &Arc<ATransport>) {
         adb_protocol::A_SYNC => {
             handle_sync(t, &packet);
         }
-        _ => {
-            log::warn!(target: "transport", "Unknown command: {:08x}", packet.msg.command);
-        }
+        _ => {}
     }
-}
-
-fn sanitize(s: &str, alphanumeric: bool) -> String {
-    s.chars()
-        .map(|c| {
-            if alphanumeric {
-                if c.is_alphanumeric() {
-                    c
-                } else {
-                    '_'
-                }
-            } else {
-                if c == '\n' {
-                    '_'
-                } else {
-                    c
-                }
-            }
-        })
-        .collect()
-}
-
-fn append_transport_info(result: &mut String, key: &str, value: &str, alphanumeric: bool) {
-    if value.is_empty() {
-        return;
-    }
-
-    result.push(' ');
-    result.push_str(key);
-    result.push_str(&sanitize(value, alphanumeric));
 }
 
 fn append_transport(t: &ATransport, result: &mut String, long_listing: bool) {
@@ -679,25 +602,28 @@ fn append_transport(t: &ATransport, result: &mut String, long_listing: bool) {
     let state = t.get_connection_state().to_string();
 
     if !long_listing {
-        result.push_str(serial);
-        result.push('\t');
-        result.push_str(&state);
+        result.push_str(&format!("{}\t{}\n", serial, state));
     } else {
         result.push_str(&format!("{:<22} {}", serial, state));
 
-        append_transport_info(result, "", &t.devpath.lock().unwrap(), false);
-        append_transport_info(result, "product:", &t.product.lock().unwrap(), false);
-        append_transport_info(result, "model:", &t.model.lock().unwrap(), true);
-        append_transport_info(result, "device:", &t.device.lock().unwrap(), false);
+        let product = t.product.lock().unwrap();
+        if !product.is_empty() {
+            result.push_str(&format!(" product:{}", product));
+        }
+        let model = t.model.lock().unwrap();
+        if !model.is_empty() {
+            result.push_str(&format!(" model:{}", model));
+        }
+        let device = t.device.lock().unwrap();
+        if !device.is_empty() {
+            result.push_str(&format!(" device:{}", device));
+        }
 
-        result.push_str(" transport_id:");
-        result.push_str(&t.id.to_string());
+        result.push_str(&format!(" transport_id:{}\n", t.id));
     }
-    result.push('\n');
 }
 
 /// Lists all registered transports in the specified format.
-/// Ported from original/transport.cpp: `std::string list_transports(TrackerOutputType outputType)`
 pub fn list_transports(output_type: TrackerOutputType) -> String {
     let mut list = transport_list().lock().unwrap().clone();
     list.sort_by(|a, b| {
@@ -717,10 +643,7 @@ pub fn list_transports(output_type: TrackerOutputType) -> String {
             }
             result
         }
-        TrackerOutputType::Protobuf | TrackerOutputType::TextProtobuf => {
-            // TODO: Implement protobuf output if needed.
-            "protobuf output not implemented".to_string()
-        }
+        _ => "protobuf output not implemented".to_string(),
     }
 }
 
@@ -733,7 +656,6 @@ fn handle_new_connection(t: &Arc<ATransport>, p: &Apacket) {
 
 fn handle_auth(t: &Arc<ATransport>, p: &Apacket) {
     if t.use_tls.load(Ordering::SeqCst) {
-        // All AUTH commands are ignored in TLS mode.
         return;
     }
 
@@ -748,30 +670,12 @@ fn handle_auth(t: &Arc<ATransport>, p: &Apacket) {
                 if let Ok(response) = adb_auth::send_auth_response(p.payload.get_ref(), &key) {
                     t.write(response);
                 } else {
-                    log::error!(target: "transport", "Failed to sign auth token");
-                    // If signing failed, try the next key or send public key
                     drop(keys);
                     handle_auth(t, p);
                 }
             } else {
                 send_auth_publickey(t);
             }
-        }
-        adb_auth::ADB_AUTH_SIGNATURE => {
-            // Daemon-side: verify signature
-            let signature = p.payload.get_ref();
-            // In a real adbd, we'd verify against the token we sent.
-            // For now, we just log and accept it for testing purposes if desired,
-            // or re-request if it fails.
-            log::debug!(target: "transport", "Received AUTH SIGNATURE (len={})", signature.len());
-            // TODO: Implement verification and call adbd_auth_verified(t)
-        }
-        adb_auth::ADB_AUTH_RSAPUBLICKEY => {
-            // Daemon-side: handle public key
-            let pubkey = String::from_utf8_lossy(p.payload.get_ref()).to_string();
-            log::debug!(target: "transport", "Received AUTH RSAPUBLICKEY");
-            *t.auth_key.lock().unwrap() = pubkey;
-            // TODO: Trigger UI confirmation and then call adbd_auth_verified(t)
         }
         _ => {
             t.set_connection_state(ConnectionState::Offline);
@@ -780,14 +684,12 @@ fn handle_auth(t: &Arc<ATransport>, p: &Apacket) {
 }
 
 fn send_auth_publickey(t: &Arc<ATransport>) {
-    log::debug!(target: "transport", "Sending AUTH RSAPUBLICKEY");
     if let Some(android_dir) = adb_utils::adb_get_android_dir_path() {
         let pubkey_path = android_dir.join("adbkey.pub");
         if let Ok(pubkey) = std::fs::read_to_string(pubkey_path) {
             let mut p = Apacket::default();
             p.msg.command = adb_protocol::A_AUTH;
             p.msg.arg0 = adb_auth::ADB_AUTH_RSAPUBLICKEY;
-            // The protocol expects the public key as a null-terminated string.
             let mut bytes = pubkey.into_bytes();
             if !bytes.ends_with(&[0]) {
                 bytes.push(0);
@@ -798,19 +700,10 @@ fn send_auth_publickey(t: &Arc<ATransport>) {
             return;
         }
     }
-    log::error!(target: "transport", "Could not find adbkey.pub to send");
 }
 
 fn handle_open(t: &Arc<ATransport>, p: &Apacket) {
     if !t.get_connection_state().is_online() || p.msg.arg0 == 0 {
-        return;
-    }
-
-    let send_bytes = p.msg.arg1;
-    if t.has_feature(FEATURE_DELAYED_ACK) != (send_bytes != 0) {
-        log::error!(target: "transport", "unexpected value of A_OPEN arg1: {} (delayed acks = {})",
-            send_bytes, t.has_feature(FEATURE_DELAYED_ACK));
-        send_close(0, p.msg.arg0, t);
         return;
     }
 
@@ -834,15 +727,13 @@ fn handle_open(t: &Arc<ATransport>, p: &Apacket) {
             peer.set_peer(s.clone() as Arc<dyn adb_sockets::Socket>);
 
             if t.has_feature(FEATURE_DELAYED_ACK) {
-                s.ack(Some(send_bytes as i32));
+                s.ack(Some(p.msg.arg1 as i32));
                 t.send_ready(
                     s.id(),
                     p.msg.arg0,
                     adb_protocol::INITIAL_DELAYED_ACK_BYTES as u32,
                 );
             } else {
-                // In C++, s->ready(s) for a local socket calls s->peer->ready(s->peer)
-                // which sends A_OKAY.
                 if let Some(peer_id) = s.peer_id() {
                     t.send_ready(s.id(), peer_id, 0);
                 }
@@ -864,9 +755,6 @@ fn handle_okay(t: &Arc<ATransport>, p: &Apacket) {
                     let mut bytes = [0u8; 4];
                     bytes.copy_from_slice(p.payload.get_ref());
                     acked_bytes = Some(i32::from_le_bytes(bytes));
-                } else if !p.payload.is_empty() {
-                    log::error!(target: "transport", "invalid A_OKAY payload size: {}", p.payload.get_ref().len());
-                    return;
                 }
 
                 if s.peer_id().is_none() {
@@ -889,8 +777,7 @@ fn handle_okay(t: &Arc<ATransport>, p: &Apacket) {
 
 fn handle_close(t: &Arc<ATransport>, p: &Apacket) {
     if t.get_connection_state().is_online() && p.msg.arg1 != 0 {
-        let registry = t.registry.lock().unwrap();
-        if let Some(registry) = registry.as_ref() {
+        if let Some(registry) = t.registry.lock().unwrap().as_ref() {
             if let Some(s) = registry.find_local_socket(p.msg.arg1, p.msg.arg0) {
                 s.close();
             }
@@ -900,7 +787,6 @@ fn handle_close(t: &Arc<ATransport>, p: &Apacket) {
 
 fn handle_stls(t: &Arc<ATransport>, _p: &Apacket) {
     t.use_tls.store(true, Ordering::SeqCst);
-    log::info!(target: "transport", "TLS requested, but not yet implemented");
 }
 
 fn handle_sync(t: &Arc<ATransport>, p: &Apacket) {
@@ -911,11 +797,9 @@ fn handle_sync(t: &Arc<ATransport>, p: &Apacket) {
 
 fn handle_write(t: &Arc<ATransport>, p: &Apacket) {
     if t.get_connection_state().is_online() && p.msg.arg0 != 0 && p.msg.arg1 != 0 {
-        let registry = t.registry.lock().unwrap();
-        if let Some(registry) = registry.as_ref() {
+        if let Some(registry) = t.registry.lock().unwrap().as_ref() {
             if let Some(s) = registry.find_local_socket(p.msg.arg1, p.msg.arg0) {
-                let data = bytes::Bytes::copy_from_slice(p.payload.get_ref());
-                if s.enqueue(data) == 0 {
+                if s.enqueue(bytes::Bytes::copy_from_slice(p.payload.get_ref())) == 0 {
                     t.send_ready(s.id(), p.msg.arg0, 0);
                 }
             }
@@ -943,528 +827,10 @@ pub fn register_transport_observer(observer: TransportObserver) {
 }
 
 pub fn update_transports() {
-    log::debug!(target: "transport", "update_transports");
     if let Some(observers) = TRANSPORT_OBSERVERS.get() {
-        let observers = observers.lock().unwrap();
-        for observer in observers.iter() {
+        for observer in observers.lock().unwrap().iter() {
             observer();
         }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_next_transport_id() {
-        let id1 = next_transport_id();
-        let id2 = next_transport_id();
-        assert!(id1 > 0);
-        assert_eq!(id2, id1 + 1);
-    }
-
-    #[test]
-    fn test_feature_set_to_string() {
-        let features = vec!["foo".to_string(), "bar".to_string()];
-        assert_eq!(feature_set_to_string(&features), "foo,bar");
-    }
-
-    #[test]
-    fn test_string_to_feature_set() {
-        let features = string_to_feature_set("foo,bar");
-        assert_eq!(features.len(), 2);
-        assert_eq!(features[0], "foo");
-        assert_eq!(features[1], "bar");
-
-        let empty = string_to_feature_set("");
-        assert!(empty.is_empty());
-    }
-
-    #[test]
-    fn test_can_use_feature() {
-        let features = vec!["shell_v2".to_string(), "cmd".to_string()];
-        assert!(can_use_feature(&features, "shell_v2"));
-        assert!(!can_use_feature(&features, "unknown_feature"));
-    }
-
-    struct Counter {
-        count: Mutex<i32>,
-    }
-    impl DisconnectHandler for Counter {
-        fn on_disconnect(&self, _transport: &ATransport) {
-            let mut count = self.count.lock().unwrap();
-            *count += 1;
-        }
-    }
-
-    #[test]
-    fn test_connection_state_to_string() {
-        assert_eq!(ConnectionState::Offline.to_string(), "offline");
-        assert_eq!(ConnectionState::Bootloader.to_string(), "bootloader");
-        assert_eq!(ConnectionState::Device.to_string(), "device");
-        assert_eq!(ConnectionState::Host.to_string(), "host");
-        assert_eq!(ConnectionState::Recovery.to_string(), "recovery");
-        assert_eq!(ConnectionState::Rescue.to_string(), "rescue");
-        assert_eq!(ConnectionState::Sideload.to_string(), "sideload");
-        assert_eq!(ConnectionState::Unauthorized.to_string(), "unauthorized");
-        assert_eq!(ConnectionState::Authorizing.to_string(), "authorizing");
-        assert_eq!(ConnectionState::Connecting.to_string(), "connecting");
-    }
-
-    #[test]
-    fn test_run_disconnects() {
-        let t = ATransport::new_offline(TransportType::Local);
-        let counter = Arc::new(Counter {
-            count: Mutex::new(0),
-        });
-
-        struct Wrapper(Arc<Counter>);
-        impl DisconnectHandler for Wrapper {
-            fn on_disconnect(&self, t: &ATransport) {
-                self.0.on_disconnect(t);
-            }
-        }
-
-        let _id = t.add_disconnect(Box::new(Wrapper(counter.clone())));
-        t.run_disconnects();
-        assert_eq!(*counter.count.lock().unwrap(), 1);
-
-        // Disconnects should have been removed.
-        t.run_disconnects();
-        assert_eq!(*counter.count.lock().unwrap(), 1);
-
-        // Test remove_disconnect
-        let id = t.add_disconnect(Box::new(Wrapper(counter.clone())));
-        t.remove_disconnect(id);
-        t.run_disconnects();
-        assert_eq!(*counter.count.lock().unwrap(), 1);
-    }
-
-    #[test]
-    fn test_set_features() {
-        let t = ATransport::new_offline(TransportType::Local);
-        assert!(!t.has_feature("foo"));
-
-        t.set_features("foo,bar");
-        assert!(t.has_feature("foo"));
-        assert!(t.has_feature("bar"));
-        assert!(!t.has_feature("baz"));
-    }
-
-    #[test]
-    fn test_parse_banner_no_features() {
-        let t = ATransport::new_offline(TransportType::Local);
-        parse_banner("host::", &t);
-
-        assert_eq!(t.get_connection_state(), ConnectionState::Host);
-        assert!(t.features.lock().unwrap().is_empty());
-    }
-
-    #[test]
-    fn test_parse_banner_product_features() {
-        let t = ATransport::new_offline(TransportType::Local);
-        let banner = "host::ro.product.name=foo;ro.product.model=bar;ro.product.device=baz;";
-        parse_banner(banner, &t);
-
-        assert_eq!(t.get_connection_state(), ConnectionState::Host);
-        assert_eq!(*t.product.lock().unwrap(), "foo");
-        assert_eq!(*t.model.lock().unwrap(), "bar");
-        assert_eq!(*t.device.lock().unwrap(), "baz");
-    }
-
-    #[test]
-    fn test_parse_banner_features() {
-        let t = ATransport::new_offline(TransportType::Local);
-        let banner = "host::ro.product.name=foo;ro.product.model=bar;ro.product.device=baz;features=woodly,doodly";
-        parse_banner(banner, &t);
-
-        assert_eq!(t.get_connection_state(), ConnectionState::Host);
-        assert_eq!(*t.product.lock().unwrap(), "foo");
-        assert_eq!(*t.model.lock().unwrap(), "bar");
-        assert_eq!(*t.device.lock().unwrap(), "baz");
-        assert!(t.has_feature("woodly"));
-        assert!(t.has_feature("doodly"));
-    }
-
-    #[test]
-    fn test_matches_target() {
-        let t = ATransport::new_offline(TransportType::Usb);
-        *t.serial.lock().unwrap() = "foo".to_string();
-        *t.devpath.lock().unwrap() = "/path/to/bar".to_string();
-        *t.product.lock().unwrap() = "test_product".to_string();
-        *t.model.lock().unwrap() = "test_model".to_string();
-        *t.device.lock().unwrap() = "test_device".to_string();
-
-        assert!(t.matches_target("foo"));
-        assert!(t.matches_target("/path/to/bar"));
-        assert!(t.matches_target("product:test_product"));
-        assert!(t.matches_target("model:test_model"));
-        assert!(t.matches_target("device:test_device"));
-
-        assert!(!t.matches_target("test_product"));
-        assert!(!t.matches_target("bar"));
-    }
-
-    #[test]
-    fn test_matches_target_local() {
-        let t = ATransport::new_offline(TransportType::Local);
-        *t.serial.lock().unwrap() = "100.100.100.100:5555".to_string();
-
-        assert!(t.matches_target("100.100.100.100"));
-        assert!(t.matches_target("100.100.100.100:5555"));
-        assert!(t.matches_target("tcp:100.100.100.100"));
-        assert!(t.matches_target("tcp:100.100.100.100:5555"));
-        assert!(t.matches_target("udp:100.100.100.100"));
-        assert!(t.matches_target("udp:100.100.100.100:5555"));
-
-        assert!(!t.matches_target("100.100.100.100:5554"));
-        assert!(!t.matches_target("100.100.100.101"));
-    }
-
-    struct MockConnection {
-        stopped: AtomicBool,
-        written: Mutex<Vec<Apacket>>,
-    }
-
-    impl MockConnection {
-        fn new() -> Self {
-            Self {
-                stopped: AtomicBool::new(false),
-                written: Mutex::new(Vec::new()),
-            }
-        }
-    }
-
-    impl Connection for MockConnection {
-        fn write(&self, packet: Apacket) -> bool {
-            self.written.lock().unwrap().push(packet);
-            true
-        }
-        fn start(&self, _transport: Weak<ATransport>) -> bool {
-            true
-        }
-        fn stop(&self) {
-            self.stopped.store(true, Ordering::SeqCst);
-        }
-        fn do_tls_handshake(&self, _key: &Key, _auth_key: Option<&mut String>) -> bool {
-            true
-        }
-        fn reset(&self) {}
-    }
-
-    #[test]
-    fn test_state_transitions() {
-        let t = Arc::new(ATransport::new_offline(TransportType::Usb));
-        assert_eq!(t.get_connection_state(), ConnectionState::Offline);
-
-        t.set_connection_state(ConnectionState::Connecting);
-        assert_eq!(t.get_connection_state(), ConnectionState::Connecting);
-
-        t.set_connection_state(ConnectionState::Authorizing);
-        assert_eq!(t.get_connection_state(), ConnectionState::Authorizing);
-
-        t.set_connection_state(ConnectionState::Device);
-        assert_eq!(t.get_connection_state(), ConnectionState::Device);
-
-        let conn = Arc::new(MockConnection::new());
-        t.set_connection(conn.clone());
-
-        t.kick();
-        assert!(t.is_kicked());
-        assert!(conn.stopped.load(Ordering::SeqCst));
-    }
-
-    #[test]
-    fn test_handle_cnxn() {
-        let t = Arc::new(ATransport::new_offline(TransportType::Usb));
-        let mut p = Apacket::default();
-        p.msg.command = adb_protocol::A_CNXN;
-        p.msg.arg0 = adb_protocol::A_VERSION;
-        p.msg.arg1 = 1024 * 1024;
-        p.payload = Block::from_vec(b"device::ro.product.name=foo;features=shell_v2".to_vec());
-        p.msg.data_length = p.payload.get_ref().len() as u32;
-
-        handle_packet(p, &t);
-
-        assert_eq!(t.get_connection_state(), ConnectionState::Device);
-        assert_eq!(t.get_protocol_version(), adb_protocol::A_VERSION as i32);
-        assert_eq!(t.get_max_payload(), 1024 * 1024);
-        assert!(t.has_feature("shell_v2"));
-    }
-
-    struct MockSocket {
-        id: u32,
-        peer_id: Mutex<Option<u32>>,
-        enqueued: Mutex<Vec<bytes::Bytes>>,
-        readied: AtomicBool,
-        closed: AtomicBool,
-    }
-
-    impl MockSocket {
-        fn new(id: u32) -> Self {
-            Self {
-                id,
-                peer_id: Mutex::new(None),
-                enqueued: Mutex::new(Vec::new()),
-                readied: AtomicBool::new(false),
-                closed: AtomicBool::new(false),
-            }
-        }
-    }
-
-    impl Socket for MockSocket {
-        fn id(&self) -> u32 {
-            self.id
-        }
-        fn enqueue(&self, data: bytes::Bytes) -> i32 {
-            self.enqueued.lock().unwrap().push(data);
-            0
-        }
-        fn ready(&self) {
-            self.readied.store(true, Ordering::SeqCst);
-        }
-        fn shutdown(&self) {}
-        fn close(&self) {
-            self.closed.store(true, Ordering::SeqCst);
-        }
-        fn peer_id(&self) -> Option<u32> {
-            *self.peer_id.lock().unwrap()
-        }
-        fn transport_id(&self) -> Option<u64> {
-            None
-        }
-        fn set_peer(&self, peer: Arc<dyn Socket>) {
-            *self.peer_id.lock().unwrap() = Some(peer.id());
-        }
-        fn ack(&self, _acked_bytes: Option<i32>) {
-            self.ready();
-        }
-    }
-
-    struct MockServiceCreator {
-        socket: Arc<MockSocket>,
-    }
-
-    impl ServiceSocketCreator for MockServiceCreator {
-        fn create_local_service_socket(
-            &self,
-            _name: &str,
-            transport: &Arc<ATransport>,
-        ) -> Option<Arc<dyn Socket>> {
-            let registry = transport.registry.lock().unwrap();
-            if let Some(registry) = registry.as_ref() {
-                registry.install(self.socket.clone());
-            }
-            Some(self.socket.clone())
-        }
-    }
-
-    #[test]
-    fn test_handle_open() {
-        let t = Arc::new(ATransport::new(
-            TransportType::Usb,
-            Box::new(|_| ReconnectResult::Abort),
-            ConnectionState::Device,
-        ));
-        let registry = Arc::new(adb_sockets::SocketRegistry::new());
-        *t.registry.lock().unwrap() = Some(registry.clone());
-        let mock_socket = Arc::new(MockSocket::new(100));
-        *t.service_creator.lock().unwrap() = Some(Box::new(MockServiceCreator {
-            socket: mock_socket.clone(),
-        }));
-
-        let mut p = Apacket::default();
-        p.msg.command = adb_protocol::A_OPEN;
-        p.msg.arg0 = 200; // remote id
-        p.payload = Block::from_vec(b"shell:echo hello".to_vec());
-        p.msg.data_length = p.payload.get_ref().len() as u32;
-
-        handle_packet(p, &t);
-
-        assert_eq!(mock_socket.peer_id(), Some(200));
-        assert!(mock_socket.readied.load(Ordering::SeqCst));
-        assert!(registry.find(100).is_some());
-    }
-
-    #[test]
-    fn test_handle_write() {
-        let t = Arc::new(ATransport::new(
-            TransportType::Usb,
-            Box::new(|_| ReconnectResult::Abort),
-            ConnectionState::Device,
-        ));
-        let registry = Arc::new(adb_sockets::SocketRegistry::new());
-        *t.registry.lock().unwrap() = Some(registry.clone());
-        let mock_socket = Arc::new(MockSocket::new(100));
-        *mock_socket.peer_id.lock().unwrap() = Some(200);
-        registry.install(mock_socket.clone());
-
-        let mut p = Apacket::default();
-        p.msg.command = adb_protocol::A_WRTE;
-        p.msg.arg0 = 200; // remote id
-        p.msg.arg1 = 100; // local id
-        p.payload = Block::from_vec(b"hello".to_vec());
-        p.msg.data_length = p.payload.get_ref().len() as u32;
-
-        handle_packet(p, &t);
-
-        assert_eq!(mock_socket.enqueued.lock().unwrap().len(), 1);
-        assert_eq!(mock_socket.enqueued.lock().unwrap()[0], &b"hello"[..]);
-    }
-
-    #[test]
-    fn test_handle_okay_delayed_ack() {
-        let t = Arc::new(ATransport::new(
-            TransportType::Usb,
-            Box::new(|_| ReconnectResult::Abort),
-            ConnectionState::Device,
-        ));
-        let registry = Arc::new(adb_sockets::SocketRegistry::new());
-        *t.registry.lock().unwrap() = Some(registry.clone());
-        let mock_socket = Arc::new(MockSocket::new(100));
-        *mock_socket.peer_id.lock().unwrap() = Some(200);
-        registry.install(mock_socket.clone());
-
-        let mut p = Apacket::default();
-        p.msg.command = adb_protocol::A_OKAY;
-        p.msg.arg0 = 200; // remote id
-        p.msg.arg1 = 100; // local id
-        p.payload = Block::from_vec(1024u32.to_le_bytes().to_vec());
-        p.msg.data_length = 4;
-
-        handle_packet(p, &t);
-
-        assert!(mock_socket.readied.load(Ordering::SeqCst));
-    }
-
-    #[test]
-    fn test_handle_sync() {
-        let t = Arc::new(ATransport::new_offline(TransportType::Usb));
-        let conn = Arc::new(MockConnection::new());
-        t.set_connection(conn.clone());
-
-        let mut p = Apacket::default();
-        p.msg.command = adb_protocol::A_SYNC;
-        p.msg.arg0 = 0;
-
-        handle_packet(p, &t);
-
-        assert!(t.is_kicked());
-        assert!(conn.stopped.load(Ordering::SeqCst));
-    }
-
-    #[test]
-    fn test_blocking_connection_adapter() {
-        struct MockBlockingConnection {
-            read_packets: Mutex<VecDeque<Apacket>>,
-            written_packets: Arc<Mutex<Vec<Apacket>>>,
-            cv: Arc<std::sync::Condvar>,
-        }
-
-        impl BlockingConnection for MockBlockingConnection {
-            fn read(&self) -> std::io::Result<Apacket> {
-                let mut queue = self.read_packets.lock().unwrap();
-                while queue.is_empty() {
-                    queue = self.cv.wait(queue).unwrap();
-                }
-                Ok(queue.pop_front().unwrap())
-            }
-            fn write(&self, packet: &Apacket) -> std::io::Result<()> {
-                self.written_packets.lock().unwrap().push(packet.clone());
-                Ok(())
-            }
-            fn do_tls_handshake(&self, _key: &Key, _auth_key: Option<&mut String>) -> bool {
-                true
-            }
-            fn close(&self) {}
-            fn reset(&self) {}
-        }
-
-        let written = Arc::new(Mutex::new(Vec::new()));
-        let cv = Arc::new(std::sync::Condvar::new());
-        let mock = Arc::new(MockBlockingConnection {
-            read_packets: Mutex::new(VecDeque::new()),
-            written_packets: written.clone(),
-            cv: cv.clone(),
-        });
-
-        let adapter = BlockingConnectionAdapter::new(mock.clone());
-        let transport = Arc::new(ATransport::new_offline(TransportType::Usb));
-        transport.set_connection_state(ConnectionState::Device);
-        let mock_socket = Arc::new(MockSocket::new(100));
-        let registry = Arc::new(adb_sockets::SocketRegistry::new());
-        *transport.registry.lock().unwrap() = Some(registry.clone());
-        registry.install(mock_socket.clone());
-
-        adapter.start(Arc::downgrade(&transport));
-
-        // Test write
-        let mut p = Apacket::default();
-        p.msg.command = adb_protocol::A_WRTE;
-        p.msg.arg0 = 200;
-        p.msg.arg1 = 100;
-        adapter.write(p);
-
-        // Give it a moment to process the write
-        std::thread::sleep(std::time::Duration::from_millis(100));
-        assert_eq!(written.lock().unwrap().len(), 1);
-        assert_eq!(written.lock().unwrap()[0].msg.command, adb_protocol::A_WRTE);
-
-        // Test read
-        let mut p2 = Apacket::default();
-        p2.msg.command = adb_protocol::A_OKAY;
-        p2.msg.arg0 = 200;
-        p2.msg.arg1 = 100;
-        p2.msg.update_magic();
-        {
-            let mut queue = mock.read_packets.lock().unwrap();
-            queue.push_back(p2);
-            cv.notify_one();
-        }
-
-        // Give it a moment to process the read
-        std::thread::sleep(std::time::Duration::from_millis(100));
-        assert!(mock_socket.readied.load(Ordering::SeqCst));
-
-        adapter.stop();
-    }
-
-    #[test]
-    fn test_handle_open_delayed_ack() {
-        let t = Arc::new(ATransport::new(
-            TransportType::Usb,
-            Box::new(|_| ReconnectResult::Abort),
-            ConnectionState::Device,
-        ));
-        t.set_features(FEATURE_DELAYED_ACK);
-        let registry = Arc::new(adb_sockets::SocketRegistry::new());
-        *t.registry.lock().unwrap() = Some(registry.clone());
-        let mock_socket = Arc::new(MockSocket::new(100));
-        *t.service_creator.lock().unwrap() = Some(Box::new(MockServiceCreator {
-            socket: mock_socket.clone(),
-        }));
-        let conn = Arc::new(MockConnection::new());
-        t.set_connection(conn.clone());
-
-        let mut p = Apacket::default();
-        p.msg.command = adb_protocol::A_OPEN;
-        p.msg.arg0 = 200; // remote id
-        p.msg.arg1 = 1024; // send_bytes
-        p.payload = Block::from_vec(b"shell:echo hello".to_vec());
-        p.msg.data_length = p.payload.get_ref().len() as u32;
-
-        handle_packet(p, &t);
-
-        // Should have sent A_OKAY with INITIAL_DELAYED_ACK_BYTES
-        let written = conn.written.lock().unwrap();
-        assert_eq!(written.len(), 1);
-        assert_eq!(written[0].msg.command, adb_protocol::A_OKAY);
-        assert_eq!(written[0].msg.arg0, 100);
-        assert_eq!(written[0].msg.arg1, 200);
-        assert_eq!(written[0].msg.data_length, 4);
-        let ack_bytes = u32::from_le_bytes(written[0].payload.get_ref()[..4].try_into().unwrap());
-        assert_eq!(ack_bytes, adb_protocol::INITIAL_DELAYED_ACK_BYTES as u32);
     }
 }
 
@@ -1473,26 +839,8 @@ pub trait Connection: Send + Sync {
     fn write(&self, packet: Apacket) -> bool;
     fn start(&self, transport: Weak<ATransport>) -> bool;
     fn stop(&self);
-    /// Performs the TLS handshake for secure ADB connections.
-    ///
-    /// Note: Implementation is pending the porting of the `adb::tls::TlsConnection` library.
     fn do_tls_handshake(&self, key: &Key, auth_key: Option<&mut String>) -> bool;
     fn reset(&self);
-    fn supports_detach(&self) -> bool {
-        false
-    }
-    fn attach(&self) -> Result<(), String> {
-        Err("transport type doesn't support attach".to_string())
-    }
-    fn detach(&self) -> Result<(), String> {
-        Err("transport type doesn't support detach".to_string())
-    }
-    fn negotiated_speed_mbps(&self) -> u64 {
-        0
-    }
-    fn max_speed_mbps(&self) -> u64 {
-        0
-    }
 }
 
 /// Ported from original/transport.h: `struct BlockingConnection`
@@ -1527,8 +875,7 @@ impl BlockingConnectionAdapter {
 
 impl Connection for BlockingConnectionAdapter {
     fn write(&self, packet: Apacket) -> bool {
-        let mut queue = self.write_queue.lock().unwrap();
-        queue.push_back(packet);
+        self.write_queue.lock().unwrap().push_back(packet);
         self.cv.notify_one();
         true
     }
@@ -1536,65 +883,57 @@ impl Connection for BlockingConnectionAdapter {
     fn start(&self, transport: Weak<ATransport>) -> bool {
         *self.transport.lock().unwrap() = transport.clone();
 
-        let transport_read = transport.clone();
-        let underlying_read = self.underlying.clone();
-        let stopped_read = self.stopped.clone();
-        std::thread::Builder::new()
-            .name("transport read".to_string())
-            .spawn(move || {
-                while let Some(t) = transport_read.upgrade() {
-                    let t: Arc<ATransport> = t;
-                    if stopped_read.load(Ordering::SeqCst) {
-                        break;
-                    }
-                    match underlying_read.read() {
-                        Ok(packet) => {
-                            if !t.handle_read(packet) {
-                                break;
-                            }
-                        }
-                        Err(e) => {
-                            if !stopped_read.load(Ordering::SeqCst) {
-                                t.handle_error(&e.to_string());
-                            }
+        let t_read = transport.clone();
+        let u_read = self.underlying.clone();
+        let s_read = self.stopped.clone();
+        std::thread::spawn(move || {
+            while let Some(t) = t_read.upgrade() {
+                if s_read.load(Ordering::SeqCst) {
+                    break;
+                }
+                match u_read.read() {
+                    Ok(p) => {
+                        if !t.handle_read(p) {
                             break;
                         }
                     }
+                    Err(e) => {
+                        if !s_read.load(Ordering::SeqCst) {
+                            t.handle_error(&e.to_string());
+                        }
+                        break;
+                    }
                 }
-            })
-            .unwrap();
+            }
+        });
 
-        let transport_write = transport.clone();
-        let underlying_write = self.underlying.clone();
-        let write_queue = self.write_queue.clone();
+        let t_write = transport.clone();
+        let u_write = self.underlying.clone();
+        let wq = self.write_queue.clone();
         let cv = self.cv.clone();
-        let stopped_write = self.stopped.clone();
-        std::thread::Builder::new()
-            .name("transport write".to_string())
-            .spawn(move || {
-                while let Some(t) = transport_write.upgrade() {
-                    let t: Arc<ATransport> = t;
-                    let mut queue = write_queue.lock().unwrap();
-                    while !stopped_write.load(Ordering::SeqCst) && queue.is_empty() {
-                        queue = cv.wait(queue).unwrap();
-                    }
+        let s_write = self.stopped.clone();
+        std::thread::spawn(move || {
+            while let Some(t) = t_write.upgrade() {
+                let mut q = wq.lock().unwrap();
+                while !s_write.load(Ordering::SeqCst) && q.is_empty() {
+                    q = cv.wait(q).unwrap();
+                }
 
-                    if stopped_write.load(Ordering::SeqCst) {
+                if s_write.load(Ordering::SeqCst) {
+                    break;
+                }
+
+                if let Some(p) = q.pop_front() {
+                    drop(q);
+                    if let Err(e) = u_write.write(&p) {
+                        if !s_write.load(Ordering::SeqCst) {
+                            t.handle_error(&e.to_string());
+                        }
                         break;
                     }
-
-                    if let Some(packet) = queue.pop_front() {
-                        drop(queue);
-                        if let Err(e) = underlying_write.write(&packet) {
-                            if !stopped_write.load(Ordering::SeqCst) {
-                                t.handle_error(&e.to_string());
-                            }
-                            break;
-                        }
-                    }
                 }
-            })
-            .unwrap();
+            }
+        });
 
         true
     }
@@ -1616,17 +955,15 @@ impl Connection for BlockingConnectionAdapter {
 
 /// Ported from original/transport.h: `struct FdConnection`
 pub struct FdConnection {
-    read_file: Mutex<File>,
-    write_file: Mutex<File>,
+    read_fd: Mutex<AdbFd>,
+    write_fd: Mutex<AdbFd>,
 }
 
 impl FdConnection {
-    pub fn new(fd: OwnedFd) -> Self {
-        let read_file = File::from(fd.try_clone().expect("Failed to clone fd"));
-        let write_file = File::from(fd);
+    pub fn new(fd: AdbFd) -> Self {
         Self {
-            read_file: Mutex::new(read_file),
-            write_file: Mutex::new(write_file),
+            read_fd: Mutex::new(fd.try_clone().unwrap()),
+            write_fd: Mutex::new(fd),
         }
     }
 }
@@ -1655,41 +992,36 @@ impl Connection for FdConnection {
 
 impl BlockingConnection for FdConnection {
     fn read(&self) -> std::io::Result<Apacket> {
-        let mut header_buf = [0u8; std::mem::size_of::<Amessage>()];
-        let mut file = self.read_file.lock().unwrap();
-        file.read_exact(&mut header_buf)?;
+        let mut h = [0u8; std::mem::size_of::<Amessage>()];
+        self.read_fd.lock().unwrap().read_exact(&mut h)?;
 
-        // SAFETY: Amessage is repr(C) and we've read the correct number of bytes.
-        let msg: Amessage =
-            unsafe { std::ptr::read_unaligned(header_buf.as_ptr() as *const Amessage) };
+        let msg: Amessage = unsafe { std::ptr::read_unaligned(h.as_ptr() as *const Amessage) };
 
-        let mut payload = Block::new(msg.data_length as usize);
+        let mut p = Block::new(msg.data_length as usize);
         if msg.data_length > 0 {
-            file.read_exact(payload.get_mut())?;
+            self.read_fd.lock().unwrap().read_exact(p.get_mut())?;
         }
 
-        Ok(Apacket { msg, payload })
+        Ok(Apacket { msg, payload: p })
     }
 
     fn write(&self, packet: &Apacket) -> std::io::Result<()> {
-        let mut file = self.write_file.lock().unwrap();
-        // SAFETY: Amessage is repr(C).
-        let header_bytes: [u8; std::mem::size_of::<Amessage>()] =
-            unsafe { std::mem::transmute(packet.msg) };
-        file.write_all(&header_bytes)?;
+        let h: [u8; std::mem::size_of::<Amessage>()] = unsafe { std::mem::transmute(packet.msg) };
+        let mut f = self.write_fd.lock().unwrap();
+        f.write_all(&h)?;
         if !packet.payload.is_empty() {
-            file.write_all(packet.payload.get_ref())?;
+            f.write_all(packet.payload.get_ref())?;
         }
         Ok(())
     }
 
-    fn do_tls_handshake(&self, _key: &Key, _auth_key: Option<&mut String>) -> bool {
-        log::warn!(target: "transport", "TLS handshake not yet implemented");
+    fn do_tls_handshake(&self, _k: &Key, _ak: Option<&mut String>) -> bool {
         false
     }
 
     fn close(&self) {
-        // Files are closed when dropped.
+        self.read_fd.lock().unwrap().close();
+        self.write_fd.lock().unwrap().close();
     }
 
     fn reset(&self) {

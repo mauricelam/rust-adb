@@ -5,15 +5,14 @@
 //! It also supports timeouts and queuing functions to be run on the looper thread.
 
 use anyhow::Result;
-#[cfg(unix)]
-use mio::unix::SourceFd;
 use mio::{Events, Interest, Poll, Token, Waker};
 use std::collections::HashMap;
 use std::io;
-use std::os::unix::io::{AsRawFd, OwnedFd};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use thiserror::Error;
+
+use sysdeps::AdbFd;
 
 /// Errors that can occur when using `fdevent`.
 #[derive(Error, Debug)]
@@ -38,9 +37,14 @@ pub trait FdeventHandler: Send {
     /// # Arguments
     ///
     /// * `event` - The `mio::event::Event` containing the details of the event.
+    /// * `fdevent` - A mutable reference to the `Fdevent` context.
     fn on_event(&mut self, event: &mio::event::Event, fdevent: &mut Fdevent);
 
     /// Called when the timeout set for this file descriptor expires.
+    ///
+    /// # Arguments
+    ///
+    /// * `fdevent` - A mutable reference to the `Fdevent` context.
     fn on_timeout(&mut self, fdevent: &mut Fdevent);
 }
 
@@ -52,10 +56,8 @@ const WAKER_TOKEN: Token = Token(usize::MAX);
 #[derive(Clone)]
 pub struct FdeventHandle {
     /// The queue of functions to be executed on the looper thread.
-    /// Ported from `fdevent_context::run_queue_`.
     run_queue: Arc<Mutex<Vec<Box<dyn FnOnce(&mut Fdevent) + Send>>>>,
     /// The waker used to interrupt the poll call when a new function is queued.
-    /// Ported from the interrupt mechanism used in `fdevent_context::Interrupt()`.
     waker: Arc<Waker>,
 }
 
@@ -79,43 +81,106 @@ impl FdeventHandle {
     }
 }
 
+/// A wrapper around platform-specific `mio` sources.
+pub enum MioSource {
+    #[cfg(unix)]
+    Fd(i32),
+    #[cfg(windows)]
+    TcpStream(Option<mio::net::TcpStream>),
+}
+
+#[cfg(windows)]
+impl Drop for MioSource {
+    fn drop(&mut self) {
+        if let MioSource::TcpStream(ref mut s) = self {
+            if let Some(stream) = s.take() {
+                // We need to make sure the mio stream doesn't close the socket when dropped,
+                // because AdbFd still owns it.
+                use std::os::windows::io::IntoRawSocket;
+                let _ = stream.into_std().into_raw_socket();
+            }
+        }
+    }
+}
+
+impl mio::event::Source for MioSource {
+    fn register(
+        &mut self,
+        registry: &mio::Registry,
+        token: Token,
+        interests: Interest,
+    ) -> io::Result<()> {
+        match self {
+            #[cfg(unix)]
+            MioSource::Fd(fd) => {
+                use mio::unix::SourceFd;
+                registry.register(&mut SourceFd(fd), token, interests)
+            }
+            #[cfg(windows)]
+            MioSource::TcpStream(Some(s)) => registry.register(s, token, interests),
+            #[cfg(windows)]
+            MioSource::TcpStream(None) => unreachable!(),
+        }
+    }
+
+    fn reregister(
+        &mut self,
+        registry: &mio::Registry,
+        token: Token,
+        interests: Interest,
+    ) -> io::Result<()> {
+        match self {
+            #[cfg(unix)]
+            MioSource::Fd(fd) => {
+                use mio::unix::SourceFd;
+                registry.reregister(&mut SourceFd(fd), token, interests)
+            }
+            #[cfg(windows)]
+            MioSource::TcpStream(Some(s)) => registry.reregister(s, token, interests),
+            #[cfg(windows)]
+            MioSource::TcpStream(None) => unreachable!(),
+        }
+    }
+
+    fn deregister(&mut self, registry: &mio::Registry) -> io::Result<()> {
+        match self {
+            #[cfg(unix)]
+            MioSource::Fd(fd) => {
+                use mio::unix::SourceFd;
+                registry.deregister(&mut SourceFd(fd))
+            }
+            #[cfg(windows)]
+            MioSource::TcpStream(Some(s)) => registry.deregister(s),
+            #[cfg(windows)]
+            MioSource::TcpStream(None) => unreachable!(),
+        }
+    }
+}
+
 /// The main event loop context.
 ///
 /// This struct manages the polling of file descriptors and the execution of handlers.
-///
-/// This corresponds to the `fdevent_context` class in the C++ implementation.
-/// The ambient/global context from C++ is replaced by creating and passing
-/// an instance of this struct.
 pub struct Fdevent {
     /// The `mio::Poll` instance used for I/O multiplexing.
-    /// Ported from the platform-specific polling mechanism (epoll/poll).
     poll: Poll,
     /// The buffer for storing events returned by `mio::Poll::poll`.
     events: Events,
     /// A map from tokens to their corresponding event handlers.
-    /// Ported from `fdevent_context::installed_fdevents_`.
     handlers: HashMap<Token, Box<dyn FdeventHandler>>,
-    /// A map from tokens to their owned file descriptors.
-    fds: HashMap<Token, OwnedFd>,
+    /// A map from tokens to their owned file descriptors, optional mio sources, and current interests.
+    fds: HashMap<Token, (AdbFd, Option<MioSource>, Option<Interest>)>,
     /// A map from tokens to their registered timeouts.
-    /// Ported from the `timeout` member in the C++ `fdevent` struct.
     timeouts: HashMap<Token, (Instant, Duration)>,
     /// The queue of functions to be executed on the looper thread.
-    /// Ported from `fdevent_context::run_queue_`.
     run_queue: Arc<Mutex<Vec<Box<dyn FnOnce(&mut Fdevent) + Send>>>>,
     /// The waker used to interrupt the poll call.
-    /// Ported from the interrupt mechanism used in `fdevent_context::Interrupt()`.
     waker: Arc<Waker>,
     /// The counter used to generate unique tokens for registered file descriptors.
-    /// Ported from `fdevent_context::fdevent_id_`.
     next_token: usize,
 }
 
 impl Fdevent {
     /// Creates a new `Fdevent` context.
-    ///
-    /// This corresponds to `fdevent_create_context` (internal) or the initialization
-    /// of the ambient context in C++.
     pub fn new() -> FdeventResult<Self> {
         let poll = Poll::new()?;
         let events = Events::with_capacity(1024);
@@ -147,85 +212,108 @@ impl Fdevent {
 
     /// Registers a file descriptor to be monitored.
     ///
-    /// This corresponds to `fdevent_create` in C++. Note that in this Rust
-    /// implementation, the `Fdevent` context owns the handler.
-    ///
     /// # Arguments
     ///
     /// * `fd` - The file descriptor to monitor.
     /// * `handler` - The handler to execute when events occur.
-    /// * `interest` - The initial set of events to monitor (e.g., READABLE).
+    /// * `interest` - The initial set of events to monitor.
     pub fn register(
         &mut self,
-        fd: OwnedFd,
+        fd: AdbFd,
         handler: Box<dyn FdeventHandler>,
         interest: Interest,
     ) -> FdeventResult<Token> {
         let token = Token(self.next_token);
         self.next_token += 1;
-        #[cfg(unix)]
+
+        let mut source = match () {
+            #[cfg(unix)]
+            () => {
+                use std::os::unix::io::AsRawFd;
+                MioSource::Fd(fd.as_raw_fd())
+            }
+            #[cfg(windows)]
+            () => {
+                use std::os::windows::io::AsRawSocket;
+                let s_raw = fd.as_raw_socket();
+                if s_raw != windows_sys::Win32::Networking::WinSock::INVALID_SOCKET as _ {
+                    // SAFETY: s_raw is a valid socket.
+                    let stream = unsafe { std::net::TcpStream::from_raw_socket(s_raw as _) };
+                    MioSource::TcpStream(Some(mio::net::TcpStream::from_std(stream)))
+                } else {
+                    return Err(FdeventError::Io(io::Error::new(
+                        io::ErrorKind::Other,
+                        "Only sockets are supported on Windows fdevent",
+                    )));
+                }
+            }
+        };
+
         self.poll
             .registry()
-            .register(&mut SourceFd(&fd.as_raw_fd()), token, interest)?;
-        #[cfg(not(unix))]
-        return Err(FdeventError::Io(io::Error::new(
-            io::ErrorKind::Other,
-            "Not supported on this platform",
-        )));
+            .register(&mut source, token, interest)?;
 
         self.handlers.insert(token, handler);
-        self.fds.insert(token, fd);
+        self.fds.insert(token, (fd, Some(source), Some(interest)));
         Ok(token)
     }
 
     /// Changes the set of monitored events for a registered file descriptor.
-    ///
-    /// This corresponds to `fdevent_set`, `fdevent_add`, and `fdevent_del` in C++.
     ///
     /// # Arguments
     ///
     /// * `token` - The token returned by [`Self::register`].
     /// * `interest` - The new set of events to monitor.
     pub fn reregister(&mut self, token: Token, interest: Interest) -> FdeventResult<()> {
-        let fd = self.fds.get(&token).ok_or_else(|| {
+        self.set_interests(token, Some(interest))
+    }
+
+    /// Sets the interests for a registered file descriptor.
+    ///
+    /// If interest is `None`, it deregisters from the poller but keeps the handler.
+    pub fn set_interests(&mut self, token: Token, interest: Option<Interest>) -> FdeventResult<()> {
+        let (_, source, current_interest) = self.fds.get_mut(&token).ok_or_else(|| {
             FdeventError::Io(io::Error::new(io::ErrorKind::NotFound, "Token not found"))
         })?;
 
-        #[cfg(unix)]
-        self.poll
-            .registry()
-            .reregister(&mut SourceFd(&fd.as_raw_fd()), token, interest)?;
-        #[cfg(not(unix))]
-        return Err(FdeventError::Io(io::Error::new(
-            io::ErrorKind::Other,
-            "Not supported on this platform",
-        )));
+        if *current_interest == interest {
+            return Ok(());
+        }
 
+        if let Some(source) = source {
+            match (*current_interest, interest) {
+                (Some(_), Some(new)) => {
+                    self.poll.registry().reregister(source, token, new)?;
+                }
+                (Some(_), None) => {
+                    self.poll.registry().deregister(source)?;
+                }
+                (None, Some(new)) => {
+                    self.poll.registry().register(source, token, new)?;
+                }
+                (None, None) => {}
+            }
+        }
+
+        *current_interest = interest;
         Ok(())
     }
 
     /// Unregisters a file descriptor and removes its handler.
     ///
-    /// This corresponds to `fdevent_destroy` in C++, returning the file
-    /// descriptor that was owned by the `fdevent` object.
-    ///
     /// # Arguments
     ///
     /// * `token` - The token returned by [`Self::register`].
-    pub fn unregister(&mut self, token: Token) -> FdeventResult<OwnedFd> {
-        let fd = self.fds.remove(&token).ok_or_else(|| {
+    pub fn unregister(&mut self, token: Token) -> FdeventResult<AdbFd> {
+        let (fd, source, current_interest) = self.fds.remove(&token).ok_or_else(|| {
             FdeventError::Io(io::Error::new(io::ErrorKind::NotFound, "Token not found"))
         })?;
 
-        #[cfg(unix)]
-        self.poll
-            .registry()
-            .deregister(&mut SourceFd(&fd.as_raw_fd()))?;
-        #[cfg(not(unix))]
-        return Err(FdeventError::Io(io::Error::new(
-            io::ErrorKind::Other,
-            "Not supported on this platform",
-        )));
+        if let Some(mut source) = source {
+            if current_interest.is_some() {
+                self.poll.registry().deregister(&mut source)?;
+            }
+        }
 
         self.handlers.remove(&token);
         self.timeouts.remove(&token);
@@ -233,14 +321,6 @@ impl Fdevent {
     }
 
     /// Sets a timeout for a registered file descriptor.
-    ///
-    /// This corresponds to `fdevent_set_timeout` in C++. If no events occur within
-    /// the specified duration, `on_timeout` will be called on the handler.
-    ///
-    /// # Arguments
-    ///
-    /// * `token` - The token returned by [`Self::register`].
-    /// * `timeout` - The timeout duration.
     pub fn set_timeout(&mut self, token: Token, timeout: Duration) -> FdeventResult<()> {
         if !self.fds.contains_key(&token) {
             return Err(FdeventError::Io(io::Error::new(
@@ -276,13 +356,6 @@ impl Fdevent {
     }
 
     /// Polls for events and executes handlers.
-    ///
-    /// This corresponds to `fdevent_loop` in C++. It should be called in a loop.
-    ///
-    /// # Arguments
-    ///
-    /// * `timeout` - An optional maximum time to wait for events. If `None`, it
-    ///   will wait indefinitely (unless internal timeouts or the run queue are active).
     pub fn poll(&mut self, timeout: Option<Duration>) -> FdeventResult<()> {
         let mut poll_timeout = self.calculate_poll_timeout();
         if let Some(t) = timeout {
@@ -350,8 +423,6 @@ impl Fdevent {
     }
 
     /// Queues a function to be executed on the looper thread.
-    ///
-    /// This is a convenience method that calls `get_handle().run_on_looper(f)`.
     pub fn run_on_looper<F>(&mut self, f: F)
     where
         F: FnOnce(&mut Fdevent) + Send + 'static,

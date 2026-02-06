@@ -9,6 +9,7 @@ use std::os::unix::net::UnixStream;
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
+use std::os::unix::io::OwnedFd;
 
 /// A handler that records read and timeout events.
 struct TimeoutHandler {
@@ -40,7 +41,7 @@ fn timeout() {
     let handler = Box::new(TimeoutHandler {
         events: events.clone(),
     });
-    let token = fdevent.register(r.into(), handler, Interest::READABLE).unwrap();
+    let token = fdevent.register(OwnedFd::from(r).into(), handler, Interest::READABLE).unwrap();
 
     let delta = Duration::from_millis(100);
     fdevent.set_timeout(token, delta).unwrap();
