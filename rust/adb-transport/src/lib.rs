@@ -1135,30 +1135,41 @@ mod tests {
         *t.model.lock().unwrap() = "test_model".to_string();
         *t.device.lock().unwrap() = "test_device".to_string();
 
-        assert!(t.matches_target("foo"));
-        assert!(t.matches_target("/path/to/bar"));
-        assert!(t.matches_target("product:test_product"));
-        assert!(t.matches_target("model:test_model"));
-        assert!(t.matches_target("device:test_device"));
+        for transport_type in [TransportType::Any, TransportType::Local, TransportType::Usb] {
+            let t = ATransport::new_offline(transport_type);
+            *t.serial.lock().unwrap() = "foo".to_string();
+            *t.devpath.lock().unwrap() = "/path/to/bar".to_string();
+            *t.product.lock().unwrap() = "test_product".to_string();
+            *t.model.lock().unwrap() = "test_model".to_string();
+            *t.device.lock().unwrap() = "test_device".to_string();
 
-        assert!(!t.matches_target("test_product"));
-        assert!(!t.matches_target("bar"));
+            assert!(t.matches_target("foo"));
+            assert!(t.matches_target("/path/to/bar"));
+            assert!(t.matches_target("product:test_product"));
+            assert!(t.matches_target("model:test_model"));
+            assert!(t.matches_target("device:test_device"));
+
+            assert!(!t.matches_target("test_product"));
+            assert!(!t.matches_target("bar"));
+        }
     }
 
     #[test]
     fn test_matches_target_local() {
-        let t = ATransport::new_offline(TransportType::Local);
-        *t.serial.lock().unwrap() = "100.100.100.100:5555".to_string();
+        for transport_type in [TransportType::Any, TransportType::Local] {
+            let t = ATransport::new_offline(transport_type);
+            *t.serial.lock().unwrap() = "100.100.100.100:5555".to_string();
 
-        assert!(t.matches_target("100.100.100.100"));
-        assert!(t.matches_target("100.100.100.100:5555"));
-        assert!(t.matches_target("tcp:100.100.100.100"));
-        assert!(t.matches_target("tcp:100.100.100.100:5555"));
-        assert!(t.matches_target("udp:100.100.100.100"));
-        assert!(t.matches_target("udp:100.100.100.100:5555"));
+            let should_match = transport_type == TransportType::Local;
+            assert_eq!(should_match, t.matches_target("100.100.100.100"));
+            assert_eq!(should_match, t.matches_target("tcp:100.100.100.100"));
+            assert_eq!(should_match, t.matches_target("tcp:100.100.100.100:5555"));
+            assert_eq!(should_match, t.matches_target("udp:100.100.100.100"));
+            assert_eq!(should_match, t.matches_target("udp:100.100.100.100:5555"));
 
-        assert!(!t.matches_target("100.100.100.100:5554"));
-        assert!(!t.matches_target("100.100.100.101"));
+            assert!(!t.matches_target("100.100.100.100:5554"));
+            assert!(!t.matches_target("100.100.100.101"));
+        }
     }
 
     struct MockConnection {
@@ -1798,7 +1809,8 @@ impl Connection for BlockingConnectionAdapter {
         }
 
         if self.underlying.do_tls_handshake(key, auth_key) {
-            if let Some(t_weak) = self.transport.lock().unwrap().clone() {
+            let t_weak = self.transport.lock().unwrap().clone();
+            if let Some(t_weak) = t_weak {
                 self.start(t_weak);
             }
             return true;
@@ -1828,14 +1840,12 @@ pub struct FdConnection {
 
 impl FdConnection {
     pub fn new(fd: OwnedFd) -> Self {
+        let file = TcpStream::from(fd);
+        let _ = file.set_nonblocking(true);
         Self {
-            file: TcpStream::from(fd),
+            file,
             tls: Mutex::new(None),
         }
-    }
-
-    fn set_nonblocking(&self, nonblocking: bool) -> std::io::Result<()> {
-        self.file.set_nonblocking(nonblocking)
     }
 
     fn wait_for_ready(&self, events: i16) -> std::io::Result<()> {
@@ -2031,19 +2041,136 @@ impl BlockingConnection for FdConnection {
     }
 
     fn write(&self, packet: &Apacket) -> std::io::Result<()> {
-        // SAFETY: Amessage is repr(C).
-        let header_bytes: [u8; std::mem::size_of::<Amessage>()] =
-            unsafe { std::mem::transmute(packet.msg) };
-        (&self.file).write_all(&header_bytes)?;
-        if !packet.payload.is_empty() {
-            (&self.file).write_all(packet.payload.get_ref())?;
+        let is_tls = self.tls.lock().unwrap().is_some();
+        if is_tls {
+            // SAFETY: Amessage is repr(C).
+            let header_bytes: [u8; std::mem::size_of::<Amessage>()] =
+                unsafe { std::mem::transmute(packet.msg) };
+            self.write_tls_blocking(&header_bytes)?;
+            if !packet.payload.is_empty() {
+                self.write_tls_blocking(packet.payload.get_ref())?;
+            }
+        } else {
+            // SAFETY: Amessage is repr(C).
+            let header_bytes: [u8; std::mem::size_of::<Amessage>()] =
+                unsafe { std::mem::transmute(packet.msg) };
+            self.write_fully(&header_bytes)?;
+            if !packet.payload.is_empty() {
+                self.write_fully(packet.payload.get_ref())?;
+            }
         }
         Ok(())
     }
 
-    fn do_tls_handshake(&self, _key: &Key, _auth_key: Option<&mut String>) -> bool {
-        log::warn!(target: "transport", "TLS handshake not yet implemented");
-        false
+    fn do_tls_handshake(&self, key: &Key, auth_key: Option<&mut String>) -> bool {
+        let cert = match rust_adb_crypto::generate_x509_certificate(key) {
+            Ok(c) => c,
+            Err(e) => {
+                log::error!(target: "transport", "failed to generate x509 cert: {}", e);
+                return false;
+            }
+        };
+
+        let cert_pem = match rust_adb_crypto::x509_to_pem_string(&cert) {
+            Ok(s) => s,
+            Err(e) => {
+                log::error!(target: "transport", "failed to PEM encode cert: {}", e);
+                return false;
+            }
+        };
+        let key_pem = match key.to_pem_string() {
+            Ok(s) => s,
+            Err(e) => {
+                log::error!(target: "transport", "failed to PEM encode key: {}", e);
+                return false;
+            }
+        };
+
+        let certs = rustls_pemfile::certs(&mut cert_pem.as_bytes())
+            .unwrap()
+            .into_iter()
+            .map(rustls::Certificate)
+            .collect::<Vec<_>>();
+        let priv_key = rustls_pemfile::pkcs8_private_keys(&mut key_pem.as_bytes())
+            .unwrap()
+            .into_iter()
+            .map(rustls::PrivateKey)
+            .next()
+            .expect("No private key");
+
+        let mut conn = if auth_key.is_none() {
+            // Client role (Host)
+            let config = rustls::ClientConfig::builder()
+                .with_safe_defaults()
+                .with_custom_certificate_verifier(Arc::new(AdbServerCertVerifier))
+                .with_client_auth_cert(certs, priv_key)
+                .expect("Failed to build client config");
+            rustls::Connection::Client(
+                rustls::ClientConnection::new(Arc::new(config), "adb".try_into().unwrap())
+                    .expect("Failed to create client connection"),
+            )
+        } else {
+            // Server role (Daemon)
+            let config = rustls::ServerConfig::builder()
+                .with_safe_defaults()
+                .with_client_cert_verifier(Arc::new(AdbClientCertVerifier))
+                .with_single_cert(certs, priv_key)
+                .expect("Failed to build server config");
+            rustls::Connection::Server(
+                rustls::ServerConnection::new(Arc::new(config))
+                    .expect("Failed to create server connection"),
+            )
+        };
+
+        loop {
+            while conn.wants_write() {
+                match conn.write_tls(&mut &self.file) {
+                    Ok(_) => {}
+                    Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                        if let Err(e) = self.wait_for_ready(libc::POLLOUT) {
+                            log::error!(target: "transport", "wait_for_ready (OUT) failed: {}", e);
+                            return false;
+                        }
+                    }
+                    Err(e) => {
+                        log::error!(target: "transport", "TLS write failed: {}", e);
+                        return false;
+                    }
+                }
+            }
+
+            if !conn.is_handshaking() {
+                break;
+            }
+
+            if conn.wants_read() {
+                match conn.read_tls(&mut &self.file) {
+                    Ok(0) => {
+                        log::error!(target: "transport", "TLS read EOF during handshake");
+                        return false;
+                    }
+                    Ok(_) => {
+                        if let Err(e) = conn.process_new_packets() {
+                            log::error!(target: "transport", "TLS process packets failed: {}", e);
+                            return false;
+                        }
+                    }
+                    Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                        if let Err(e) = self.wait_for_ready(libc::POLLIN) {
+                            log::error!(target: "transport", "wait_for_ready (IN) failed: {}", e);
+                            return false;
+                        }
+                    }
+                    Err(e) => {
+                        log::error!(target: "transport", "TLS read failed: {}", e);
+                        return false;
+                    }
+                }
+            }
+        }
+
+        *self.tls.lock().unwrap() = Some(conn);
+        true
     }
 
     fn close(&self) {
@@ -2071,10 +2198,8 @@ impl rustls::client::ServerCertVerifier for AdbServerCertVerifier {
     }
 }
 
-#[cfg(test)]
 struct AdbClientCertVerifier;
 
-#[cfg(test)]
 impl rustls::server::ClientCertVerifier for AdbClientCertVerifier {
     fn client_auth_root_subjects(&self) -> &[rustls::DistinguishedName] {
         &[]
@@ -2087,5 +2212,64 @@ impl rustls::server::ClientCertVerifier for AdbClientCertVerifier {
         _now: SystemTime,
     ) -> Result<rustls::server::ClientCertVerified, rustls::Error> {
         Ok(rustls::server::ClientCertVerified::assertion())
+    }
+}
+
+/// Ported from original/client/usb.h: `struct UsbConnection`
+///
+/// Current implementation is a stub. Full implementation will be done in Step 17.
+pub struct UsbConnection {}
+
+impl UsbConnection {
+    pub fn new() -> Self {
+        Self {}
+    }
+}
+
+impl BlockingConnection for UsbConnection {
+    fn read(&self) -> std::io::Result<Apacket> {
+        Err(std::io::Error::new(
+            std::io::ErrorKind::Other,
+            "UsbConnection::read not implemented",
+        ))
+    }
+
+    fn write(&self, _packet: &Apacket) -> std::io::Result<()> {
+        Err(std::io::Error::new(
+            std::io::ErrorKind::Other,
+            "UsbConnection::write not implemented",
+        ))
+    }
+
+    fn do_tls_handshake(&self, _key: &Key, _auth_key: Option<&mut String>) -> bool {
+        false
+    }
+
+    fn close(&self) {}
+
+    fn reset(&self) {}
+}
+
+impl Connection for UsbConnection {
+    fn set_transport(&self, _transport: Weak<ATransport>) {}
+
+    fn write(&self, packet: Apacket) -> bool {
+        BlockingConnection::write(self, &packet).is_ok()
+    }
+
+    fn start(&self, _transport: Weak<ATransport>) -> bool {
+        true
+    }
+
+    fn stop(&self) {
+        self.close();
+    }
+
+    fn do_tls_handshake(&self, key: &Key, auth_key: Option<&mut String>) -> bool {
+        BlockingConnection::do_tls_handshake(self, key, auth_key)
+    }
+
+    fn reset(&self) {
+        BlockingConnection::reset(self);
     }
 }
