@@ -13,7 +13,9 @@
 //! use fdevent::fdevent::{Fdevent, FdeventHandler};
 //! use mio::{Interest, Token};
 //! use mio::event::Event;
+//! use std::os::unix::io::OwnedFd;
 //! use std::os::unix::net::UnixStream;
+//! use std::sync::Arc;
 //!
 //! struct MyHandler;
 //!
@@ -33,7 +35,7 @@
 //!     let mut fdevent = Fdevent::new()?;
 //!     let (stream, _) = UnixStream::pair()?;
 //!     let handler = Box::new(MyHandler);
-//!     let token = fdevent.register(stream.into(), handler, Interest::READABLE)?;
+//!     let token = fdevent.register(Arc::new(OwnedFd::from(stream)), handler, Interest::READABLE)?;
 //!
 //!     // Poll for events in a loop
 //!     // fdevent.poll(None)?;

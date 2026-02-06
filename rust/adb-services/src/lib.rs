@@ -25,9 +25,10 @@ use adb_transport::{acquire_one_transport, ATransport, TransportId};
 use adb_utils::{parse_uint, unhex};
 use bytes::Bytes;
 use fdevent::fdevent::{Fdevent, FdeventHandle};
+use std::io::{Read, Write};
 use std::os::unix::io::{AsRawFd, FromRawFd, IntoRawFd, OwnedFd};
 use std::os::unix::net::UnixStream;
-use std::sync::{Arc, Mutex, Weak};
+use std::sync::{Arc, Mutex, OnceLock, Weak};
 use sysdeps::poll::{adb_poll, AdbPollFd};
 
 pub const K_SHELL_SERVICE_ARG_RAW: &str = "raw";
@@ -36,6 +37,27 @@ pub const K_SHELL_SERVICE_ARG_SHELL_PROTOCOL: &str = "v2";
 
 pub const K_MINADBD_SERVICES_EXIT_SUCCESS: &str = "DONEDONE";
 pub const K_MINADBD_SERVICES_EXIT_FAILURE: &str = "FAILFAIL";
+
+pub mod reverse_service;
+
+#[repr(u8)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ShellProtocolId {
+    Stdin = 0,
+    Stdout = 1,
+    Stderr = 2,
+    ExitStatus = 3,
+    CloseStdin = 4,
+    WindowSizeChange = 5,
+    Invalid = 255,
+}
+
+#[repr(C, packed)]
+#[derive(Debug, Clone, Copy)]
+pub struct ShellProtocolHeader {
+    pub id: u8,
+    pub length: u32,
+}
 
 /// Creates a socket pair, starts a new thread with the provided function,
 /// and returns one end of the socket pair as an `OwnedFd`.
@@ -417,6 +439,90 @@ pub fn connect_to_smartsocket(socket: Arc<LocalSocket>, fdevent: &mut Fdevent) {
 
 /// Dispatches a host-side service to a socket.
 /// Ported from `host_service_to_socket` in `original/services.cpp`.
+pub struct DeviceTracker {
+    id: u32,
+    inner: Mutex<DeviceTrackerInner>,
+}
+
+struct DeviceTrackerInner {
+    registry: Weak<SocketRegistry>,
+    peer: Option<Weak<dyn Socket>>,
+    long_format: bool,
+}
+
+impl DeviceTracker {
+    pub fn new(id: u32, registry: Arc<SocketRegistry>, long_format: bool) -> Self {
+        Self {
+            id,
+            inner: Mutex::new(DeviceTrackerInner {
+                registry: Arc::downgrade(&registry),
+                peer: None,
+                long_format,
+            }),
+        }
+    }
+
+    fn send_device_list(&self) {
+        let inner = self.inner.lock().unwrap();
+        if let Some(peer) = inner.peer.as_ref().and_then(|p| p.upgrade()) {
+            let list = adb_transport::list_transports(inner.long_format);
+            let data = format!("{:04x}{}", list.len(), list);
+            peer.enqueue(Bytes::from(data));
+        }
+    }
+}
+
+impl Socket for DeviceTracker {
+    fn id(&self) -> u32 {
+        self.id
+    }
+    fn enqueue(&self, _data: Bytes) -> i32 {
+        0
+    }
+    fn ready(&self) {
+        self.send_device_list();
+    }
+    fn ack(&self, _acked_bytes: Option<i32>) {}
+    fn shutdown(&self) {}
+    fn close(&self) {
+        let mut inner = self.inner.lock().unwrap();
+        if let Some(peer) = inner.peer.take().and_then(|p| p.upgrade()) {
+            peer.close();
+        }
+        if let Some(registry) = inner.registry.upgrade() {
+            registry.remove(self.id);
+        }
+    }
+    fn peer_id(&self) -> Option<u32> {
+        self.inner
+            .lock()
+            .unwrap()
+            .peer
+            .as_ref()
+            .and_then(|p| p.upgrade())
+            .map(|p| p.id())
+    }
+    fn transport_id(&self) -> Option<u64> {
+        None
+    }
+    fn set_peer(&self, peer: Arc<dyn Socket>) {
+        self.inner.lock().unwrap().peer = Some(Arc::downgrade(&peer));
+    }
+}
+
+pub fn create_device_tracker(long_format: bool, registry: Arc<SocketRegistry>) -> Arc<dyn Socket> {
+    let id = registry.alloc_id();
+    let tracker = Arc::new(DeviceTracker::new(id, registry.clone(), long_format));
+    let tracker_weak = Arc::downgrade(&tracker);
+    adb_transport::register_transport_observer(Box::new(move || {
+        if let Some(tracker) = tracker_weak.upgrade() {
+            tracker.send_device_list();
+        }
+    }));
+    registry.install(tracker.clone());
+    tracker
+}
+
 pub fn host_service_to_socket(
     name: &str,
     serial: &str,
@@ -425,12 +531,10 @@ pub fn host_service_to_socket(
     fdevent: &mut Fdevent,
 ) -> Option<Arc<dyn Socket>> {
     if name == "track-devices" {
-        // TODO: return create_device_tracker(SHORT_TEXT)
-        return None;
+        return Some(create_device_tracker(false, registry));
     }
     if name == "track-devices-l" {
-        // TODO: return create_device_tracker(LONG_TEXT)
-        return None;
+        return Some(create_device_tracker(true, registry));
     }
 
     if let Some(spec) = name.strip_prefix("wait-for-") {
@@ -440,7 +544,7 @@ pub fn host_service_to_socket(
             wait_service(fd, serial, transport_id, spec);
         })
         .ok()?;
-        return Some(create_local_socket(fd.into_raw_fd(), registry, fdevent));
+        return Some(create_local_socket(fd, registry, fdevent));
     }
 
     if let Some(host) = name.strip_prefix("connect:") {
@@ -449,7 +553,7 @@ pub fn host_service_to_socket(
             connect_service(fd, host);
         })
         .ok()?;
-        return Some(create_local_socket(fd.into_raw_fd(), registry, fdevent));
+        return Some(create_local_socket(fd, registry, fdevent));
     }
 
     if let Some(pair_spec) = name.strip_prefix("pair:") {
@@ -460,7 +564,7 @@ pub fn host_service_to_socket(
                 pair_service(fd, host, password);
             })
             .ok()?;
-            return Some(create_local_socket(fd.into_raw_fd(), registry, fdevent));
+            return Some(create_local_socket(fd, registry, fdevent));
         }
     }
 
@@ -544,8 +648,8 @@ mod tests {
     fn test_connect_to_smartsocket() {
         let registry = Arc::new(SocketRegistry::new());
         let mut fdevent = Fdevent::new().unwrap();
-        let (s1, _s2) = UnixStream::pair().unwrap();
-        let client_socket = create_local_socket(s1.into_raw_fd(), registry.clone(), &mut fdevent);
+        let (s1, s2) = UnixStream::pair().unwrap();
+        let client_socket = create_local_socket(OwnedFd::from(s1), registry.clone(), &mut fdevent);
 
         connect_to_smartsocket(client_socket.clone(), &mut fdevent);
 
@@ -554,6 +658,7 @@ mod tests {
         let peer = registry.find(peer_id).unwrap();
         // The peer should be a SmartSocket.
         assert_eq!(peer.peer_id(), Some(client_socket.id()));
+        let _ = s2;
     }
 
     #[test]
@@ -570,7 +675,7 @@ mod tests {
         let registry = Arc::new(SocketRegistry::new());
         let mut fdevent = Fdevent::new().unwrap();
         let (s1, s2) = UnixStream::pair().unwrap();
-        let client_socket = create_local_socket(s1.into_raw_fd(), registry.clone(), &mut fdevent);
+        let client_socket = create_local_socket(OwnedFd::from(s1), registry.clone(), &mut fdevent);
 
         connect_to_smartsocket(client_socket.clone(), &mut fdevent);
 
@@ -614,6 +719,104 @@ mod tests {
 
         handle.join().unwrap();
     }
+
+    #[test]
+    fn test_shell_service_v2() {
+        let (s1, s2) = UnixStream::pair().unwrap();
+        let s2_fd = OwnedFd::from(s2);
+
+        let handle = std::thread::spawn(move || {
+            shell_service(s2_fd, "v2:echo hello");
+        });
+
+        let mut s1_file = std::fs::File::from(OwnedFd::from(s1));
+
+        // Read V2 packet from s1_file
+        let mut header = [0u8; 5];
+        s1_file.read_exact(&mut header).unwrap();
+        assert_eq!(header[0], ShellProtocolId::Stdout as u8);
+        let len = u32::from_le_bytes(header[1..5].try_into().unwrap());
+        let mut data = vec![0u8; len as usize];
+        s1_file.read_exact(&mut data).unwrap();
+        assert_eq!(String::from_utf8_lossy(&data).trim(), "hello");
+
+        // Should also get exit status
+        s1_file.read_exact(&mut header).unwrap();
+        assert_eq!(header[0], ShellProtocolId::ExitStatus as u8);
+        assert_eq!(u32::from_le_bytes(header[1..5].try_into().unwrap()), 1);
+        let mut exit_code = [0u8; 1];
+        s1_file.read_exact(&mut exit_code).unwrap();
+        assert_eq!(exit_code[0], 0);
+
+        handle.join().unwrap();
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn test_shell_service_pty() {
+        let (s1, s2) = UnixStream::pair().unwrap();
+        let s2_fd = OwnedFd::from(s2);
+
+        let handle = std::thread::spawn(move || {
+            shell_service(s2_fd, "pty:echo hello");
+        });
+
+        let mut s1_file = std::fs::File::from(OwnedFd::from(s1));
+        // We might need multiple reads because of PTY behavior
+        let mut output = String::new();
+        for _ in 0..10 {
+            let mut tmp = [0u8; 64];
+            let n = s1_file.read(&mut tmp).unwrap();
+            if n == 0 { break; }
+            output.push_str(&String::from_utf8_lossy(&tmp[..n]));
+            if output.contains("hello") { break; }
+        }
+        assert!(output.contains("hello"));
+
+        handle.join().unwrap();
+    }
+
+    #[test]
+    fn test_reverse_service_list_empty() {
+        let (s1, s2) = UnixStream::pair().unwrap();
+        let s2_fd = OwnedFd::from(s2);
+        let t = Arc::new(ATransport::new_offline(TransportType::Usb));
+
+        let handle = std::thread::spawn(move || {
+            reverse_service::reverse_service(s2_fd, "list-forward", t);
+        });
+
+        let mut s1_file = std::fs::File::from(OwnedFd::from(s1));
+        let mut buf = [0u8; 4];
+        s1_file.read_exact(&mut buf).unwrap();
+        assert_eq!(&buf, b"0000"); // Empty list
+
+        handle.join().unwrap();
+    }
+
+    #[test]
+    fn test_device_tracker() {
+        let registry = Arc::new(SocketRegistry::new());
+        let tracker = create_device_tracker(false, registry.clone());
+
+        let (s1, s2) = UnixStream::pair().unwrap();
+        let mut fdevent = Fdevent::new().unwrap();
+        let peer = create_local_socket(OwnedFd::from(s1), registry.clone(), &mut fdevent);
+
+        tracker.set_peer(peer.clone() as Arc<dyn Socket>);
+        peer.set_peer(tracker.clone());
+
+        tracker.ready();
+
+        let mut s2_file = std::fs::File::from(OwnedFd::from(s2));
+        let mut buf = [0u8; 4];
+        s2_file.read_exact(&mut buf).unwrap();
+        let len_str = std::str::from_utf8(&buf).unwrap();
+        let len = u32::from_str_radix(len_str, 16).unwrap();
+        assert_eq!(len, 0);
+
+        std::mem::forget(s2_file);
+    }
 }
 
 /// Dispatches a service to a file descriptor.
@@ -638,27 +841,174 @@ pub fn service_to_fd(name: &str, _transport: Option<&Arc<ATransport>>) -> std::i
     }
 }
 
+static JDWP_OBSERVERS: OnceLock<Mutex<Vec<Box<dyn Fn() + Send + Sync>>>> = OnceLock::new();
+
+pub fn register_jdwp_observer(observer: Box<dyn Fn() + Send + Sync>) {
+    JDWP_OBSERVERS
+        .get_or_init(|| Mutex::new(Vec::new()))
+        .lock()
+        .unwrap()
+        .push(observer);
+}
+
+pub fn notify_jdwp_update() {
+    if let Some(observers_mutex) = JDWP_OBSERVERS.get() {
+        let observers = observers_mutex.lock().unwrap();
+        for observer in observers.iter() {
+            observer();
+        }
+    }
+}
+
+fn get_jdwp_list() -> String {
+    // Ported from `jdwp_process_list_msg` in `original/daemon/jdwp_service.cpp`.
+    // For now, we return an empty list or a mock list.
+    // In a real adbd, this would be populated by processes connecting to the JDWP socket.
+    String::new()
+}
+
 /// Dispatches a service to a socket on the daemon side.
 /// Ported from `daemon_service_to_socket` in `original/daemon/services.cpp`.
+pub struct JdwpTracker {
+    id: u32,
+    inner: Mutex<JdwpTrackerInner>,
+}
+
+struct JdwpTrackerInner {
+    registry: Weak<SocketRegistry>,
+    peer: Option<Weak<dyn Socket>>,
+    track: bool,
+}
+
+impl JdwpTracker {
+    pub fn new(id: u32, registry: Arc<SocketRegistry>, track: bool) -> Self {
+        Self {
+            id,
+            inner: Mutex::new(JdwpTrackerInner {
+                registry: Arc::downgrade(&registry),
+                peer: None,
+                track,
+            }),
+        }
+    }
+
+    fn send_jdwp_list(&self) {
+        let inner = self.inner.lock().unwrap();
+        if let Some(peer) = inner.peer.as_ref().and_then(|p| p.upgrade()) {
+            let list = get_jdwp_list();
+            if inner.track {
+                let data = format!("{:04x}{}", list.len(), list);
+                peer.enqueue(Bytes::from(data));
+            } else {
+                let data = if list.is_empty() {
+                    String::new()
+                } else {
+                    format!("{}\n", list)
+                };
+                peer.enqueue(Bytes::from(data));
+                peer.close();
+            }
+        }
+    }
+}
+
+impl Socket for JdwpTracker {
+    fn id(&self) -> u32 {
+        self.id
+    }
+    fn enqueue(&self, _data: Bytes) -> i32 {
+        0
+    }
+    fn ready(&self) {
+        self.send_jdwp_list();
+    }
+    fn ack(&self, _acked_bytes: Option<i32>) {}
+    fn shutdown(&self) {}
+    fn close(&self) {
+        let mut inner = self.inner.lock().unwrap();
+        if let Some(peer) = inner.peer.take().and_then(|p| p.upgrade()) {
+            peer.close();
+        }
+        if let Some(registry) = inner.registry.upgrade() {
+            registry.remove(self.id);
+        }
+    }
+    fn peer_id(&self) -> Option<u32> {
+        self.inner
+            .lock()
+            .unwrap()
+            .peer
+            .as_ref()
+            .and_then(|p| p.upgrade())
+            .map(|p| p.id())
+    }
+    fn transport_id(&self) -> Option<u64> {
+        None
+    }
+    fn set_peer(&self, peer: Arc<dyn Socket>) {
+        self.inner.lock().unwrap().peer = Some(Arc::downgrade(&peer));
+    }
+}
+
 pub fn daemon_service_to_socket(
-    _name: &str,
-    _transport: &Arc<ATransport>,
+    name: &str,
+    transport: &Arc<ATransport>,
 ) -> Option<Arc<dyn Socket>> {
-    // TODO: implement jdwp, track-jdwp, track-app, sink, source
+    let registry = transport.registry.lock().unwrap().as_ref()?.clone();
+    if name == "jdwp" {
+        let id = registry.alloc_id();
+        let s = Arc::new(JdwpTracker::new(id, registry.clone(), false));
+        registry.install(s.clone());
+        return Some(s);
+    }
+    if name == "track-jdwp" {
+        let id = registry.alloc_id();
+        let s = Arc::new(JdwpTracker::new(id, registry.clone(), true));
+        let s_weak = Arc::downgrade(&s);
+        register_jdwp_observer(Box::new(move || {
+            if let Some(s) = s_weak.upgrade() {
+                s.send_jdwp_list();
+            }
+        }));
+        registry.install(s.clone());
+        return Some(s);
+    }
     None
+}
+
+fn shell_v2_write_packet(
+    file: &mut std::fs::File,
+    id: ShellProtocolId,
+    data: &[u8],
+) -> std::io::Result<()> {
+    let mut buf = Vec::with_capacity(5 + data.len());
+    buf.push(id as u8);
+    buf.extend_from_slice(&(data.len() as u32).to_le_bytes());
+    buf.extend_from_slice(data);
+    file.write_all(&buf)
 }
 
 /// Service that runs a shell command.
 /// Simplified version of `ShellService` in `original/daemon/services.cpp`.
 pub fn shell_service(fd: OwnedFd, args: &str) {
-    let (command, _type, _protocol) = if let Some(colon_idx) = args.find(':') {
-        let _service_args = &args[..colon_idx];
-        let command = &args[colon_idx + 1..];
-        // TODO: parse service_args for pty, v2, etc.
-        (command, "raw", "none")
+    let mut command = "";
+    let mut use_pty = false;
+    let mut use_v2 = false;
+
+    if let Some(colon_idx) = args.find(':') {
+        let service_args = &args[..colon_idx];
+        command = &args[colon_idx + 1..];
+
+        for arg in service_args.split(',') {
+            match arg {
+                K_SHELL_SERVICE_ARG_PTY => use_pty = true,
+                K_SHELL_SERVICE_ARG_SHELL_PROTOCOL => use_v2 = true,
+                _ => {}
+            }
+        }
     } else {
-        ("", "pty", "none")
-    };
+        use_pty = true;
+    }
 
     let mut cmd = if command.is_empty() {
         std::process::Command::new("/bin/sh")
@@ -668,22 +1018,222 @@ pub fn shell_service(fd: OwnedFd, args: &str) {
         c
     };
 
-    let fd_clone = fd.try_clone().expect("failed to clone fd");
-    let fd_clone2 = fd.try_clone().expect("failed to clone fd");
+    let mut socket_file = std::fs::File::from(fd);
 
-    let mut child = cmd
-        .stdin(std::process::Stdio::from(fd))
-        .stdout(std::process::Stdio::from(fd_clone))
-        .stderr(std::process::Stdio::from(fd_clone2))
-        .spawn()
-        .expect("failed to spawn shell");
+    let (mut child_stdin, mut child_stdout, mut child_stderr, mut child) = if use_pty {
+        let pty = nix::pty::openpty(None, None).expect("failed to open pty");
+        let slave_fd = pty.slave;
+        cmd.stdin(std::process::Stdio::from(slave_fd.try_clone().unwrap()));
+        cmd.stdout(std::process::Stdio::from(slave_fd.try_clone().unwrap()));
+        cmd.stderr(std::process::Stdio::from(slave_fd));
+
+        let child = cmd.spawn().expect("failed to spawn shell");
+        let master_read = std::fs::File::from(pty.master);
+        let master_write = master_read.try_clone().unwrap();
+        (Some(master_write), master_read, None, child)
+    } else {
+        cmd.stdin(std::process::Stdio::piped());
+        cmd.stdout(std::process::Stdio::piped());
+        cmd.stderr(std::process::Stdio::piped());
+        let mut child = cmd.spawn().expect("failed to spawn shell");
+        let stdin = child.stdin.take().unwrap();
+        let stdout = child.stdout.take().unwrap();
+        let stderr = child.stderr.take().unwrap();
+
+        (
+            Some(unsafe { std::fs::File::from_raw_fd(stdin.into_raw_fd()) }),
+            unsafe { std::fs::File::from_raw_fd(stdout.into_raw_fd()) },
+            Some(unsafe { std::fs::File::from_raw_fd(stderr.into_raw_fd()) }),
+            child,
+        )
+    };
+
+    if !use_v2 {
+        // Simple multiplexing without protocol headers.
+        // If PTY, we just bridge socket <-> pty_master.
+        // If no PTY, we bridge socket -> stdin, stdout/stderr -> socket.
+        let mut pfds = vec![
+            AdbPollFd {
+                fd: socket_file.as_raw_fd(),
+                events: libc::POLLIN,
+                revents: 0,
+            },
+            AdbPollFd {
+                fd: child_stdout.as_raw_fd(),
+                events: libc::POLLIN,
+                revents: 0,
+            },
+        ];
+        if let Some(ref stderr) = child_stderr {
+            pfds.push(AdbPollFd {
+                fd: stderr.as_raw_fd(),
+                events: libc::POLLIN,
+                revents: 0,
+            });
+        }
+
+        let mut buf = [0u8; 4096];
+        loop {
+            if adb_poll(&mut pfds, -1) <= 0 {
+                break;
+            }
+
+            if (pfds[0].revents & libc::POLLIN) != 0 {
+                match socket_file.read(&mut buf) {
+                    Ok(0) | Err(_) => break,
+                    Ok(n) => {
+                        if let Some(ref mut stdin) = child_stdin {
+                            if stdin.write_all(&buf[..n]).is_err() {
+                                break;
+                            }
+                        }
+                    }
+                }
+            }
+
+            if (pfds[1].revents & libc::POLLIN) != 0 {
+                match child_stdout.read(&mut buf) {
+                    Ok(0) | Err(_) => break,
+                    Ok(n) => {
+                        if socket_file.write_all(&buf[..n]).is_err() {
+                            break;
+                        }
+                    }
+                }
+            }
+
+            if pfds.len() > 2 && (pfds[2].revents & libc::POLLIN) != 0 {
+                if let Some(ref mut stderr) = child_stderr {
+                    match stderr.read(&mut buf) {
+                        Ok(0) | Err(_) => break,
+                        Ok(n) => {
+                            if socket_file.write_all(&buf[..n]).is_err() {
+                                break;
+                            }
+                        }
+                    }
+                }
+            }
+
+            if (pfds[0].revents & libc::POLLHUP) != 0
+                || (pfds[1].revents & libc::POLLHUP) != 0
+                || (pfds.len() > 2 && (pfds[2].revents & libc::POLLHUP) != 0)
+            {
+                break;
+            }
+        }
+    } else {
+        // Shell V2 protocol.
+        let mut pfds = vec![
+            AdbPollFd {
+                fd: socket_file.as_raw_fd(),
+                events: libc::POLLIN,
+                revents: 0,
+            },
+            AdbPollFd {
+                fd: child_stdout.as_raw_fd(),
+                events: libc::POLLIN,
+                revents: 0,
+            },
+        ];
+        if let Some(ref stderr) = child_stderr {
+            pfds.push(AdbPollFd {
+                fd: stderr.as_raw_fd(),
+                events: libc::POLLIN,
+                revents: 0,
+            });
+        }
+
+        let mut buf = [0u8; 4096];
+        loop {
+            if adb_poll(&mut pfds, -1) <= 0 {
+                break;
+            }
+
+            if (pfds[0].revents & libc::POLLIN) != 0 {
+                // Read V2 packet from socket.
+                let mut header_buf = [0u8; 5];
+                if socket_file.read_exact(&mut header_buf).is_ok() {
+                    let id = header_buf[0];
+                    let length = u32::from_le_bytes(header_buf[1..5].try_into().unwrap()) as usize;
+                    let mut data = vec![0u8; length];
+                    if socket_file.read_exact(&mut data).is_ok() {
+                        match id {
+                            0 => {
+                                // Stdin
+                                if let Some(ref mut stdin) = child_stdin {
+                                    let _ = stdin.write_all(&data);
+                                }
+                            }
+                            4 => {
+                                // CloseStdin
+                                child_stdin = None;
+                            }
+                            5 => {
+                                // WindowSizeChange
+                                // TODO: use ioctl(TIOCSWINSZ) if use_pty
+                            }
+                            _ => {}
+                        }
+                    }
+                } else {
+                    break;
+                }
+            }
+
+            if (pfds[1].revents & libc::POLLIN) != 0 {
+                match child_stdout.read(&mut buf) {
+                    Ok(0) | Err(_) => break,
+                    Ok(n) => {
+                        if shell_v2_write_packet(&mut socket_file, ShellProtocolId::Stdout, &buf[..n])
+                            .is_err()
+                        {
+                            break;
+                        }
+                    }
+                }
+            }
+
+            if pfds.len() > 2 && (pfds[2].revents & libc::POLLIN) != 0 {
+                if let Some(ref mut stderr) = child_stderr {
+                    match stderr.read(&mut buf) {
+                        Ok(0) | Err(_) => break,
+                        Ok(n) => {
+                            if shell_v2_write_packet(
+                                &mut socket_file,
+                                ShellProtocolId::Stderr,
+                                &buf[..n],
+                            )
+                            .is_err()
+                            {
+                                break;
+                            }
+                        }
+                    }
+                }
+            }
+
+            if (pfds[0].revents & libc::POLLHUP) != 0
+                || (pfds[1].revents & libc::POLLHUP) != 0
+                || (pfds.len() > 2 && (pfds[2].revents & libc::POLLHUP) != 0)
+            {
+                break;
+            }
+        }
+
+        // Send exit status.
+        if let Ok(status) = child.wait() {
+            let code = status.code().unwrap_or(0) as u8;
+            let _ = shell_v2_write_packet(&mut socket_file, ShellProtocolId::ExitStatus, &[code]);
+        }
+    }
 
     let _ = child.wait();
 }
 
 /// Dispatches a service to a file descriptor on the daemon side.
 /// Ported from `daemon_service_to_fd` in `original/daemon/services.cpp`.
-pub fn daemon_service_to_fd(name: &str, _transport: &Arc<ATransport>) -> Option<OwnedFd> {
+pub fn daemon_service_to_fd(name: &str, transport: &Arc<ATransport>) -> Option<OwnedFd> {
     if let Some(args) = name.strip_prefix("shell") {
         let args = args.to_string();
         return create_service_thread("shell", move |fd| {
@@ -707,14 +1257,29 @@ pub fn daemon_service_to_fd(name: &str, _transport: &Arc<ATransport>) -> Option<
         })
         .ok();
     }
-    if name.starts_with("reverse:") {
-        // TODO: implement reverse_service
-        return None;
+    if let Some(cmd) = name.strip_prefix("reverse:") {
+        let cmd = cmd.to_string();
+        let transport = transport.clone();
+        return create_service_thread("reverse", move |fd| {
+            reverse_service::reverse_service(fd, &cmd, transport);
+        })
+        .ok();
     }
     if name == "reconnect" {
-        // TODO: implement reconnect_service
-        return None;
+        let transport = transport.clone();
+        return create_service_thread("reconnect", move |fd| {
+            reconnect_service(fd, transport);
+        })
+        .ok();
     }
 
     None
+}
+
+/// Service that handles reconnection.
+/// Ported from `reconnect_service` in `original/services.cpp`.
+pub fn reconnect_service(fd: OwnedFd, transport: Arc<ATransport>) {
+    let mut file = std::fs::File::from(fd);
+    transport.kick();
+    let _ = send_okay(&mut file);
 }

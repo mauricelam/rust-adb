@@ -96,7 +96,7 @@ pub struct Fdevent {
     /// Ported from `fdevent_context::installed_fdevents_`.
     handlers: HashMap<Token, Box<dyn FdeventHandler>>,
     /// A map from tokens to their owned file descriptors.
-    fds: HashMap<Token, OwnedFd>,
+    fds: HashMap<Token, Arc<OwnedFd>>,
     /// A map from tokens to their registered timeouts.
     /// Ported from the `timeout` member in the C++ `fdevent` struct.
     timeouts: HashMap<Token, (Instant, Duration)>,
@@ -157,7 +157,7 @@ impl Fdevent {
     /// * `interest` - The initial set of events to monitor (e.g., READABLE).
     pub fn register(
         &mut self,
-        fd: OwnedFd,
+        fd: Arc<OwnedFd>,
         handler: Box<dyn FdeventHandler>,
         interest: Interest,
     ) -> FdeventResult<Token> {
@@ -212,7 +212,7 @@ impl Fdevent {
     /// # Arguments
     ///
     /// * `token` - The token returned by [`Self::register`].
-    pub fn unregister(&mut self, token: Token) -> FdeventResult<OwnedFd> {
+    pub fn unregister(&mut self, token: Token) -> FdeventResult<Arc<OwnedFd>> {
         let fd = self.fds.remove(&token).ok_or_else(|| {
             FdeventError::Io(io::Error::new(io::ErrorKind::NotFound, "Token not found"))
         })?;

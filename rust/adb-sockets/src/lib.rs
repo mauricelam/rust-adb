@@ -20,10 +20,10 @@
 use adb_protocol::{A_CLSE, A_OKAY, A_OPEN, A_WRTE, INITIAL_DELAYED_ACK_BYTES, MAX_PAYLOAD};
 use adb_types::{Apacket, Block, IoVector};
 use bytes::Bytes;
-use fdevent::fdevent::{Fdevent, FdeventHandler};
+use fdevent::fdevent::{Fdevent, FdeventHandler, FdeventHandle};
 use mio::{event::Event, unix::SourceFd, Interest, Token};
 use std::collections::HashMap;
-use std::os::unix::io::{FromRawFd, OwnedFd, RawFd};
+use std::os::unix::io::{AsRawFd, OwnedFd, RawFd};
 use std::sync::{Arc, Mutex, Weak};
 
 /// Trait representing a generic socket in the ADB system.
@@ -180,7 +180,7 @@ pub struct LocalSocket {
 /// Inner state of a [`LocalSocket`].
 struct LocalSocketInner {
     id: u32,
-    fd: RawFd,
+    fd: Option<Arc<OwnedFd>>,
     packet_queue: IoVector,
     peer: Option<Weak<dyn Socket>>,
     transport: Option<Arc<dyn Transport>>,
@@ -188,6 +188,7 @@ struct LocalSocketInner {
     has_write_error: bool,
     registry: Weak<SocketRegistry>,
     mio_registry: mio::Registry,
+    fdevent_handle: FdeventHandle,
     token: Token,
     current_interests: Option<Interest>,
     available_send_bytes: Option<i64>,
@@ -198,15 +199,16 @@ impl LocalSocket {
     /// Creates a new `LocalSocket`.
     pub fn new(
         id: u32,
-        fd: RawFd,
+        fd: Arc<OwnedFd>,
         registry: Arc<SocketRegistry>,
         mio_registry: mio::Registry,
+        fdevent_handle: FdeventHandle,
         token: Token,
     ) -> Self {
         Self {
             inner: Arc::new(Mutex::new(LocalSocketInner {
                 id,
-                fd,
+                fd: Some(fd),
                 packet_queue: IoVector::new(),
                 peer: None,
                 transport: None,
@@ -214,6 +216,7 @@ impl LocalSocket {
                 has_write_error: false,
                 registry: Arc::downgrade(&registry),
                 mio_registry,
+                fdevent_handle,
                 token,
                 current_interests: Some(Interest::READABLE),
                 available_send_bytes: None,
@@ -236,7 +239,13 @@ impl LocalSocket {
 
     /// Returns the file descriptor associated with the socket.
     pub fn fd(&self) -> RawFd {
-        self.inner.lock().unwrap().fd
+        self.inner
+            .lock()
+            .unwrap()
+            .fd
+            .as_ref()
+            .map(|f| f.as_raw_fd())
+            .unwrap_or(-1)
     }
 
     /// Returns the socket registry associated with the socket.
@@ -321,7 +330,12 @@ impl Socket for LocalSocket {
 
         let mut inner = self.inner.lock().unwrap();
         if inner.closing || inner.has_write_error || inner.packet_queue.is_empty() {
+            let token = inner.token;
+            let handle = inner.fdevent_handle.clone();
             inner.destroy();
+            handle.run_on_looper(move |fdevent| {
+                let _ = fdevent.unregister(token);
+            });
         } else {
             inner.closing = true;
             inner.update_interests(Some(Interest::WRITABLE));
@@ -375,7 +389,12 @@ impl LocalSocketInner {
             return;
         }
 
-        let mut source = SourceFd(&self.fd);
+        let fd = match &self.fd {
+            Some(f) => f.as_raw_fd(),
+            None => return,
+        };
+
+        let mut source = SourceFd(&fd);
         match (self.current_interests, new_interests) {
             (Some(_), Some(new)) => {
                 self.mio_registry
@@ -434,9 +453,13 @@ impl LocalSocketInner {
     /// Ported from `local_socket_flush_incoming` in `original/sockets.cpp`.
     fn flush_incoming(&mut self) -> FlushResult {
         let mut bytes_flushed = 0;
+        let fd = match &self.fd {
+            Some(f) => f.as_raw_fd(),
+            None => return FlushResult::Destroyed,
+        };
         if !self.packet_queue.is_empty() {
             let data = self.packet_queue.coalesce();
-            match nix::unistd::write(self.fd, &data) {
+            match nix::unistd::write(fd, &data) {
                 Ok(n) => {
                     bytes_flushed = n as u32;
                     self.packet_queue.drop_front(n);
@@ -484,22 +507,32 @@ impl LocalSocketInner {
             registry.remove(self.id);
         }
         self.update_interests(None);
-        let _ = nix::unistd::close(self.fd);
+        self.fd.take();
     }
 }
 
 impl FdeventHandler for LocalSocket {
     /// Handles events from the `fdevent` looper.
     /// Ported from `local_socket_event_func` in `original/sockets.cpp`.
-    fn on_event(&mut self, event: &Event, _fdevent: &mut Fdevent) {
+    fn on_event(&mut self, event: &Event, fdevent: &mut Fdevent) {
         if event.is_writable() {
-            let mut inner = self.inner.lock().unwrap();
-            inner.flush_incoming();
+            let res = {
+                let mut inner = self.inner.lock().unwrap();
+                inner.flush_incoming()
+            };
+            if let FlushResult::Destroyed = res {
+                fdevent.unregister(self.inner.lock().unwrap().token).ok();
+                return;
+            }
         }
         if event.is_readable() {
             let (bytes_to_enqueue, is_eof) = {
                 let mut inner = self.inner.lock().unwrap();
-                match nix::unistd::read(inner.fd, &mut inner.read_buffer) {
+                let fd = match &inner.fd {
+                    Some(f) => f.as_raw_fd(),
+                    None => return,
+                };
+                match nix::unistd::read(fd, &mut inner.read_buffer) {
                     Ok(0) => (None, true),
                     Ok(n) => (Some(Bytes::copy_from_slice(&inner.read_buffer[..n])), false),
                     Err(e) if e == nix::errno::Errno::EAGAIN => (None, false),
@@ -525,6 +558,7 @@ impl FdeventHandler for LocalSocket {
                 }
             }
             if is_eof {
+                fdevent.unregister(self.inner.lock().unwrap().token).ok();
                 self.close();
             }
         }
@@ -644,19 +678,21 @@ impl Socket for RemoteSocket {
 /// Creates a new local socket and registers it with the `fdevent` looper.
 /// Ported from `create_local_socket` in `original/sockets.cpp`.
 pub fn create_local_socket(
-    fd: RawFd,
+    fd: OwnedFd,
     registry: Arc<SocketRegistry>,
     fdevent: &mut Fdevent,
 ) -> Arc<LocalSocket> {
     let id = registry.alloc_id();
     let mio_registry = fdevent.registry();
-    let socket = LocalSocket::new(id, fd, registry.clone(), mio_registry, Token(0));
+    let fdevent_handle = fdevent.get_handle();
+
+    let fd_arc = Arc::new(fd);
+
+    let socket = LocalSocket::new(id, fd_arc.clone(), registry.clone(), mio_registry, fdevent_handle, Token(0));
     let socket_arc = Arc::new(socket.clone());
 
-    // SAFETY: fd is a valid file descriptor.
-    let owned_fd = unsafe { OwnedFd::from_raw_fd(fd) };
     let token = fdevent
-        .register(owned_fd, Box::new(socket), Interest::READABLE)
+        .register(fd_arc, Box::new(socket), Interest::READABLE)
         .unwrap();
     socket_arc.inner.lock().unwrap().token = token;
 

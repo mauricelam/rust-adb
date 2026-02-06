@@ -5,6 +5,7 @@
 use fdevent::fdevent::{Fdevent, FdeventHandler};
 use mio::{Interest, Token};
 use std::io::Write;
+use std::os::unix::io::OwnedFd;
 use std::os::unix::net::UnixStream;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -50,8 +51,12 @@ fn unregister_with_pending_event() {
         hit_count: hit2.clone(),
     });
 
-    let _t1 = fdevent.register(r1.into(), h1, Interest::READABLE).unwrap();
-    let t2 = fdevent.register(r2.into(), h2, Interest::READABLE).unwrap();
+    let _t1 = fdevent
+        .register(Arc::new(OwnedFd::from(r1)), h1, Interest::READABLE)
+        .unwrap();
+    let t2 = fdevent
+        .register(Arc::new(OwnedFd::from(r2)), h2, Interest::READABLE)
+        .unwrap();
 
     // Handler 1 will unregister Handler 2
     *unreg.lock().unwrap() = Some(t2);
