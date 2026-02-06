@@ -28,7 +28,7 @@ use fdevent::fdevent::{Fdevent, FdeventHandle};
 use std::io::{Read, Write};
 use std::os::unix::io::{AsRawFd, FromRawFd, IntoRawFd, OwnedFd};
 use std::os::unix::net::UnixStream;
-use std::sync::{Arc, Mutex, OnceLock, Weak};
+use std::sync::{Arc, Mutex, Weak};
 use sysdeps::poll::{adb_poll, AdbPollFd};
 
 pub const K_SHELL_SERVICE_ARG_RAW: &str = "raw";
@@ -38,24 +38,41 @@ pub const K_SHELL_SERVICE_ARG_SHELL_PROTOCOL: &str = "v2";
 pub const K_MINADBD_SERVICES_EXIT_SUCCESS: &str = "DONEDONE";
 pub const K_MINADBD_SERVICES_EXIT_FAILURE: &str = "FAILFAIL";
 
+/// Module handling reverse forwarding services.
 pub mod reverse_service;
 
+/// Module handling JDWP services.
+pub mod jdwp_service;
+
+/// Shell protocol packet identifiers.
+/// Ported from `ShellProtocolId` in `original/shell_protocol.h`.
 #[repr(u8)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ShellProtocolId {
+    /// Data sent to the child process's stdin.
     Stdin = 0,
+    /// Data received from the child process's stdout.
     Stdout = 1,
+    /// Data received from the child process's stderr.
     Stderr = 2,
+    /// The exit status of the child process.
     ExitStatus = 3,
+    /// Signal to close the child process's stdin.
     CloseStdin = 4,
+    /// Notification of a terminal window size change.
     WindowSizeChange = 5,
+    /// Invalid protocol ID.
     Invalid = 255,
 }
 
+/// Header for shell protocol packets.
+/// Ported from `ShellProtocolHeader` in `original/shell_protocol.h`.
 #[repr(C, packed)]
 #[derive(Debug, Clone, Copy)]
 pub struct ShellProtocolHeader {
+    /// The type of data in this packet.
     pub id: u8,
+    /// The length of the payload following this header.
     pub length: u32,
 }
 
@@ -437,8 +454,8 @@ pub fn connect_to_smartsocket(socket: Arc<LocalSocket>, fdevent: &mut Fdevent) {
     socket.ready();
 }
 
-/// Dispatches a host-side service to a socket.
-/// Ported from `host_service_to_socket` in `original/services.cpp`.
+/// A service that tracks device connection state changes and sends updates to the client.
+/// Ported from `device_tracker` in `original/transport.cpp`.
 pub struct DeviceTracker {
     id: u32,
     inner: Mutex<DeviceTrackerInner>,
@@ -841,115 +858,10 @@ pub fn service_to_fd(name: &str, _transport: Option<&Arc<ATransport>>) -> std::i
     }
 }
 
-static JDWP_OBSERVERS: OnceLock<Mutex<Vec<Box<dyn Fn() + Send + Sync>>>> = OnceLock::new();
+use crate::jdwp_service::{register_jdwp_observer, JdwpTracker};
 
-pub fn register_jdwp_observer(observer: Box<dyn Fn() + Send + Sync>) {
-    JDWP_OBSERVERS
-        .get_or_init(|| Mutex::new(Vec::new()))
-        .lock()
-        .unwrap()
-        .push(observer);
-}
-
-pub fn notify_jdwp_update() {
-    if let Some(observers_mutex) = JDWP_OBSERVERS.get() {
-        let observers = observers_mutex.lock().unwrap();
-        for observer in observers.iter() {
-            observer();
-        }
-    }
-}
-
-fn get_jdwp_list() -> String {
-    // Ported from `jdwp_process_list_msg` in `original/daemon/jdwp_service.cpp`.
-    // For now, we return an empty list or a mock list.
-    // In a real adbd, this would be populated by processes connecting to the JDWP socket.
-    String::new()
-}
-
-/// Dispatches a service to a socket on the daemon side.
+/// Dispatches a daemon-side service request to a socket.
 /// Ported from `daemon_service_to_socket` in `original/daemon/services.cpp`.
-pub struct JdwpTracker {
-    id: u32,
-    inner: Mutex<JdwpTrackerInner>,
-}
-
-struct JdwpTrackerInner {
-    registry: Weak<SocketRegistry>,
-    peer: Option<Weak<dyn Socket>>,
-    track: bool,
-}
-
-impl JdwpTracker {
-    pub fn new(id: u32, registry: Arc<SocketRegistry>, track: bool) -> Self {
-        Self {
-            id,
-            inner: Mutex::new(JdwpTrackerInner {
-                registry: Arc::downgrade(&registry),
-                peer: None,
-                track,
-            }),
-        }
-    }
-
-    fn send_jdwp_list(&self) {
-        let inner = self.inner.lock().unwrap();
-        if let Some(peer) = inner.peer.as_ref().and_then(|p| p.upgrade()) {
-            let list = get_jdwp_list();
-            if inner.track {
-                let data = format!("{:04x}{}", list.len(), list);
-                peer.enqueue(Bytes::from(data));
-            } else {
-                let data = if list.is_empty() {
-                    String::new()
-                } else {
-                    format!("{}\n", list)
-                };
-                peer.enqueue(Bytes::from(data));
-                peer.close();
-            }
-        }
-    }
-}
-
-impl Socket for JdwpTracker {
-    fn id(&self) -> u32 {
-        self.id
-    }
-    fn enqueue(&self, _data: Bytes) -> i32 {
-        0
-    }
-    fn ready(&self) {
-        self.send_jdwp_list();
-    }
-    fn ack(&self, _acked_bytes: Option<i32>) {}
-    fn shutdown(&self) {}
-    fn close(&self) {
-        let mut inner = self.inner.lock().unwrap();
-        if let Some(peer) = inner.peer.take().and_then(|p| p.upgrade()) {
-            peer.close();
-        }
-        if let Some(registry) = inner.registry.upgrade() {
-            registry.remove(self.id);
-        }
-    }
-    fn peer_id(&self) -> Option<u32> {
-        self.inner
-            .lock()
-            .unwrap()
-            .peer
-            .as_ref()
-            .and_then(|p| p.upgrade())
-            .map(|p| p.id())
-    }
-    fn transport_id(&self) -> Option<u64> {
-        None
-    }
-    fn set_peer(&self, peer: Arc<dyn Socket>) {
-        self.inner.lock().unwrap().peer = Some(Arc::downgrade(&peer));
-    }
-}
-
 pub fn daemon_service_to_socket(
     name: &str,
     transport: &Arc<ATransport>,
