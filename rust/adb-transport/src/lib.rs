@@ -2114,42 +2114,42 @@ impl rustls::server::ClientCertVerifier for AdbClientCertVerifier {
 }
 
 /// Ported from original/client/usb.h: `struct UsbConnection`
-///
-/// Current implementation is a stub. Full implementation will be done in Step 17.
-pub struct UsbConnection {}
+pub struct UsbConnection {
+    underlying: Box<dyn BlockingConnection>,
+}
 
 impl UsbConnection {
-    pub fn new() -> Self {
-        Self {}
+    pub fn new(underlying: Box<dyn BlockingConnection>) -> Self {
+        Self { underlying }
     }
 }
 
 impl BlockingConnection for UsbConnection {
     fn read(&self) -> std::io::Result<Apacket> {
-        Err(std::io::Error::new(
-            std::io::ErrorKind::Other,
-            "UsbConnection::read not implemented",
-        ))
+        self.underlying.read()
     }
 
-    fn write(&self, _packet: &Apacket) -> std::io::Result<()> {
-        Err(std::io::Error::new(
-            std::io::ErrorKind::Other,
-            "UsbConnection::write not implemented",
-        ))
+    fn write(&self, packet: &Apacket) -> std::io::Result<()> {
+        self.underlying.write(packet)
     }
 
-    fn do_tls_handshake(&self, _key: &Key, _auth_key: Option<&mut String>) -> bool {
-        false
+    fn do_tls_handshake(&self, key: &Key, auth_key: Option<&mut String>) -> bool {
+        self.underlying.do_tls_handshake(key, auth_key)
     }
 
-    fn close(&self) {}
+    fn close(&self) {
+        self.underlying.close();
+    }
 
-    fn reset(&self) {}
+    fn reset(&self) {
+        self.underlying.reset();
+    }
 }
 
 impl Connection for UsbConnection {
-    fn set_transport(&self, _transport: Weak<ATransport>) {}
+    fn set_transport(&self, _transport: Weak<ATransport>) {
+        // We don't really use this in UsbConnection yet, but we could pass it to underlying if needed.
+    }
 
     fn write(&self, packet: Apacket) -> bool {
         BlockingConnection::write(self, &packet).is_ok()

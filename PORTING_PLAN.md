@@ -227,7 +227,7 @@ Once the core layers are fully ported and verified, the next phase will focus on
     - Ported `MdnsInstance` and parsing logic from `mdns_utils.cpp`.
     - Integrated auto-connect logic into `adb-services`.
 
-### Step 17: USB Transport Implementation
+### Step 17: USB Transport Implementation [Done]
 - **Description**: Implement `UsbConnection` for host (libusb/WinUSB) and daemon (FunctionFS).
 - **Testing**: Integration tests with actual USB devices.
 
