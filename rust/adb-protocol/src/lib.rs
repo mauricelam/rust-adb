@@ -17,6 +17,9 @@
 pub mod packet_reader;
 pub use packet_reader::{APacketReader, AddError};
 
+pub mod shell_protocol;
+pub use shell_protocol::{ShellId, ShellProtocol};
+
 pub const MAX_PAYLOAD_V1: usize = 4 * 1024;
 pub const MAX_PAYLOAD: usize = 1024 * 1024;
 pub const INITIAL_DELAYED_ACK_BYTES: usize = 32 * 1024 * 1024;

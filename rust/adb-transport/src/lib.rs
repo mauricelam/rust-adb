@@ -26,11 +26,11 @@ use std::fs::File;
 use std::io::{Read, Write};
 use std::os::unix::io::OwnedFd;
 use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU64, AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock, Weak};
 
 use adb_protocol::{ConnectionState, TransportType, A_VERSION_MIN, MAX_PAYLOAD};
 use adb_sockets::{Socket, Transport};
-use adb_types::{Amessage, Apacket, Block};
+use adb_types::{calculate_apacket_checksum, Amessage, Apacket, Block};
 use rust_adb_crypto::Key;
 
 /// Ported from original/adb.h: `using TransportId = uint64_t;`
@@ -228,7 +228,23 @@ impl ATransport {
         )
     }
 
-    pub fn write(&self, packet: Apacket) -> bool {
+    pub fn start(self: &Arc<Self>) -> bool {
+        let conn = self.connection.lock().unwrap().clone();
+        if let Some(conn) = conn {
+            conn.start(Arc::downgrade(self))
+        } else {
+            false
+        }
+    }
+
+    pub fn write(&self, mut packet: Apacket) -> bool {
+        packet.msg.magic = packet.msg.command ^ 0xffffffff;
+        if self.get_protocol_version() >= adb_protocol::A_VERSION_SKIP_CHECKSUM as i32 {
+            packet.msg.data_check = 0;
+        } else {
+            packet.msg.data_check = calculate_apacket_checksum(&packet);
+        }
+
         if let Some(conn) = self.connection.lock().unwrap().as_ref() {
             conn.write(packet)
         } else {
@@ -284,7 +300,12 @@ impl ATransport {
         true
     }
 
-    pub fn handle_error(&self, _error: &str) {
+    pub fn handle_error(&self, error: &str) {
+        log::info!(
+            "{}: connection terminated: {}",
+            self.serial.lock().unwrap(),
+            error
+        );
         self.kick();
     }
 
@@ -569,6 +590,20 @@ pub fn parse_banner(banner: &str, t: &ATransport) {
         };
         t.set_connection_state(state);
     }
+}
+
+pub fn send_connect(t: &Arc<ATransport>) {
+    let mut p = Apacket::default();
+    p.msg.command = adb_protocol::A_CNXN;
+    p.msg.arg0 = adb_protocol::A_VERSION;
+    p.msg.arg1 = adb_protocol::MAX_PAYLOAD as u32;
+    let banner = format!(
+        "host::features={}",
+        feature_set_to_string(supported_features())
+    );
+    p.payload = Block::from_vec(banner.into_bytes());
+    p.msg.data_length = p.payload.get_ref().len() as u32;
+    t.write(p);
 }
 
 pub fn handle_packet(packet: Apacket, t: &Arc<ATransport>) {
@@ -1106,7 +1141,7 @@ mod tests {
             self.written.lock().unwrap().push(packet);
             true
         }
-        fn start(&self) -> bool {
+        fn start(&self, _transport: Weak<ATransport>) -> bool {
             true
         }
         fn stop(&self) {
@@ -1320,6 +1355,82 @@ mod tests {
     }
 
     #[test]
+    fn test_blocking_connection_adapter() {
+        struct MockBlockingConnection {
+            read_packets: Mutex<VecDeque<Apacket>>,
+            written_packets: Arc<Mutex<Vec<Apacket>>>,
+            cv: Arc<std::sync::Condvar>,
+        }
+
+        impl BlockingConnection for MockBlockingConnection {
+            fn read(&self) -> std::io::Result<Apacket> {
+                let mut queue = self.read_packets.lock().unwrap();
+                while queue.is_empty() {
+                    queue = self.cv.wait(queue).unwrap();
+                }
+                Ok(queue.pop_front().unwrap())
+            }
+            fn write(&self, packet: &Apacket) -> std::io::Result<()> {
+                self.written_packets.lock().unwrap().push(packet.clone());
+                Ok(())
+            }
+            fn do_tls_handshake(&self, _key: &Key, _auth_key: Option<&mut String>) -> bool {
+                true
+            }
+            fn close(&self) {}
+            fn reset(&self) {}
+        }
+
+        let written = Arc::new(Mutex::new(Vec::new()));
+        let cv = Arc::new(std::sync::Condvar::new());
+        let mock = Arc::new(MockBlockingConnection {
+            read_packets: Mutex::new(VecDeque::new()),
+            written_packets: written.clone(),
+            cv: cv.clone(),
+        });
+
+        let adapter = BlockingConnectionAdapter::new(mock.clone());
+        let transport = Arc::new(ATransport::new_offline(TransportType::Usb));
+        transport.set_connection_state(ConnectionState::Device);
+        let mock_socket = Arc::new(MockSocket::new(100));
+        let registry = Arc::new(adb_sockets::SocketRegistry::new());
+        *transport.registry.lock().unwrap() = Some(registry.clone());
+        registry.install(mock_socket.clone());
+
+        adapter.start(Arc::downgrade(&transport));
+
+        // Test write
+        let mut p = Apacket::default();
+        p.msg.command = adb_protocol::A_WRTE;
+        p.msg.arg0 = 200;
+        p.msg.arg1 = 100;
+        adapter.write(p);
+
+        // Give it a moment to process the write
+        std::thread::sleep(std::time::Duration::from_millis(100));
+        assert_eq!(written.lock().unwrap().len(), 1);
+        assert_eq!(written.lock().unwrap()[0].msg.command, adb_protocol::A_WRTE);
+
+        // Test read
+        let mut p2 = Apacket::default();
+        p2.msg.command = adb_protocol::A_OKAY;
+        p2.msg.arg0 = 200;
+        p2.msg.arg1 = 100;
+        p2.msg.update_magic();
+        {
+            let mut queue = mock.read_packets.lock().unwrap();
+            queue.push_back(p2);
+            cv.notify_one();
+        }
+
+        // Give it a moment to process the read
+        std::thread::sleep(std::time::Duration::from_millis(100));
+        assert!(mock_socket.readied.load(Ordering::SeqCst));
+
+        adapter.stop();
+    }
+
+    #[test]
     fn test_handle_open_delayed_ack() {
         let t = Arc::new(ATransport::new(
             TransportType::Usb,
@@ -1360,7 +1471,7 @@ mod tests {
 /// Ported from original/transport.h: `struct Connection`
 pub trait Connection: Send + Sync {
     fn write(&self, packet: Apacket) -> bool;
-    fn start(&self) -> bool;
+    fn start(&self, transport: Weak<ATransport>) -> bool;
     fn stop(&self);
     /// Performs the TLS handshake for secure ADB connections.
     ///
@@ -1393,6 +1504,116 @@ pub trait BlockingConnection: Send + Sync {
     fn reset(&self);
 }
 
+/// Ported from original/transport.h: `struct BlockingConnectionAdapter`
+pub struct BlockingConnectionAdapter {
+    underlying: Arc<dyn BlockingConnection>,
+    transport: Mutex<Weak<ATransport>>,
+    write_queue: Arc<Mutex<VecDeque<Apacket>>>,
+    cv: Arc<std::sync::Condvar>,
+    stopped: Arc<AtomicBool>,
+}
+
+impl BlockingConnectionAdapter {
+    pub fn new(underlying: Arc<dyn BlockingConnection>) -> Self {
+        Self {
+            underlying,
+            transport: Mutex::new(Weak::new()),
+            write_queue: Arc::new(Mutex::new(VecDeque::new())),
+            cv: Arc::new(std::sync::Condvar::new()),
+            stopped: Arc::new(AtomicBool::new(false)),
+        }
+    }
+}
+
+impl Connection for BlockingConnectionAdapter {
+    fn write(&self, packet: Apacket) -> bool {
+        let mut queue = self.write_queue.lock().unwrap();
+        queue.push_back(packet);
+        self.cv.notify_one();
+        true
+    }
+
+    fn start(&self, transport: Weak<ATransport>) -> bool {
+        *self.transport.lock().unwrap() = transport.clone();
+
+        let transport_read = transport.clone();
+        let underlying_read = self.underlying.clone();
+        let stopped_read = self.stopped.clone();
+        std::thread::Builder::new()
+            .name("transport read".to_string())
+            .spawn(move || {
+                while let Some(t) = transport_read.upgrade() {
+                    let t: Arc<ATransport> = t;
+                    if stopped_read.load(Ordering::SeqCst) {
+                        break;
+                    }
+                    match underlying_read.read() {
+                        Ok(packet) => {
+                            if !t.handle_read(packet) {
+                                break;
+                            }
+                        }
+                        Err(e) => {
+                            if !stopped_read.load(Ordering::SeqCst) {
+                                t.handle_error(&e.to_string());
+                            }
+                            break;
+                        }
+                    }
+                }
+            })
+            .unwrap();
+
+        let transport_write = transport.clone();
+        let underlying_write = self.underlying.clone();
+        let write_queue = self.write_queue.clone();
+        let cv = self.cv.clone();
+        let stopped_write = self.stopped.clone();
+        std::thread::Builder::new()
+            .name("transport write".to_string())
+            .spawn(move || {
+                while let Some(t) = transport_write.upgrade() {
+                    let t: Arc<ATransport> = t;
+                    let mut queue = write_queue.lock().unwrap();
+                    while !stopped_write.load(Ordering::SeqCst) && queue.is_empty() {
+                        queue = cv.wait(queue).unwrap();
+                    }
+
+                    if stopped_write.load(Ordering::SeqCst) {
+                        break;
+                    }
+
+                    if let Some(packet) = queue.pop_front() {
+                        drop(queue);
+                        if let Err(e) = underlying_write.write(&packet) {
+                            if !stopped_write.load(Ordering::SeqCst) {
+                                t.handle_error(&e.to_string());
+                            }
+                            break;
+                        }
+                    }
+                }
+            })
+            .unwrap();
+
+        true
+    }
+
+    fn stop(&self) {
+        self.stopped.store(true, Ordering::SeqCst);
+        self.cv.notify_all();
+        self.underlying.close();
+    }
+
+    fn do_tls_handshake(&self, key: &Key, auth_key: Option<&mut String>) -> bool {
+        self.underlying.do_tls_handshake(key, auth_key)
+    }
+
+    fn reset(&self) {
+        self.underlying.reset();
+    }
+}
+
 /// Ported from original/transport.h: `struct FdConnection`
 pub struct FdConnection {
     read_file: Mutex<File>,
@@ -1415,7 +1636,7 @@ impl Connection for FdConnection {
         BlockingConnection::write(self, &packet).is_ok()
     }
 
-    fn start(&self) -> bool {
+    fn start(&self, _transport: Weak<ATransport>) -> bool {
         true
     }
 
