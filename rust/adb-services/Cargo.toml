@@ -13,6 +13,8 @@ adb_io = { path = "../adb_io" }
 sysdeps = { path = "../sysdeps" }
 fdevent = { path = "../fdevent" }
 adb-socket-spec = { path = "../socket-spec" }
+adb-mdns = { path = "../adb-mdns" }
+anyhow = "1.0"
 log = "0.4.20"
 libc = "0.2"
 nix = { version = "0.27", features = ["term", "fs", "process", "net"] }
