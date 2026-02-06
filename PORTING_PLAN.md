@@ -213,7 +213,7 @@ Once the core layers are fully ported and verified, the next phase will focus on
 - **Description**: Port the listener management logic for both host and daemon.
 - **Testing**: Port `adb_listeners_test.cpp` and verify listener creation/deletion.
 
-### Step 15: File Sync Protocol
+### Step 15: File Sync Protocol [Done]
 - **Files**: `file_sync_protocol.h`
 - **Description**: Implement the full `sync:` service and the file transfer protocol.
 - **Testing**: Integration tests for `push`, `pull`, `stat`, and `list` operations.

@@ -59,7 +59,9 @@ pub mod reverse_service;
 /// Module handling JDWP services.
 pub mod jdwp_service;
 
-/// Module handling reverse forwarding services.
+/// Module handling file sync services.
+pub mod file_sync_service;
+pub mod file_sync_client;
 
 /// Creates a socket pair, starts a new thread with the provided function,
 /// and returns one end of the socket pair as an `AdbFd`.
@@ -1098,8 +1100,8 @@ pub fn daemon_service_to_fd(name: &str, transport: &Arc<ATransport>) -> Option<A
         .ok();
     }
     if name.starts_with("sync:") {
-        return create_service_thread("sync", |mut fd| {
-            let _ = send_fail(&mut fd, "sync service not implemented in Rust yet");
+        return create_service_thread("sync", |fd| {
+            file_sync_service::file_sync_service(fd);
         })
         .ok();
     }

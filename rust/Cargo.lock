@@ -57,6 +57,7 @@ name = "adb-protocol"
 version = "0.1.0"
 dependencies = [
  "adb-types",
+ "zerocopy",
 ]
 
 [[package]]
@@ -81,6 +82,8 @@ dependencies = [
  "mio 0.8.11",
  "nix",
  "sysdeps",
+ "tempfile",
+ "zerocopy",
 ]
 
 [[package]]
