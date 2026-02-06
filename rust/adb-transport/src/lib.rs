@@ -22,11 +22,13 @@
 //! - original/adb.cpp (parse_banner)
 
 use std::collections::VecDeque;
-use std::fs::File;
+
 use std::io::{Read, Write};
-use std::os::unix::io::OwnedFd;
+use std::net::TcpStream;
+use std::os::unix::io::{AsRawFd, OwnedFd};
 use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, OnceLock, Weak};
+use std::time::SystemTime;
 
 use adb_protocol::{ConnectionState, TransportType, A_VERSION_MIN, MAX_PAYLOAD};
 use adb_sockets::{Socket, Transport};
@@ -178,7 +180,6 @@ pub struct ATransport {
     pub service_creator: Mutex<Option<Box<dyn ServiceSocketCreator>>>,
 
     pub auth_keys: Mutex<VecDeque<rust_adb_crypto::Key>>,
-    pub use_tls: AtomicBool,
     pub failed_auth_attempts: AtomicUsize,
     pub auth_key: Mutex<String>,
 }
@@ -221,7 +222,6 @@ impl ATransport {
             fdevent: Mutex::new(None),
             service_creator: Mutex::new(None),
             auth_keys: Mutex::new(VecDeque::new()),
-            use_tls: AtomicBool::new(false),
             failed_auth_attempts: AtomicUsize::new(0),
             auth_key: Mutex::new(String::new()),
         }
@@ -942,11 +942,6 @@ fn handle_close(t: &Arc<ATransport>, p: &Apacket) {
     }
 }
 
-fn handle_stls(t: &Arc<ATransport>, _p: &Apacket) {
-    t.use_tls.store(true, Ordering::SeqCst);
-    log::info!(target: "transport", "TLS requested, but not yet implemented");
-}
-
 fn handle_sync(t: &Arc<ATransport>, p: &Apacket) {
     if p.msg.arg0 == 0 {
         t.kick();
@@ -1606,7 +1601,7 @@ mod tests {
         ));
         transport.set_connection(adapter.clone());
 
-        adapter.start();
+        adapter.start(Arc::downgrade(&transport));
 
         // Initiate upgrade
         handle_stls(&transport, &Apacket::default());
@@ -1703,10 +1698,11 @@ impl Connection for BlockingConnectionAdapter {
         true
     }
 
-    fn start(&self) -> bool {
+    fn start(&self, transport: Weak<ATransport>) -> bool {
+        *self.transport.lock().unwrap() = Some(transport.clone());
         let stopped = self.stopped.clone();
         let underlying = self.underlying.clone();
-        let transport_weak = self.transport.lock().unwrap().clone();
+        let transport_weak = Some(transport);
         let write_queue = self.write_queue.clone();
 
         stopped.store(false, Ordering::SeqCst);
@@ -1802,153 +1798,9 @@ impl Connection for BlockingConnectionAdapter {
         }
 
         if self.underlying.do_tls_handshake(key, auth_key) {
-            self.start();
-            return true;
-        }
-        false
-    }
-
-    fn reset(&self) {
-        self.underlying.reset();
-    }
-}
-
-/// Ported from original/transport.h: `struct BlockingConnectionAdapter`
-pub struct BlockingConnectionAdapter {
-    underlying: Arc<dyn BlockingConnection>,
-    transport: Mutex<Option<Weak<ATransport>>>,
-    read_thread: Mutex<Option<std::thread::JoinHandle<()>>>,
-    write_thread: Mutex<Option<std::thread::JoinHandle<()>>>,
-    write_queue: Arc<(Mutex<VecDeque<Apacket>>, std::sync::Condvar)>,
-    stopped: Arc<AtomicBool>,
-}
-
-impl BlockingConnectionAdapter {
-    pub fn new(underlying: Arc<dyn BlockingConnection>) -> Self {
-        Self {
-            underlying,
-            transport: Mutex::new(None),
-            read_thread: Mutex::new(None),
-            write_thread: Mutex::new(None),
-            write_queue: Arc::new((Mutex::new(VecDeque::new()), std::sync::Condvar::new())),
-            stopped: Arc::new(AtomicBool::new(false)),
-        }
-    }
-}
-
-impl Connection for BlockingConnectionAdapter {
-    fn set_transport(&self, transport: Weak<ATransport>) {
-        *self.transport.lock().unwrap() = Some(transport);
-    }
-
-    fn write(&self, packet: Apacket) -> bool {
-        let (lock, cv) = &*self.write_queue;
-        let mut queue = lock.lock().unwrap();
-        queue.push_back(packet);
-        cv.notify_one();
-        true
-    }
-
-    fn start(&self) -> bool {
-        let stopped = self.stopped.clone();
-        let underlying = self.underlying.clone();
-        let transport_weak = self.transport.lock().unwrap().clone();
-        let write_queue = self.write_queue.clone();
-
-        stopped.store(false, Ordering::SeqCst);
-
-        let mut read_thread_lock = self.read_thread.lock().unwrap();
-        let should_start_read = match &*read_thread_lock {
-            None => true,
-            Some(h) => h.is_finished(),
-        };
-
-        if should_start_read {
-            if let Some(h) = read_thread_lock.take() {
-                let _ = h.join();
+            if let Some(t_weak) = self.transport.lock().unwrap().clone() {
+                self.start(t_weak);
             }
-            let t_weak_read = transport_weak.clone();
-            let stopped_read = stopped.clone();
-            let underlying_read = underlying.clone();
-
-            *read_thread_lock = Some(std::thread::spawn(move || {
-                while !stopped_read.load(Ordering::SeqCst) {
-                    match underlying_read.read() {
-                        Ok(packet) => {
-                            let got_stls_cmd = packet.msg.command == adb_protocol::A_STLS;
-                            if let Some(t_weak) = &t_weak_read {
-                                if let Some(t) = t_weak.upgrade() {
-                                    t.handle_read(packet);
-                                }
-                            }
-                            if got_stls_cmd {
-                                break;
-                            }
-                        }
-                        Err(_) => break,
-                    }
-                }
-            }));
-        }
-
-        let mut write_thread_lock = self.write_thread.lock().unwrap();
-        let should_start_write = match &*write_thread_lock {
-            None => true,
-            Some(h) => h.is_finished(),
-        };
-
-        if should_start_write {
-            if let Some(h) = write_thread_lock.take() {
-                let _ = h.join();
-            }
-            let stopped_write = stopped;
-            let underlying_write = underlying;
-            let write_queue_write = write_queue;
-
-            *write_thread_lock = Some(std::thread::spawn(move || {
-                let (lock, cv) = &*write_queue_write;
-                while !stopped_write.load(Ordering::SeqCst) {
-                    let mut queue = match lock.lock() {
-                        Ok(q) => q,
-                        Err(_) => break,
-                    };
-                    while queue.is_empty() && !stopped_write.load(Ordering::SeqCst) {
-                        queue = match cv.wait(queue) {
-                            Ok(q) => q,
-                            Err(_) => return,
-                        };
-                    }
-                    if stopped_write.load(Ordering::SeqCst) {
-                        break;
-                    }
-                    if let Some(packet) = queue.pop_front() {
-                        drop(queue);
-                        if underlying_write.write(&packet).is_err() {
-                            break;
-                        }
-                    }
-                }
-            }));
-        }
-
-        true
-    }
-
-    fn stop(&self) {
-        self.stopped.store(true, Ordering::SeqCst);
-        let (_, cv) = &*self.write_queue;
-        cv.notify_all();
-        self.underlying.close();
-    }
-
-    fn do_tls_handshake(&self, key: &Key, auth_key: Option<&mut String>) -> bool {
-        let handle = self.read_thread.lock().unwrap().take();
-        if let Some(h) = handle {
-            let _ = h.join();
-        }
-
-        if self.underlying.do_tls_handshake(key, auth_key) {
-            self.start();
             return true;
         }
         false
@@ -1966,116 +1818,6 @@ pub trait BlockingConnection: Send + Sync {
     fn do_tls_handshake(&self, key: &Key, auth_key: Option<&mut String>) -> bool;
     fn close(&self);
     fn reset(&self);
-}
-
-/// Ported from original/transport.h: `struct BlockingConnectionAdapter`
-pub struct BlockingConnectionAdapter {
-    underlying: Arc<dyn BlockingConnection>,
-    transport: Mutex<Weak<ATransport>>,
-    write_queue: Arc<Mutex<VecDeque<Apacket>>>,
-    cv: Arc<std::sync::Condvar>,
-    stopped: Arc<AtomicBool>,
-}
-
-impl BlockingConnectionAdapter {
-    pub fn new(underlying: Arc<dyn BlockingConnection>) -> Self {
-        Self {
-            underlying,
-            transport: Mutex::new(Weak::new()),
-            write_queue: Arc::new(Mutex::new(VecDeque::new())),
-            cv: Arc::new(std::sync::Condvar::new()),
-            stopped: Arc::new(AtomicBool::new(false)),
-        }
-    }
-}
-
-impl Connection for BlockingConnectionAdapter {
-    fn write(&self, packet: Apacket) -> bool {
-        let mut queue = self.write_queue.lock().unwrap();
-        queue.push_back(packet);
-        self.cv.notify_one();
-        true
-    }
-
-    fn start(&self, transport: Weak<ATransport>) -> bool {
-        *self.transport.lock().unwrap() = transport.clone();
-
-        let transport_read = transport.clone();
-        let underlying_read = self.underlying.clone();
-        let stopped_read = self.stopped.clone();
-        std::thread::Builder::new()
-            .name("transport read".to_string())
-            .spawn(move || {
-                while let Some(t) = transport_read.upgrade() {
-                    let t: Arc<ATransport> = t;
-                    if stopped_read.load(Ordering::SeqCst) {
-                        break;
-                    }
-                    match underlying_read.read() {
-                        Ok(packet) => {
-                            if !t.handle_read(packet) {
-                                break;
-                            }
-                        }
-                        Err(e) => {
-                            if !stopped_read.load(Ordering::SeqCst) {
-                                t.handle_error(&e.to_string());
-                            }
-                            break;
-                        }
-                    }
-                }
-            })
-            .unwrap();
-
-        let transport_write = transport.clone();
-        let underlying_write = self.underlying.clone();
-        let write_queue = self.write_queue.clone();
-        let cv = self.cv.clone();
-        let stopped_write = self.stopped.clone();
-        std::thread::Builder::new()
-            .name("transport write".to_string())
-            .spawn(move || {
-                while let Some(t) = transport_write.upgrade() {
-                    let t: Arc<ATransport> = t;
-                    let mut queue = write_queue.lock().unwrap();
-                    while !stopped_write.load(Ordering::SeqCst) && queue.is_empty() {
-                        queue = cv.wait(queue).unwrap();
-                    }
-
-                    if stopped_write.load(Ordering::SeqCst) {
-                        break;
-                    }
-
-                    if let Some(packet) = queue.pop_front() {
-                        drop(queue);
-                        if let Err(e) = underlying_write.write(&packet) {
-                            if !stopped_write.load(Ordering::SeqCst) {
-                                t.handle_error(&e.to_string());
-                            }
-                            break;
-                        }
-                    }
-                }
-            })
-            .unwrap();
-
-        true
-    }
-
-    fn stop(&self) {
-        self.stopped.store(true, Ordering::SeqCst);
-        self.cv.notify_all();
-        self.underlying.close();
-    }
-
-    fn do_tls_handshake(&self, key: &Key, auth_key: Option<&mut String>) -> bool {
-        self.underlying.do_tls_handshake(key, auth_key)
-    }
-
-    fn reset(&self) {
-        self.underlying.reset();
-    }
 }
 
 /// Ported from original/transport.h: `struct FdConnection`
@@ -2231,28 +1973,8 @@ impl FdConnection {
 }
 
 impl Connection for FdConnection {
-    fn write(&self, packet: Apacket) -> bool {
-        BlockingConnection::write(self, &packet).is_ok()
-    }
+    fn set_transport(&self, _transport: Weak<ATransport>) {}
 
-    fn start(&self, _transport: Weak<ATransport>) -> bool {
-        true
-    }
-
-    fn stop(&self) {
-        self.close();
-    }
-
-    fn do_tls_handshake(&self, key: &Key, auth_key: Option<&mut String>) -> bool {
-        BlockingConnection::do_tls_handshake(self, key, auth_key)
-    }
-
-    fn reset(&self) {
-        BlockingConnection::reset(self);
-    }
-}
-
-impl Connection for FdConnection {
     fn write(&self, packet: Apacket) -> bool {
         BlockingConnection::write(self, &packet).is_ok()
     }
@@ -2309,13 +2031,12 @@ impl BlockingConnection for FdConnection {
     }
 
     fn write(&self, packet: &Apacket) -> std::io::Result<()> {
-        let mut file = self.write_file.lock().unwrap();
         // SAFETY: Amessage is repr(C).
         let header_bytes: [u8; std::mem::size_of::<Amessage>()] =
             unsafe { std::mem::transmute(packet.msg) };
-        file.write_all(&header_bytes)?;
+        (&self.file).write_all(&header_bytes)?;
         if !packet.payload.is_empty() {
-            file.write_all(packet.payload.get_ref())?;
+            (&self.file).write_all(packet.payload.get_ref())?;
         }
         Ok(())
     }

@@ -878,14 +878,13 @@ fn open_pty() -> std::io::Result<(OwnedFd, OwnedFd)> {
             return Err(err);
         }
 
-        let mut buf = [0u8; 1024];
-        if libc::ptsname_r(master_fd, buf.as_mut_ptr() as *mut libc::c_char, buf.len()) != 0 {
+        let pts_ptr = libc::ptsname(master_fd);
+        if pts_ptr.is_null() {
             let err = std::io::Error::last_os_error();
             libc::close(master_fd);
             return Err(err);
         }
-
-        let pts_name = std::ffi::CStr::from_ptr(buf.as_ptr() as *const libc::c_char);
+        let pts_name = std::ffi::CStr::from_ptr(pts_ptr);
         let slave_fd = libc::open(pts_name.as_ptr(), libc::O_RDWR | libc::O_NOCTTY);
         if slave_fd < 0 {
             let err = std::io::Error::last_os_error();
@@ -1057,57 +1056,55 @@ pub fn shell_service(adb_fd: OwnedFd, args: &str) {
             if pfds[0].revents & libc::POLLIN != 0 {
                 if is_v2 {
                     match shell_read.read(&mut adb_file) {
-                        Ok(true) => {
-                            match shell_read.id {
-                                ShellId::Stdin => {
-                                    let write_file = if is_pty {
-                                        sub_stdout_file.as_mut()
-                                    } else {
-                                        sub_stdin_file.as_mut()
-                                    };
-                                    if let Some(f) = write_file {
-                                        let _ = f.write_all(&shell_read.data);
-                                    }
+                        Ok(true) => match shell_read.id {
+                            ShellId::Stdin => {
+                                let write_file = if is_pty {
+                                    sub_stdout_file.as_mut()
+                                } else {
+                                    sub_stdin_file.as_mut()
+                                };
+                                if let Some(f) = write_file {
+                                    let _ = f.write_all(&shell_read.data);
                                 }
-                                ShellId::WindowSizeChange => {
-                                    if is_pty {
-                                        if let Some(ref f) = sub_stdout_file {
-                                            let s = String::from_utf8_lossy(&shell_read.data);
-                                            if let Some((rows_cols, pixels)) = s.split_once(',') {
-                                                if let (Some((rows, cols)), Some((xpix, ypix))) =
-                                                    (rows_cols.split_once('x'), pixels.split_once('x'))
-                                                {
-                                                    if let (Ok(r), Ok(c), Ok(xp), Ok(yp)) = (
-                                                        rows.parse::<u16>(),
-                                                        cols.parse::<u16>(),
-                                                        xpix.parse::<u16>(),
-                                                        ypix.parse::<u16>(),
-                                                    ) {
-                                                        let ws = libc::winsize {
-                                                            ws_row: r,
-                                                            ws_col: c,
-                                                            ws_xpixel: xp,
-                                                            ws_ypixel: yp,
-                                                        };
-                                                        unsafe {
-                                                            libc::ioctl(
-                                                                f.as_raw_fd(),
-                                                                libc::TIOCSWINSZ,
-                                                                &ws,
-                                                            );
-                                                        }
+                            }
+                            ShellId::WindowSizeChange => {
+                                if is_pty {
+                                    if let Some(ref f) = sub_stdout_file {
+                                        let s = String::from_utf8_lossy(&shell_read.data);
+                                        if let Some((rows_cols, pixels)) = s.split_once(',') {
+                                            if let (Some((rows, cols)), Some((xpix, ypix))) =
+                                                (rows_cols.split_once('x'), pixels.split_once('x'))
+                                            {
+                                                if let (Ok(r), Ok(c), Ok(xp), Ok(yp)) = (
+                                                    rows.parse::<u16>(),
+                                                    cols.parse::<u16>(),
+                                                    xpix.parse::<u16>(),
+                                                    ypix.parse::<u16>(),
+                                                ) {
+                                                    let ws = libc::winsize {
+                                                        ws_row: r,
+                                                        ws_col: c,
+                                                        ws_xpixel: xp,
+                                                        ws_ypixel: yp,
+                                                    };
+                                                    unsafe {
+                                                        libc::ioctl(
+                                                            f.as_raw_fd(),
+                                                            libc::TIOCSWINSZ,
+                                                            &ws,
+                                                        );
                                                     }
                                                 }
                                             }
                                         }
                                     }
                                 }
-                                ShellId::CloseStdin => {
-                                    sub_stdin_file.take();
-                                }
-                                _ => {}
                             }
-                        }
+                            ShellId::CloseStdin => {
+                                sub_stdin_file.take();
+                            }
+                            _ => {}
+                        },
                         _ => {
                             let _ = child.kill();
                             break;
@@ -1140,8 +1137,12 @@ pub fn shell_service(adb_fd: OwnedFd, args: &str) {
                     match f.read(&mut buf) {
                         Ok(n) if n > 0 => {
                             if is_v2 {
-                                ShellProtocol::write_packet(&mut adb_file, ShellId::Stdout, &buf[..n])
-                                    .unwrap();
+                                ShellProtocol::write_packet(
+                                    &mut adb_file,
+                                    ShellId::Stdout,
+                                    &buf[..n],
+                                )
+                                .unwrap();
                             } else {
                                 adb_file.write_all(&buf[..n]).unwrap();
                             }
@@ -1160,8 +1161,12 @@ pub fn shell_service(adb_fd: OwnedFd, args: &str) {
                     match f.read(&mut buf) {
                         Ok(n) if n > 0 => {
                             if is_v2 {
-                                ShellProtocol::write_packet(&mut adb_file, ShellId::Stderr, &buf[..n])
-                                    .unwrap();
+                                ShellProtocol::write_packet(
+                                    &mut adb_file,
+                                    ShellId::Stderr,
+                                    &buf[..n],
+                                )
+                                .unwrap();
                             } else {
                                 adb_file.write_all(&buf[..n]).unwrap();
                             }
@@ -1179,10 +1184,13 @@ pub fn shell_service(adb_fd: OwnedFd, args: &str) {
 
         match child.try_wait() {
             Ok(Some(status)) => {
-                let exit_code =
-                    status.code().unwrap_or(if status.success() { 0 } else { 1 }) as u8;
+                let exit_code = status
+                    .code()
+                    .unwrap_or(if status.success() { 0 } else { 1 })
+                    as u8;
                 if is_v2 {
-                    ShellProtocol::write_packet(&mut adb_file, ShellId::Exit, &[exit_code]).unwrap();
+                    ShellProtocol::write_packet(&mut adb_file, ShellId::Exit, &[exit_code])
+                        .unwrap();
                 }
                 break;
             }
