@@ -21,10 +21,15 @@ use adb_protocol::{A_CLSE, A_OKAY, A_OPEN, A_WRTE, INITIAL_DELAYED_ACK_BYTES, MA
 use adb_types::{Apacket, Block, IoVector};
 use bytes::Bytes;
 use fdevent::fdevent::{Fdevent, FdeventHandle, FdeventHandler};
-use mio::{event::Event, unix::SourceFd, Interest, Token};
+#[cfg(unix)]
+use mio::unix::SourceFd;
+use mio::{event::Event, Interest, Token};
 use std::collections::HashMap;
+use std::io::{Read, Write};
+#[cfg(unix)]
 use std::os::unix::io::{AsRawFd, OwnedFd, RawFd};
 use std::sync::{Arc, Mutex, Weak};
+use sysdeps::AdbFd;
 
 /// Trait representing a generic socket in the ADB system.
 /// This mirrors the `asocket` struct functionality in `original/socket.h`.
@@ -269,8 +274,6 @@ pub fn connect_to_remote(socket: &LocalSocket, destination: &str) {
             p.msg.arg1 = INITIAL_DELAYED_ACK_BYTES as u32;
         }
 
-        // adbd used to expect a null-terminated string.
-        // Keep doing so to maintain backward compatibility.
         let mut payload = destination.as_bytes().to_vec();
         payload.push(0);
         p.msg.data_length = payload.len() as u32;
@@ -383,7 +386,6 @@ enum FlushResult {
 
 impl LocalSocketInner {
     /// Updates the `mio` registration with new interests.
-    /// This handles transitions between None (deregister) and Some (register/reregister).
     fn update_interests(&mut self, new_interests: Option<Interest>) {
         if self.current_interests == new_interests {
             return;
@@ -394,24 +396,31 @@ impl LocalSocketInner {
             None => return,
         };
 
-        let mut source = SourceFd(&fd);
-        match (self.current_interests, new_interests) {
-            (Some(_), Some(new)) => {
-                self.mio_registry
-                    .reregister(&mut source, self.token, new)
-                    .ok();
+        #[cfg(unix)]
+        {
+            let mut source = SourceFd(&fd);
+            match (self.current_interests, new_interests) {
+                (Some(_), Some(new)) => {
+                    self.mio_registry
+                        .reregister(&mut source, self.token, new)
+                        .ok();
+                }
+                (Some(_), None) => {
+                    self.mio_registry.deregister(&mut source).ok();
+                }
+                (None, Some(new)) => {
+                    self.mio_registry
+                        .register(&mut source, self.token, new)
+                        .ok();
+                }
+                (None, None) => {}
             }
-            (Some(_), None) => {
-                self.mio_registry.deregister(&mut source).ok();
-            }
-            (None, Some(new)) => {
-                self.mio_registry
-                    .register(&mut source, self.token, new)
-                    .ok();
-            }
-            (None, None) => {}
         }
         self.current_interests = new_interests;
+        let token = self.token;
+        self.fdevent_handle.run_on_looper(move |fdevent| {
+            let _ = fdevent.set_interests(token, new_interests);
+        });
     }
 
     /// Adds an interest to the current set.
@@ -459,12 +468,13 @@ impl LocalSocketInner {
         };
         if !self.packet_queue.is_empty() {
             let data = self.packet_queue.coalesce();
+            #[cfg(unix)]
             match nix::unistd::write(fd, &data) {
                 Ok(n) => {
                     bytes_flushed = n as u32;
                     self.packet_queue.drop_front(n);
                 }
-                Err(e) if e == nix::errno::Errno::EAGAIN => {
+                Err(e) if e == nix::errno::Errno::EWOULDBLOCK || e == nix::errno::Errno::EAGAIN => {
                     // fd full
                 }
                 Err(_) => {
@@ -477,10 +487,8 @@ impl LocalSocketInner {
             if let Some(peer) = peer.upgrade() {
                 if self.available_send_bytes.is_some() {
                     transport.send_ready(self.id, peer.id(), bytes_flushed);
-                } else {
-                    if bytes_flushed != 0 && self.packet_queue.size() < MAX_PAYLOAD {
-                        transport.send_ready(self.id, peer.id(), 0);
-                    }
+                } else if bytes_flushed != 0 && self.packet_queue.size() < MAX_PAYLOAD {
+                    transport.send_ready(self.id, peer.id(), 0);
                 }
             }
         }
@@ -532,12 +540,20 @@ impl FdeventHandler for LocalSocket {
                     Some(f) => f.as_raw_fd(),
                     None => return,
                 };
+                #[cfg(unix)]
                 match nix::unistd::read(fd, &mut inner.read_buffer) {
                     Ok(0) => (None, true),
                     Ok(n) => (Some(Bytes::copy_from_slice(&inner.read_buffer[..n])), false),
-                    Err(e) if e == nix::errno::Errno::EAGAIN => (None, false),
+                    Err(e)
+                        if e == nix::errno::Errno::EWOULDBLOCK
+                            || e == nix::errno::Errno::EAGAIN =>
+                    {
+                        (None, false)
+                    }
                     Err(_) => (None, true),
                 }
+                #[cfg(not(unix))]
+                (None, false)
             };
 
             if let Some(bytes) = bytes_to_enqueue {
@@ -559,6 +575,9 @@ impl FdeventHandler for LocalSocket {
             }
             if is_eof {
                 fdevent.unregister(self.inner.lock().unwrap().token).ok();
+                // If the peer closed, we might be unable to write anymore.
+                // Try flushing to trigger a write error if applicable.
+                self.inner.lock().unwrap().flush_incoming();
                 self.close();
             }
         }
@@ -609,8 +628,7 @@ impl Socket for RemoteSocket {
         }
         p.msg.arg1 = self.id;
         p.msg.data_length = data.len() as u32;
-        // Use Bytes directly to avoid extra copy.
-        p.payload = Block(std::io::Cursor::new(data.to_vec())); // Block requires Cursor<Vec<u8>> currently.
+        p.payload = Block(std::io::Cursor::new(data.to_vec()));
         inner.transport.send_packet(p);
         1
     }
