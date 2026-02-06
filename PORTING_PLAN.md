@@ -147,10 +147,13 @@ Each step involves porting 1-2 files and implementing a corresponding testing st
 - **Files**: `services.h`, `services.cpp`
 - **Description**: Port the high-level service handling (e.g., `shell`, `push`, `pull`).
 - **Testing**:
-    - Full integration tests using `test/tests/integration_test.rs`.
+    - Full integration tests using `test/client-server-test/tests/integration_test.rs`.
+    - Unit tests for `device_tracker` and `shell_service` argument parsing.
     - Compare service responses between Rust and C++ implementations.
 - **Notes**:
     - Implemented `DeviceTracker`, `ReverseService`, `SmartSocket` dispatching, and improved `ShellService`.
+    - Implemented Shell V2 protocol (multiplexing stdout/stderr/exit status) and PTY support.
+    - Implemented Reverse Forwarding (forward, killforward, list-forward).
     - **Remaining Gaps**:
         - `connect_emulator` and `connect_device` (stubbed).
         - `adb_wifi_pair_device` (stubbed).

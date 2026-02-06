@@ -17,6 +17,9 @@
 pub mod packet_reader;
 pub use packet_reader::{APacketReader, AddError};
 
+pub mod shell_protocol;
+pub use shell_protocol::{ShellId, ShellProtocol};
+
 pub const MAX_PAYLOAD_V1: usize = 4 * 1024;
 pub const MAX_PAYLOAD: usize = 1024 * 1024;
 pub const INITIAL_DELAYED_ACK_BYTES: usize = 32 * 1024 * 1024;
@@ -29,6 +32,8 @@ pub const A_CLSE: u32 = 0x45534c43;
 pub const A_WRTE: u32 = 0x45545257;
 pub const A_AUTH: u32 = 0x48545541;
 pub const A_STLS: u32 = 0x534c5453;
+
+pub const A_STLS_VERSION: u32 = 1;
 
 pub const A_VERSION_MIN: u32 = 0x01000000;
 pub const A_VERSION_SKIP_CHECKSUM: u32 = 0x01000001;

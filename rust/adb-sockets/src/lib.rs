@@ -20,7 +20,7 @@
 use adb_protocol::{A_CLSE, A_OKAY, A_OPEN, A_WRTE, INITIAL_DELAYED_ACK_BYTES, MAX_PAYLOAD};
 use adb_types::{Apacket, Block, IoVector};
 use bytes::Bytes;
-use fdevent::fdevent::{Fdevent, FdeventHandler, FdeventHandle};
+use fdevent::fdevent::{Fdevent, FdeventHandle, FdeventHandler};
 use mio::{event::Event, unix::SourceFd, Interest, Token};
 use std::collections::HashMap;
 use std::os::unix::io::{AsRawFd, OwnedFd, RawFd};
@@ -688,7 +688,14 @@ pub fn create_local_socket(
 
     let fd_arc = Arc::new(fd);
 
-    let socket = LocalSocket::new(id, fd_arc.clone(), registry.clone(), mio_registry, fdevent_handle, Token(0));
+    let socket = LocalSocket::new(
+        id,
+        fd_arc.clone(),
+        registry.clone(),
+        mio_registry,
+        fdevent_handle,
+        Token(0),
+    );
     let socket_arc = Arc::new(socket.clone());
 
     let token = fdevent
