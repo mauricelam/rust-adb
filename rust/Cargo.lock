@@ -54,6 +54,7 @@ name = "adb-socket-spec"
 version = "0.1.0"
 dependencies = [
  "libc",
+ "sysdeps",
  "tempfile",
  "thiserror",
 ]
@@ -72,6 +73,7 @@ dependencies = [
  "log",
  "mio",
  "nix",
+ "sysdeps",
  "tempfile",
  "thiserror",
 ]
@@ -375,8 +377,10 @@ dependencies = [
  "libc",
  "log",
  "mio",
+ "sysdeps",
  "tempfile",
  "thiserror",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]

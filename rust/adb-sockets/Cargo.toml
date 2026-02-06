@@ -8,12 +8,13 @@ adb-protocol = { path = "../adb-protocol" }
 adb-types = { path = "../adb-types" }
 fdevent = { path = "../fdevent" }
 adb_io = { path = "../adb_io" }
+sysdeps = { path = "../sysdeps" }
 anyhow = "1.0.75"
 thiserror = "1.0.44"
 bytes = "1"
 log = "0.4.20"
 mio = { version = "0.8.11", features = ["os-poll", "net", "os-ext"] }
-nix = { version = "0.27", features = ["net", "fs", "uio"] }
+nix = { version = "0.27.1", features = ["fs", "socket"] }
 
 [dev-dependencies]
 env_logger = "0.10.0"

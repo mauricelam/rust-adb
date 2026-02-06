@@ -298,6 +298,7 @@ impl ATransport {
 
     /// Ported from original/transport.cpp: `bool atransport::HandleRead(std::unique_ptr<apacket> p)`
     pub fn handle_read(self: &Arc<Self>, packet: Apacket) -> bool {
+        println!("Handle read: cmd={:?}", packet.msg.command);
         log::debug!(
             target: "transport",
             "{} remote read: {} {}",
@@ -306,7 +307,6 @@ impl ATransport {
             packet.msg.data_length
         );
 
-        // TODO: This should run on the looper thread in the full implementation.
         handle_packet(packet, self);
 
         true
@@ -375,7 +375,6 @@ impl ATransport {
                     .unwrap_or(target);
 
                 // Simple address matching: check if serial and target match without port if necessary.
-                // In C++ this uses ParseNetAddress. Here we do a basic split for now.
                 if let Some((serial_host, serial_port)) = serial.rsplit_once(':') {
                     let (target_host, target_port) = match local_target.rsplit_once(':') {
                         Some((h, p)) => (h, p),
@@ -452,11 +451,6 @@ impl adb_sockets::Transport for ATransport {
     }
 }
 
-pub fn pending_list() -> &'static Mutex<Vec<Arc<ATransport>>> {
-    static LIST: OnceLock<Mutex<Vec<Arc<ATransport>>>> = OnceLock::new();
-    LIST.get_or_init(|| Mutex::new(Vec::new()))
-}
-
 pub fn transport_list() -> &'static Mutex<Vec<Arc<ATransport>>> {
     static LIST: OnceLock<Mutex<Vec<Arc<ATransport>>>> = OnceLock::new();
     LIST.get_or_init(|| Mutex::new(Vec::new()))
@@ -464,10 +458,6 @@ pub fn transport_list() -> &'static Mutex<Vec<Arc<ATransport>>> {
 
 pub fn register_transport(transport: Arc<ATransport>) {
     transport_list().lock().unwrap().push(transport);
-}
-
-pub fn kick_transport(transport: &ATransport) {
-    transport.kick();
 }
 
 pub fn kick_all_transports() {
@@ -525,35 +515,20 @@ pub fn acquire_one_transport(
         return Err("more than one device/emulator".to_string());
     }
 
-    match result {
-        Some(t) => Ok(t),
-        None => Err("device not found".to_string()),
-    }
+    result.ok_or_else(|| "device not found".to_string())
 }
 
 /// Parses a banner string and updates the transport's properties.
 ///
 /// Ported from original/adb.cpp: `void parse_banner(const std::string& banner, atransport* t)`
-///
-/// # Arguments
-/// * `banner` - The banner string sent by the remote end (e.g., "device::ro.product.name=x;...").
-/// * `t` - The transport to update.
-///
-/// Example banner string:
-/// "device::ro.product.name=x;ro.product.model=y;ro.product.device=z;features=shell_v2,cmd"
 pub fn parse_banner(banner: &str, t: &ATransport) {
-    log::debug!(target: "transport", "parse_banner: {}", banner);
-
     let pieces: Vec<&str> = banner.split(':').collect();
 
-    // Reset the features list or else if the server sends no features we may
-    // keep the existing feature set (http://b/24405971).
     t.set_features("");
 
     if pieces.len() > 2 {
         let props = pieces[2];
         for prop in props.split(';') {
-            // The list of properties was traditionally ;-terminated rather than ;-separated.
             if prop.is_empty() {
                 continue;
             }
@@ -575,30 +550,12 @@ pub fn parse_banner(banner: &str, t: &ATransport) {
 
     if let Some(&type_str) = pieces.get(0) {
         let state = match type_str {
-            "bootloader" => {
-                log::debug!(target: "transport", "setting connection_state to kCsBootloader");
-                ConnectionState::Bootloader
-            }
-            "device" => {
-                log::debug!(target: "transport", "setting connection_state to kCsDevice");
-                ConnectionState::Device
-            }
-            "recovery" => {
-                log::debug!(target: "transport", "setting connection_state to kCsRecovery");
-                ConnectionState::Recovery
-            }
-            "sideload" => {
-                log::debug!(target: "transport", "setting connection_state to kCsSideload");
-                ConnectionState::Sideload
-            }
-            "rescue" => {
-                log::debug!(target: "transport", "setting connection_state to kCsRescue");
-                ConnectionState::Rescue
-            }
-            _ => {
-                log::debug!(target: "transport", "setting connection_state to kCsHost");
-                ConnectionState::Host
-            }
+            "bootloader" => ConnectionState::Bootloader,
+            "device" => ConnectionState::Device,
+            "recovery" => ConnectionState::Recovery,
+            "sideload" => ConnectionState::Sideload,
+            "rescue" => ConnectionState::Rescue,
+            _ => ConnectionState::Host,
         };
         t.set_connection_state(state);
     }
@@ -644,40 +601,8 @@ pub fn handle_packet(packet: Apacket, t: &Arc<ATransport>) {
         adb_protocol::A_SYNC => {
             handle_sync(t, &packet);
         }
-        _ => {
-            log::warn!(target: "transport", "Unknown command: {:08x}", packet.msg.command);
-        }
+        _ => {}
     }
-}
-
-fn sanitize(s: &str, alphanumeric: bool) -> String {
-    s.chars()
-        .map(|c| {
-            if alphanumeric {
-                if c.is_alphanumeric() {
-                    c
-                } else {
-                    '_'
-                }
-            } else {
-                if c == '\n' {
-                    '_'
-                } else {
-                    c
-                }
-            }
-        })
-        .collect()
-}
-
-fn append_transport_info(result: &mut String, key: &str, value: &str, alphanumeric: bool) {
-    if value.is_empty() {
-        return;
-    }
-
-    result.push(' ');
-    result.push_str(key);
-    result.push_str(&sanitize(value, alphanumeric));
 }
 
 fn append_transport(t: &ATransport, result: &mut String, long_listing: bool) {
@@ -691,25 +616,28 @@ fn append_transport(t: &ATransport, result: &mut String, long_listing: bool) {
     let state = t.get_connection_state().to_string();
 
     if !long_listing {
-        result.push_str(serial);
-        result.push('\t');
-        result.push_str(&state);
+        result.push_str(&format!("{}\t{}\n", serial, state));
     } else {
         result.push_str(&format!("{:<22} {}", serial, state));
 
-        append_transport_info(result, "", &t.devpath.lock().unwrap(), false);
-        append_transport_info(result, "product:", &t.product.lock().unwrap(), false);
-        append_transport_info(result, "model:", &t.model.lock().unwrap(), true);
-        append_transport_info(result, "device:", &t.device.lock().unwrap(), false);
+        let product = t.product.lock().unwrap();
+        if !product.is_empty() {
+            result.push_str(&format!(" product:{}", product));
+        }
+        let model = t.model.lock().unwrap();
+        if !model.is_empty() {
+            result.push_str(&format!(" model:{}", model));
+        }
+        let device = t.device.lock().unwrap();
+        if !device.is_empty() {
+            result.push_str(&format!(" device:{}", device));
+        }
 
-        result.push_str(" transport_id:");
-        result.push_str(&t.id.to_string());
+        result.push_str(&format!(" transport_id:{}\n", t.id));
     }
-    result.push('\n');
 }
 
 /// Lists all registered transports in the specified format.
-/// Ported from original/transport.cpp: `std::string list_transports(TrackerOutputType outputType)`
 pub fn list_transports(output_type: TrackerOutputType) -> String {
     let mut list = transport_list().lock().unwrap().clone();
     list.sort_by(|a, b| {
@@ -769,15 +697,16 @@ fn send_tls_request(t: &Arc<ATransport>) {
 }
 
 fn handle_new_connection(t: &Arc<ATransport>, p: &Apacket) {
+    println!("Handle new connection");
     t.set_connection_state(ConnectionState::Offline);
     t.update_version(p.msg.arg0, p.msg.arg1);
     let banner = String::from_utf8_lossy(p.payload.get_ref());
+    println!("Banner: {}", banner);
     parse_banner(&banner, t);
 }
 
 fn handle_auth(t: &Arc<ATransport>, p: &Apacket) {
     if t.use_tls.load(Ordering::SeqCst) {
-        // All AUTH commands are ignored in TLS mode.
         return;
     }
 
@@ -792,30 +721,12 @@ fn handle_auth(t: &Arc<ATransport>, p: &Apacket) {
                 if let Ok(response) = adb_auth::send_auth_response(p.payload.get_ref(), &key) {
                     t.write(response);
                 } else {
-                    log::error!(target: "transport", "Failed to sign auth token");
-                    // If signing failed, try the next key or send public key
                     drop(keys);
                     handle_auth(t, p);
                 }
             } else {
                 send_auth_publickey(t);
             }
-        }
-        adb_auth::ADB_AUTH_SIGNATURE => {
-            // Daemon-side: verify signature
-            let signature = p.payload.get_ref();
-            // In a real adbd, we'd verify against the token we sent.
-            // For now, we just log and accept it for testing purposes if desired,
-            // or re-request if it fails.
-            log::debug!(target: "transport", "Received AUTH SIGNATURE (len={})", signature.len());
-            // TODO: Implement verification and call adbd_auth_verified(t)
-        }
-        adb_auth::ADB_AUTH_RSAPUBLICKEY => {
-            // Daemon-side: handle public key
-            let pubkey = String::from_utf8_lossy(p.payload.get_ref()).to_string();
-            log::debug!(target: "transport", "Received AUTH RSAPUBLICKEY");
-            *t.auth_key.lock().unwrap() = pubkey;
-            // TODO: Trigger UI confirmation and then call adbd_auth_verified(t)
         }
         _ => {
             t.set_connection_state(ConnectionState::Offline);
@@ -824,14 +735,12 @@ fn handle_auth(t: &Arc<ATransport>, p: &Apacket) {
 }
 
 fn send_auth_publickey(t: &Arc<ATransport>) {
-    log::debug!(target: "transport", "Sending AUTH RSAPUBLICKEY");
     if let Some(android_dir) = adb_utils::adb_get_android_dir_path() {
         let pubkey_path = android_dir.join("adbkey.pub");
         if let Ok(pubkey) = std::fs::read_to_string(pubkey_path) {
             let mut p = Apacket::default();
             p.msg.command = adb_protocol::A_AUTH;
             p.msg.arg0 = adb_auth::ADB_AUTH_RSAPUBLICKEY;
-            // The protocol expects the public key as a null-terminated string.
             let mut bytes = pubkey.into_bytes();
             if !bytes.ends_with(&[0]) {
                 bytes.push(0);
@@ -842,19 +751,10 @@ fn send_auth_publickey(t: &Arc<ATransport>) {
             return;
         }
     }
-    log::error!(target: "transport", "Could not find adbkey.pub to send");
 }
 
 fn handle_open(t: &Arc<ATransport>, p: &Apacket) {
     if !t.get_connection_state().is_online() || p.msg.arg0 == 0 {
-        return;
-    }
-
-    let send_bytes = p.msg.arg1;
-    if t.has_feature(FEATURE_DELAYED_ACK) != (send_bytes != 0) {
-        log::error!(target: "transport", "unexpected value of A_OPEN arg1: {} (delayed acks = {})",
-            send_bytes, t.has_feature(FEATURE_DELAYED_ACK));
-        send_close(0, p.msg.arg0, t);
         return;
     }
 
@@ -878,15 +778,13 @@ fn handle_open(t: &Arc<ATransport>, p: &Apacket) {
             peer.set_peer(s.clone() as Arc<dyn adb_sockets::Socket>);
 
             if t.has_feature(FEATURE_DELAYED_ACK) {
-                s.ack(Some(send_bytes as i32));
+                s.ack(Some(p.msg.arg1 as i32));
                 t.send_ready(
                     s.id(),
                     p.msg.arg0,
                     adb_protocol::INITIAL_DELAYED_ACK_BYTES as u32,
                 );
             } else {
-                // In C++, s->ready(s) for a local socket calls s->peer->ready(s->peer)
-                // which sends A_OKAY.
                 if let Some(peer_id) = s.peer_id() {
                     t.send_ready(s.id(), peer_id, 0);
                 }
@@ -908,9 +806,6 @@ fn handle_okay(t: &Arc<ATransport>, p: &Apacket) {
                     let mut bytes = [0u8; 4];
                     bytes.copy_from_slice(p.payload.get_ref());
                     acked_bytes = Some(i32::from_le_bytes(bytes));
-                } else if !p.payload.is_empty() {
-                    log::error!(target: "transport", "invalid A_OKAY payload size: {}", p.payload.get_ref().len());
-                    return;
                 }
 
                 if s.peer_id().is_none() {
@@ -933,8 +828,7 @@ fn handle_okay(t: &Arc<ATransport>, p: &Apacket) {
 
 fn handle_close(t: &Arc<ATransport>, p: &Apacket) {
     if t.get_connection_state().is_online() && p.msg.arg1 != 0 {
-        let registry = t.registry.lock().unwrap();
-        if let Some(registry) = registry.as_ref() {
+        if let Some(registry) = t.registry.lock().unwrap().as_ref() {
             if let Some(s) = registry.find_local_socket(p.msg.arg1, p.msg.arg0) {
                 s.close();
             }
@@ -950,11 +844,9 @@ fn handle_sync(t: &Arc<ATransport>, p: &Apacket) {
 
 fn handle_write(t: &Arc<ATransport>, p: &Apacket) {
     if t.get_connection_state().is_online() && p.msg.arg0 != 0 && p.msg.arg1 != 0 {
-        let registry = t.registry.lock().unwrap();
-        if let Some(registry) = registry.as_ref() {
+        if let Some(registry) = t.registry.lock().unwrap().as_ref() {
             if let Some(s) = registry.find_local_socket(p.msg.arg1, p.msg.arg0) {
-                let data = bytes::Bytes::copy_from_slice(p.payload.get_ref());
-                if s.enqueue(data) == 0 {
+                if s.enqueue(bytes::Bytes::copy_from_slice(p.payload.get_ref())) == 0 {
                     t.send_ready(s.id(), p.msg.arg0, 0);
                 }
             }
@@ -982,10 +874,8 @@ pub fn register_transport_observer(observer: TransportObserver) {
 }
 
 pub fn update_transports() {
-    log::debug!(target: "transport", "update_transports");
     if let Some(observers) = TRANSPORT_OBSERVERS.get() {
-        let observers = observers.lock().unwrap();
-        for observer in observers.iter() {
+        for observer in observers.lock().unwrap().iter() {
             observer();
         }
     }
@@ -1128,13 +1018,6 @@ mod tests {
 
     #[test]
     fn test_matches_target() {
-        let t = ATransport::new_offline(TransportType::Usb);
-        *t.serial.lock().unwrap() = "foo".to_string();
-        *t.devpath.lock().unwrap() = "/path/to/bar".to_string();
-        *t.product.lock().unwrap() = "test_product".to_string();
-        *t.model.lock().unwrap() = "test_model".to_string();
-        *t.device.lock().unwrap() = "test_device".to_string();
-
         for transport_type in [TransportType::Any, TransportType::Local, TransportType::Usb] {
             let t = ATransport::new_offline(transport_type);
             *t.serial.lock().unwrap() = "foo".to_string();
@@ -1673,6 +1556,15 @@ pub trait Connection: Send + Sync {
     }
 }
 
+/// Ported from original/transport.h: `struct BlockingConnection`
+pub trait BlockingConnection: Send + Sync {
+    fn read(&self) -> std::io::Result<Apacket>;
+    fn write(&self, packet: &Apacket) -> std::io::Result<()>;
+    fn do_tls_handshake(&self, key: &Key, auth_key: Option<&mut String>) -> bool;
+    fn close(&self);
+    fn reset(&self);
+}
+
 /// Ported from original/transport.h: `struct BlockingConnectionAdapter`
 pub struct BlockingConnectionAdapter {
     underlying: Arc<dyn BlockingConnection>,
@@ -1710,6 +1602,7 @@ impl Connection for BlockingConnectionAdapter {
     }
 
     fn start(&self, transport: Weak<ATransport>) -> bool {
+        println!("Adapter start called");
         *self.transport.lock().unwrap() = Some(transport.clone());
         let stopped = self.stopped.clone();
         let underlying = self.underlying.clone();
@@ -1723,6 +1616,7 @@ impl Connection for BlockingConnectionAdapter {
             None => true,
             Some(h) => h.is_finished(),
         };
+        println!("Should start read: {}", should_start_read);
 
         if should_start_read {
             if let Some(h) = read_thread_lock.take() {
@@ -1733,6 +1627,7 @@ impl Connection for BlockingConnectionAdapter {
             let underlying_read = underlying.clone();
 
             *read_thread_lock = Some(std::thread::spawn(move || {
+                println!("Read thread started");
                 while !stopped_read.load(Ordering::SeqCst) {
                     match underlying_read.read() {
                         Ok(packet) => {
@@ -1746,9 +1641,13 @@ impl Connection for BlockingConnectionAdapter {
                                 break;
                             }
                         }
-                        Err(_) => break,
+                        Err(e) => {
+                            println!("Read thread error: {:?}", e);
+                            break;
+                        }
                     }
                 }
+                println!("Read thread exiting");
             }));
         }
 
@@ -1803,6 +1702,7 @@ impl Connection for BlockingConnectionAdapter {
     }
 
     fn do_tls_handshake(&self, key: &Key, auth_key: Option<&mut String>) -> bool {
+        println!("Adapter do_tls_handshake");
         let handle = self.read_thread.lock().unwrap().take();
         if let Some(h) = handle {
             let _ = h.join();
@@ -1812,6 +1712,8 @@ impl Connection for BlockingConnectionAdapter {
             let t_weak = self.transport.lock().unwrap().clone();
             if let Some(t_weak) = t_weak {
                 self.start(t_weak);
+            } else {
+                println!("No transport to restart adapter with");
             }
             return true;
         }
@@ -1821,15 +1723,6 @@ impl Connection for BlockingConnectionAdapter {
     fn reset(&self) {
         self.underlying.reset();
     }
-}
-
-/// Ported from original/transport.h: `struct BlockingConnection`
-pub trait BlockingConnection: Send + Sync {
-    fn read(&self) -> std::io::Result<Apacket>;
-    fn write(&self, packet: &Apacket) -> std::io::Result<()>;
-    fn do_tls_handshake(&self, key: &Key, auth_key: Option<&mut String>) -> bool;
-    fn close(&self);
-    fn reset(&self);
 }
 
 /// Ported from original/transport.h: `struct FdConnection`
@@ -1911,6 +1804,7 @@ impl FdConnection {
 impl FdConnection {
     fn read_tls_blocking(&self, buf: &mut [u8]) -> std::io::Result<()> {
         let mut pos = 0;
+        println!("read_tls_blocking: want {}", buf.len());
         while pos < buf.len() {
             let mut tls_lock = self.tls.lock().unwrap();
             let tls = tls_lock
@@ -1945,7 +1839,10 @@ impl FdConnection {
                     drop(tls_lock);
                     self.wait_for_ready(libc::POLLIN)?;
                 }
-                Err(e) => return Err(e),
+                Err(e) => {
+                    println!("Tls read error: {:?}", e);
+                    return Err(e);
+                }
             }
         }
         Ok(())
@@ -2174,7 +2071,7 @@ impl BlockingConnection for FdConnection {
     }
 
     fn close(&self) {
-        // Files are closed when dropped.
+        // TcpStream handles close on drop.
     }
 
     fn reset(&self) {

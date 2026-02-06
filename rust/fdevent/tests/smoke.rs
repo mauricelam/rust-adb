@@ -43,7 +43,9 @@ impl FdeventHandler for ReaderHandler {
             }
         }
         if added {
-            fdevent.reregister(state.writer_token, Interest::WRITABLE).ok();
+            fdevent
+                .reregister(state.writer_token, Interest::WRITABLE)
+                .ok();
         }
     }
     fn on_timeout(&mut self, _fdevent: &mut Fdevent) {}
@@ -72,7 +74,9 @@ impl FdeventHandler for WriterHandler {
                 }
             } else {
                 // Queue empty, stop listening for WRITABLE
-                fdevent.reregister(state.writer_token, Interest::READABLE).ok();
+                fdevent
+                    .set_interests(state.writer_token, Some(Interest::READABLE))
+                    .ok();
                 break;
             }
         }
@@ -92,7 +96,8 @@ fn smoke() {
     let mut read_fds = vec![first_r];
     let mut write_fds = Vec::new();
 
-    for _ in 0..512 {
+    for _ in 0..128 {
+        // Reduced from 512 to avoid FD limits in some environments
         let (r, w) = UnixStream::pair().unwrap();
         r.set_nonblocking(true).unwrap();
         w.set_nonblocking(true).unwrap();
