@@ -14,5 +14,5 @@ members = [
     "adb-protocol",
     "adb-transport",
     "adb-services",
-    "adb-listeners",
+    "adb-listeners", "adb-usb",
 ]

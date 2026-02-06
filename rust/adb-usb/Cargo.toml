@@ -1,0 +1,13 @@
+[package]
+name = "adb-usb"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+adb-protocol = { path = "../adb-protocol" }
+adb-types = { path = "../adb-types" }
+adb-transport = { path = "../adb-transport" }
+rust-adb-crypto = { path = "../crypto" }
+rusb = { version = "0.9", features = ["vendored"] }
+log = "0.4"
+thiserror = "1.0"

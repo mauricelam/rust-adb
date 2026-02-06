@@ -223,7 +223,7 @@ Once the core layers are fully ported and verified, the next phase will focus on
 - **Description**: Port MDNS discovery and service registration logic.
 - **Testing**: Verify discovery of MDNS-enabled devices.
 
-### Step 17: USB Transport Implementation
+### Step 17: USB Transport Implementation [Done]
 - **Description**: Implement `UsbConnection` for host (libusb/WinUSB) and daemon (FunctionFS).
 - **Testing**: Integration tests with actual USB devices.
 
