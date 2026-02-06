@@ -23,8 +23,7 @@ use adb_protocol::{ConnectionState, TransportType};
 use adb_socket_spec::{is_socket_spec, socket_spec_connect};
 use adb_sockets::{connect_to_remote, create_local_socket, LocalSocket, Socket, SocketRegistry};
 use adb_transport::{
-    acquire_one_transport, list_transports, ATransport, FdConnection, TrackerOutputType,
-    TransportId,
+    acquire_one_transport, ATransport, FdConnection, TrackerOutputType, TransportId,
 };
 use adb_utils::{parse_uint, unhex};
 use bytes::Bytes;
@@ -45,6 +44,14 @@ pub const K_SHELL_SERVICE_ARG_SHELL_PROTOCOL: &str = "v2";
 
 pub const K_MINADBD_SERVICES_EXIT_SUCCESS: &str = "DONEDONE";
 pub const K_MINADBD_SERVICES_EXIT_FAILURE: &str = "FAILFAIL";
+
+/// Module handling reverse forwarding services.
+pub mod reverse_service;
+
+/// Module handling JDWP services.
+pub mod jdwp_service;
+
+/// Module handling reverse forwarding services.
 
 /// Creates a socket pair, starts a new thread with the provided function,
 /// and returns one end of the socket pair as an `AdbFd`.
@@ -487,8 +494,16 @@ pub fn connect_to_smartsocket(socket: Arc<LocalSocket>, fdevent: &mut Fdevent) {
     socket.ready();
 }
 
-/// Dispatches a host-side service to a socket.
-/// Ported from `host_service_to_socket` in `original/services.cpp`.
+pub fn create_device_tracker(
+    output_type: TrackerOutputType,
+    registry: Arc<SocketRegistry>,
+) -> Arc<dyn Socket> {
+    let id = registry.alloc_id();
+    let tracker = DeviceTracker::new(id, output_type, registry.clone());
+    registry.install(tracker.clone());
+    tracker
+}
+
 pub fn host_service_to_socket(
     name: &str,
     serial: &str,
@@ -543,6 +558,247 @@ pub fn host_service_to_socket(
     None
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use adb_protocol::TransportType;
+    use adb_transport::{register_transport, ATransport};
+    use std::io::{Read, Write};
+    use std::time::Duration;
+
+    #[test]
+    fn test_create_service_thread() {
+        let fd = create_service_thread("test", |fd| {
+            let mut file = std::fs::File::from(fd);
+            file.write_all(b"hello").unwrap();
+        })
+        .unwrap();
+
+        let mut file = std::fs::File::from(fd);
+        let mut buf = [0u8; 5];
+        file.read_exact(&mut buf).unwrap();
+        assert_eq!(&buf, b"hello");
+    }
+
+    #[test]
+    fn test_wait_service_device_found() {
+        let t = Arc::new(ATransport::new(
+            TransportType::Usb,
+            Box::new(|_| adb_transport::ReconnectResult::Abort),
+            ConnectionState::Device,
+        ));
+        *t.serial.lock().unwrap() = "test_serial".to_string();
+        register_transport(t);
+
+        let (s1, s2) = UnixStream::pair().unwrap();
+        let s2_fd = OwnedFd::from(s2);
+
+        let spec = "usb-device".to_string();
+        let serial = "test_serial".to_string();
+
+        let handle = std::thread::spawn(move || {
+            wait_service(s2_fd, serial, 0, spec);
+        });
+
+        let mut s1_file = std::fs::File::from(OwnedFd::from(s1));
+        let mut buf = [0u8; 4];
+        s1_file.read_exact(&mut buf).unwrap();
+        assert_eq!(&buf, b"OKAY");
+
+        handle.join().unwrap();
+    }
+
+    #[test]
+    fn test_wait_service_disconnect() {
+        // We don't register any transport, so acquire_one_transport will fail (device not found).
+        // wait-for-disconnect should succeed.
+
+        let (s1, s2) = UnixStream::pair().unwrap();
+        let s2_fd = OwnedFd::from(s2);
+
+        let spec = "any-disconnect".to_string();
+        let serial = "non_existent".to_string();
+
+        let handle = std::thread::spawn(move || {
+            wait_service(s2_fd, serial, 0, spec);
+        });
+
+        let mut s1_file = std::fs::File::from(OwnedFd::from(s1));
+        let mut buf = [0u8; 4];
+        s1_file.read_exact(&mut buf).unwrap();
+        assert_eq!(&buf, b"OKAY");
+
+        handle.join().unwrap();
+    }
+
+    #[test]
+    fn test_connect_to_smartsocket() {
+        let registry = Arc::new(SocketRegistry::new());
+        let mut fdevent = Fdevent::new().unwrap();
+        let (s1, s2) = UnixStream::pair().unwrap();
+        let client_socket = create_local_socket(OwnedFd::from(s1), registry.clone(), &mut fdevent);
+
+        connect_to_smartsocket(client_socket.clone(), &mut fdevent);
+
+        assert!(client_socket.peer_id().is_some());
+        let peer_id = client_socket.peer_id().unwrap();
+        let peer = registry.find(peer_id).unwrap();
+        // The peer should be a SmartSocket.
+        assert_eq!(peer.peer_id(), Some(client_socket.id()));
+        let _ = s2;
+    }
+
+    #[test]
+    fn test_smartsocket_dispatch_host_service() {
+        let t = Arc::new(ATransport::new(
+            TransportType::Usb,
+            Box::new(|_| adb_transport::ReconnectResult::Abort),
+            ConnectionState::Device,
+        ));
+        let serial = "s";
+        *t.serial.lock().unwrap() = serial.to_string();
+        register_transport(t);
+
+        let registry = Arc::new(SocketRegistry::new());
+        let mut fdevent = Fdevent::new().unwrap();
+        let (s1, s2) = UnixStream::pair().unwrap();
+        let client_socket = create_local_socket(OwnedFd::from(s1), registry.clone(), &mut fdevent);
+
+        connect_to_smartsocket(client_socket.clone(), &mut fdevent);
+
+        let peer_id = client_socket.peer_id().unwrap();
+        let smart_socket = registry.find(peer_id).unwrap();
+
+        // Send a host service request: "000Ahost:bogus"
+        let request = "000Ahost:bogus";
+        smart_socket.enqueue(Bytes::from(request));
+
+        // Run fdevent.
+        fdevent.poll(Some(Duration::from_millis(100))).unwrap();
+
+        // The SmartSocket should have dispatched and closed itself.
+        assert!(registry.find(peer_id).is_none());
+
+        // client_socket peer should be None because dispatch failed.
+        assert!(client_socket.peer_id().is_none());
+
+        // We should have received FAIL on s2.
+        let mut buf = [0u8; 4];
+        let mut s2_file = std::fs::File::from(OwnedFd::from(s2));
+        s2_file.read_exact(&mut buf).unwrap();
+        assert_eq!(&buf, b"FAIL");
+        std::mem::forget(s2_file);
+    }
+
+    #[test]
+    fn test_shell_service() {
+        let (s1, s2) = UnixStream::pair().unwrap();
+        let s2_fd = OwnedFd::from(s2);
+
+        let handle = std::thread::spawn(move || {
+            shell_service(s2_fd, ":echo hello");
+        });
+
+        let mut s1_file = std::fs::File::from(OwnedFd::from(s1));
+        let mut buf = [0u8; 64];
+        let n = s1_file.read(&mut buf).unwrap();
+        assert_eq!(String::from_utf8_lossy(&buf[..n]).trim(), "hello");
+
+        handle.join().unwrap();
+    }
+
+    #[test]
+    fn test_device_tracker() {
+        let registry = Arc::new(SocketRegistry::new());
+        let tracker = create_device_tracker(TrackerOutputType::ShortText, registry.clone());
+
+        struct MockSocket {
+            id: u32,
+            data: std::sync::Mutex<Vec<bytes::Bytes>>,
+        }
+        impl Socket for MockSocket {
+            fn id(&self) -> u32 {
+                self.id
+            }
+            fn enqueue(&self, data: bytes::Bytes) -> i32 {
+                self.data.lock().unwrap().push(data);
+                0
+            }
+            fn ready(&self) {}
+            fn ack(&self, _acked_bytes: Option<i32>) {
+                self.ready();
+            }
+            fn shutdown(&self) {}
+            fn close(&self) {}
+            fn peer_id(&self) -> Option<u32> {
+                None
+            }
+            fn transport_id(&self) -> Option<u64> {
+                None
+            }
+            fn set_peer(&self, _peer: Arc<dyn Socket>) {}
+        }
+
+        let mock_peer = Arc::new(MockSocket {
+            id: 200,
+            data: std::sync::Mutex::new(Vec::new()),
+        });
+
+        tracker.set_peer(mock_peer.clone());
+        tracker.ready();
+
+        let data = mock_peer.data.lock().unwrap();
+        assert_eq!(data.len(), 1);
+        // Check that it starts with 4 hex digits representing the length.
+        let len_str = std::str::from_utf8(&data[0][0..4]).unwrap();
+        let len = usize::from_str_radix(len_str, 16).unwrap();
+        assert_eq!(len, data[0].len() - 4);
+    }
+
+    #[test]
+    fn test_shell_service_args() {
+        let (s1, s2) = UnixStream::pair().unwrap();
+        let s2_fd = OwnedFd::from(s2);
+
+        // Test with raw argument
+        let handle = std::thread::spawn(move || {
+            shell_service(s2_fd, "raw:echo hello");
+        });
+
+        let mut s1_file = std::fs::File::from(OwnedFd::from(s1));
+        let mut buf = [0u8; 64];
+        let n = s1_file.read(&mut buf).unwrap();
+        assert_eq!(String::from_utf8_lossy(&buf[..n]).trim(), "hello");
+
+        handle.join().unwrap();
+    }
+
+    #[test]
+    fn test_shell_service_v2() {
+        let (s1, s2) = UnixStream::pair().unwrap();
+        let s2_fd = OwnedFd::from(s2);
+
+        let handle = std::thread::spawn(move || {
+            shell_service(s2_fd, "v2,raw:echo hello");
+        });
+
+        let mut s1_file = std::fs::File::from(OwnedFd::from(s1));
+        let mut sp = ShellProtocol::new();
+
+        // We expect a Stdout packet with "hello\n"
+        assert!(sp.read(&mut s1_file).unwrap());
+        assert_eq!(sp.id, ShellId::Stdout);
+        assert_eq!(String::from_utf8_lossy(&sp.data).trim(), "hello");
+
+        // We expect an Exit packet
+        assert!(sp.read(&mut s1_file).unwrap());
+        assert_eq!(sp.id, ShellId::Exit);
+        assert_eq!(sp.data[0], 0);
+
+        handle.join().unwrap();
+    }
+}
+
 /// Dispatches a service to a file descriptor.
 /// Ported from `service_to_fd` in `original/services.cpp`.
 pub fn service_to_fd(name: &str, _transport: Option<&Arc<ATransport>>) -> std::io::Result<AdbFd> {
@@ -564,15 +820,36 @@ pub fn service_to_fd(name: &str, _transport: Option<&Arc<ATransport>>) -> std::i
     }
 }
 
-/// Dispatches a service to a socket on the daemon side.
+use crate::jdwp_service::{register_jdwp_observer, JdwpTracker};
+
+/// Dispatches a daemon-side service request to a socket.
 /// Ported from `daemon_service_to_socket` in `original/daemon/services.cpp`.
 pub fn daemon_service_to_socket(
     name: &str,
-    _transport: &Arc<ATransport>,
+    transport: &Arc<ATransport>,
 ) -> Option<Arc<dyn Socket>> {
+    let registry = transport.registry.lock().unwrap().as_ref()?.clone();
+    if name == "jdwp" {
+        let id = registry.alloc_id();
+        let s = Arc::new(JdwpTracker::new(id, registry.clone(), false));
+        registry.install(s.clone());
+        return Some(s);
+    }
+    if name == "track-jdwp" {
+        let id = registry.alloc_id();
+        let s = Arc::new(JdwpTracker::new(id, registry.clone(), true));
+        let s_weak = Arc::downgrade(&s);
+        register_jdwp_observer(Box::new(move || {
+            if let Some(s) = s_weak.upgrade() {
+                s.send_jdwp_list();
+            }
+        }));
+        registry.install(s.clone());
+        return Some(s);
+    }
+
     if let Some(count_str) = name.strip_prefix("sink:") {
         if let Ok(count) = count_str.parse::<u64>() {
-            let registry = _transport.registry.lock().unwrap().as_ref()?.clone();
             let id = registry.alloc_id();
             let socket = Arc::new(SinkSocket {
                 id,
@@ -587,7 +864,6 @@ pub fn daemon_service_to_socket(
 
     if let Some(count_str) = name.strip_prefix("source:") {
         if let Ok(count) = count_str.parse::<u64>() {
-            let registry = _transport.registry.lock().unwrap().as_ref()?.clone();
             let id = registry.alloc_id();
             let socket = Arc::new(SourceSocket {
                 id,
@@ -617,14 +893,13 @@ fn open_pty() -> std::io::Result<(AdbFd, AdbFd)> {
             return Err(err);
         }
 
-        let mut buf = [0u8; 1024];
-        if libc::ptsname_r(master_fd, buf.as_mut_ptr() as *mut libc::c_char, buf.len()) != 0 {
+        let pts_ptr = libc::ptsname(master_fd);
+        if pts_ptr.is_null() {
             let err = std::io::Error::last_os_error();
             libc::close(master_fd);
             return Err(err);
         }
-
-        let pts_name = std::ffi::CStr::from_ptr(buf.as_ptr() as *const libc::c_char);
+        let pts_name = std::ffi::CStr::from_ptr(pts_ptr);
         let slave_fd = libc::open(pts_name.as_ptr(), libc::O_RDWR | libc::O_NOCTTY);
         if slave_fd < 0 {
             let err = std::io::Error::last_os_error();
@@ -632,10 +907,7 @@ fn open_pty() -> std::io::Result<(AdbFd, AdbFd)> {
             return Err(err);
         }
 
-        Ok((
-            AdbFd::from_raw_fd(master_fd),
-            AdbFd::from_raw_fd(slave_fd),
-        ))
+        Ok((AdbFd::from_raw_fd(master_fd), AdbFd::from_raw_fd(slave_fd)))
     }
 }
 
@@ -785,11 +1057,17 @@ pub fn shell_service(adb_fd: AdbFd, args: &str) {
     } else {
         #[cfg(unix)]
         {
-            child.stdin.take().map(|s| unsafe { AdbFd::from_raw_fd(s.into_raw_fd()) })
+            child
+                .stdin
+                .take()
+                .map(|s| unsafe { AdbFd::from_raw_fd(s.into_raw_fd()) })
         }
         #[cfg(windows)]
         {
-            child.stdin.take().map(|s| unsafe { AdbFd::from_raw_handle(s.into_raw_handle() as _) })
+            child
+                .stdin
+                .take()
+                .map(|s| unsafe { AdbFd::from_raw_handle(s.into_raw_handle() as _) })
         }
     };
     let mut sub_stdout_fd = if is_pty {
@@ -797,11 +1075,17 @@ pub fn shell_service(adb_fd: AdbFd, args: &str) {
     } else {
         #[cfg(unix)]
         {
-            child.stdout.take().map(|s| unsafe { AdbFd::from_raw_fd(s.into_raw_fd()) })
+            child
+                .stdout
+                .take()
+                .map(|s| unsafe { AdbFd::from_raw_fd(s.into_raw_fd()) })
         }
         #[cfg(windows)]
         {
-            child.stdout.take().map(|s| unsafe { AdbFd::from_raw_handle(s.into_raw_handle() as _) })
+            child
+                .stdout
+                .take()
+                .map(|s| unsafe { AdbFd::from_raw_handle(s.into_raw_handle() as _) })
         }
     };
     let mut sub_stderr_fd = if is_pty {
@@ -809,11 +1093,17 @@ pub fn shell_service(adb_fd: AdbFd, args: &str) {
     } else {
         #[cfg(unix)]
         {
-            child.stderr.take().map(|s| unsafe { AdbFd::from_raw_fd(s.into_raw_fd()) })
+            child
+                .stderr
+                .take()
+                .map(|s| unsafe { AdbFd::from_raw_fd(s.into_raw_fd()) })
         }
         #[cfg(windows)]
         {
-            child.stderr.take().map(|s| unsafe { AdbFd::from_raw_handle(s.into_raw_handle() as _) })
+            child
+                .stderr
+                .take()
+                .map(|s| unsafe { AdbFd::from_raw_handle(s.into_raw_handle() as _) })
         }
     };
 
@@ -855,59 +1145,56 @@ pub fn shell_service(adb_fd: AdbFd, args: &str) {
         if n > 0 {
             if pfds[0].revents & POLLIN != 0 {
                 if is_v2 {
-                    match shell_read.read(&mut adb_fd) {
-                        Ok(true) => {
-                            match shell_read.id {
-                                ShellId::Stdin => {
-                                    let write_fd = if is_pty {
-                                        sub_stdout_fd.as_mut()
-                                    } else {
-                                        sub_stdin_fd.as_mut()
-                                    };
-                                    if let Some(f) = write_fd {
-                                        let _ = f.write_all(&shell_read.data);
-                                    }
+                    match shell_read.read(&mut adb_file) {
+                        Ok(true) => match shell_read.id {
+                            ShellId::Stdin => {
+                                let write_file = if is_pty {
+                                    sub_stdout_file.as_mut()
+                                } else {
+                                    sub_stdin_file.as_mut()
+                                };
+                                if let Some(f) = write_file {
+                                    let _ = f.write_all(&shell_read.data);
                                 }
-                                ShellId::WindowSizeChange => {
-                                    #[cfg(unix)]
-                                    if is_pty {
-                                        if let Some(ref f) = sub_stdout_fd {
-                                            let s = String::from_utf8_lossy(&shell_read.data);
-                                            if let Some((rows_cols, pixels)) = s.split_once(',') {
-                                                if let (Some((rows, cols)), Some((xpix, ypix))) =
-                                                    (rows_cols.split_once('x'), pixels.split_once('x'))
-                                                {
-                                                    if let (Ok(r), Ok(c), Ok(xp), Ok(yp)) = (
-                                                        rows.parse::<u16>(),
-                                                        cols.parse::<u16>(),
-                                                        xpix.parse::<u16>(),
-                                                        ypix.parse::<u16>(),
-                                                    ) {
-                                                        let ws = libc::winsize {
-                                                            ws_row: r,
-                                                            ws_col: c,
-                                                            ws_xpixel: xp,
-                                                            ws_ypixel: yp,
-                                                        };
-                                                        unsafe {
-                                                            libc::ioctl(
-                                                                f.as_raw_fd(),
-                                                                libc::TIOCSWINSZ,
-                                                                &ws,
-                                                            );
-                                                        }
+                            }
+                            ShellId::WindowSizeChange => {
+                                if is_pty {
+                                    if let Some(ref f) = sub_stdout_file {
+                                        let s = String::from_utf8_lossy(&shell_read.data);
+                                        if let Some((rows_cols, pixels)) = s.split_once(',') {
+                                            if let (Some((rows, cols)), Some((xpix, ypix))) =
+                                                (rows_cols.split_once('x'), pixels.split_once('x'))
+                                            {
+                                                if let (Ok(r), Ok(c), Ok(xp), Ok(yp)) = (
+                                                    rows.parse::<u16>(),
+                                                    cols.parse::<u16>(),
+                                                    xpix.parse::<u16>(),
+                                                    ypix.parse::<u16>(),
+                                                ) {
+                                                    let ws = libc::winsize {
+                                                        ws_row: r,
+                                                        ws_col: c,
+                                                        ws_xpixel: xp,
+                                                        ws_ypixel: yp,
+                                                    };
+                                                    unsafe {
+                                                        libc::ioctl(
+                                                            f.as_raw_fd(),
+                                                            libc::TIOCSWINSZ,
+                                                            &ws,
+                                                        );
                                                     }
                                                 }
                                             }
                                         }
                                     }
                                 }
-                                ShellId::CloseStdin => {
-                                    sub_stdin_fd.take();
-                                }
-                                _ => {}
                             }
-                        }
+                            ShellId::CloseStdin => {
+                                sub_stdin_file.take();
+                            }
+                            _ => {}
+                        },
                         _ => {
                             let _ = child.kill();
                             break;
@@ -940,8 +1227,12 @@ pub fn shell_service(adb_fd: AdbFd, args: &str) {
                     match f.read(&mut buf) {
                         Ok(n) if n > 0 => {
                             if is_v2 {
-                                ShellProtocol::write_packet(&mut adb_fd, ShellId::Stdout, &buf[..n])
-                                    .unwrap();
+                                ShellProtocol::write_packet(
+                                    &mut adb_file,
+                                    ShellId::Stdout,
+                                    &buf[..n],
+                                )
+                                .unwrap();
                             } else {
                                 adb_fd.write_all(&buf[..n]).unwrap();
                             }
@@ -960,8 +1251,12 @@ pub fn shell_service(adb_fd: AdbFd, args: &str) {
                     match f.read(&mut buf) {
                         Ok(n) if n > 0 => {
                             if is_v2 {
-                                ShellProtocol::write_packet(&mut adb_fd, ShellId::Stderr, &buf[..n])
-                                    .unwrap();
+                                ShellProtocol::write_packet(
+                                    &mut adb_file,
+                                    ShellId::Stderr,
+                                    &buf[..n],
+                                )
+                                .unwrap();
                             } else {
                                 adb_fd.write_all(&buf[..n]).unwrap();
                             }
@@ -979,10 +1274,13 @@ pub fn shell_service(adb_fd: AdbFd, args: &str) {
 
         match child.try_wait() {
             Ok(Some(status)) => {
-                let exit_code =
-                    status.code().unwrap_or(if status.success() { 0 } else { 1 }) as u8;
+                let exit_code = status
+                    .code()
+                    .unwrap_or(if status.success() { 0 } else { 1 })
+                    as u8;
                 if is_v2 {
-                    ShellProtocol::write_packet(&mut adb_fd, ShellId::Exit, &[exit_code]).unwrap();
+                    ShellProtocol::write_packet(&mut adb_file, ShellId::Exit, &[exit_code])
+                        .unwrap();
                 }
                 break;
             }
@@ -997,7 +1295,8 @@ pub fn shell_service(adb_fd: AdbFd, args: &str) {
 }
 
 /// Dispatches a service to a file descriptor on the daemon side.
-pub fn daemon_service_to_fd(name: &str, _transport: &Arc<ATransport>) -> Option<AdbFd> {
+/// Ported from `daemon_service_to_fd` in `original/daemon/services.cpp`.
+pub fn daemon_service_to_fd(name: &str, transport: &Arc<ATransport>) -> Option<OwnedFd> {
     if let Some(args) = name.strip_prefix("shell") {
         let args = args.to_string();
         return create_service_thread("shell", move |fd| {
@@ -1019,10 +1318,15 @@ pub fn daemon_service_to_fd(name: &str, _transport: &Arc<ATransport>) -> Option<
         .ok();
     }
     if let Some(cmd) = name.strip_prefix("reverse:") {
-        return reverse_service(cmd, _transport);
+        let cmd = cmd.to_string();
+        let transport_clone = transport.clone();
+        return create_service_thread("reverse", move |fd| {
+            reverse_service::reverse_service(fd, &cmd, transport_clone);
+        })
+        .ok();
     }
     if name == "reconnect" {
-        let t = Arc::downgrade(_transport);
+        let t = Arc::downgrade(transport);
         return create_service_thread("reconnect", move |fd| {
             reconnect_service(fd, t.upgrade().as_ref());
         })
@@ -1218,6 +1522,84 @@ impl Socket for SourceSocket {
                     .fetch_sub(len as u64, std::sync::atomic::Ordering::Relaxed);
             }
         }
+    }
+
+    fn ack(&self, _acked_bytes: Option<i32>) {
+        self.ready();
+    }
+
+    fn shutdown(&self) {}
+
+    fn close(&self) {
+        if let Some(peer) = self.peer.lock().unwrap().take() {
+            peer.close();
+        }
+        self.registry.remove(self.id);
+    }
+
+    fn peer_id(&self) -> Option<u32> {
+        self.peer.lock().unwrap().as_ref().map(|p| p.id())
+    }
+
+    fn transport_id(&self) -> Option<u64> {
+        None
+    }
+
+    fn set_peer(&self, peer: Arc<dyn Socket>) {
+        *self.peer.lock().unwrap() = Some(peer);
+    }
+}
+
+struct DeviceTracker {
+    id: u32,
+    output_type: TrackerOutputType,
+    registry: Arc<SocketRegistry>,
+    peer: std::sync::Mutex<Option<Arc<dyn Socket>>>,
+}
+
+impl DeviceTracker {
+    fn new(id: u32, output_type: TrackerOutputType, registry: Arc<SocketRegistry>) -> Arc<Self> {
+        let tracker = Arc::new(Self {
+            id,
+            output_type,
+            registry,
+            peer: std::sync::Mutex::new(None),
+        });
+
+        let tracker_weak = Arc::downgrade(&tracker);
+        adb_transport::register_transport_observer(Box::new(move || {
+            if let Some(tracker) = tracker_weak.upgrade() {
+                tracker.update();
+            }
+        }));
+
+        tracker
+    }
+
+    fn update(&self) {
+        let list = adb_transport::list_transports(self.output_type);
+        if let Some(peer) = self.peer.lock().unwrap().as_ref() {
+            let mut data = Vec::with_capacity(list.len() + 4);
+            data.extend_from_slice(format!("{:04x}", list.len()).as_bytes());
+            data.extend_from_slice(list.as_bytes());
+            peer.enqueue(bytes::Bytes::from(data));
+        }
+    }
+}
+
+impl Socket for DeviceTracker {
+    fn id(&self) -> u32 {
+        self.id
+    }
+
+    fn enqueue(&self, _data: bytes::Bytes) -> i32 {
+        // Tracker doesn't accept data from peer.
+        self.close();
+        -1
+    }
+
+    fn ready(&self) {
+        self.update();
     }
 
     fn ack(&self, _acked_bytes: Option<i32>) {

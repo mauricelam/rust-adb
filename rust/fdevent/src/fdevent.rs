@@ -167,8 +167,8 @@ pub struct Fdevent {
     events: Events,
     /// A map from tokens to their corresponding event handlers.
     handlers: HashMap<Token, Box<dyn FdeventHandler>>,
-    /// A map from tokens to their owned file descriptors, optional mio sources, and current interests.
-    fds: HashMap<Token, (AdbFd, Option<MioSource>, Option<Interest>)>,
+    /// A map from tokens to their owned file descriptors.
+    fds: HashMap<Token, Arc<OwnedFd>>,
     /// A map from tokens to their registered timeouts.
     timeouts: HashMap<Token, (Instant, Duration)>,
     /// The queue of functions to be executed on the looper thread.
@@ -207,7 +207,10 @@ impl Fdevent {
 
     /// Returns a clone of the `mio::Registry` associated with this context.
     pub fn registry(&self) -> mio::Registry {
-        self.poll.registry().try_clone().expect("failed to clone registry")
+        self.poll
+            .registry()
+            .try_clone()
+            .expect("failed to clone registry")
     }
 
     /// Registers a file descriptor to be monitored.
@@ -219,7 +222,7 @@ impl Fdevent {
     /// * `interest` - The initial set of events to monitor.
     pub fn register(
         &mut self,
-        fd: AdbFd,
+        fd: Arc<OwnedFd>,
         handler: Box<dyn FdeventHandler>,
         interest: Interest,
     ) -> FdeventResult<Token> {
@@ -304,8 +307,8 @@ impl Fdevent {
     /// # Arguments
     ///
     /// * `token` - The token returned by [`Self::register`].
-    pub fn unregister(&mut self, token: Token) -> FdeventResult<AdbFd> {
-        let (fd, source, current_interest) = self.fds.remove(&token).ok_or_else(|| {
+    pub fn unregister(&mut self, token: Token) -> FdeventResult<Arc<OwnedFd>> {
+        let fd = self.fds.remove(&token).ok_or_else(|| {
             FdeventError::Io(io::Error::new(io::ErrorKind::NotFound, "Token not found"))
         })?;
 

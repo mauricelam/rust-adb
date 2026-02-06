@@ -33,6 +33,8 @@ pub const A_WRTE: u32 = 0x45545257;
 pub const A_AUTH: u32 = 0x48545541;
 pub const A_STLS: u32 = 0x534c5453;
 
+pub const A_STLS_VERSION: u32 = 1;
+
 pub const A_VERSION_MIN: u32 = 0x01000000;
 pub const A_VERSION_SKIP_CHECKSUM: u32 = 0x01000001;
 pub const A_VERSION: u32 = 0x01000001;
