@@ -59,23 +59,17 @@ Each step involves porting 1-2 files and implementing a corresponding testing st
     - For FD management, prefer to use the rust stdlib. Move semantics and RAII are already tightly baked in to Rust.
     - If it makes sense for callers to use the `tracing` and stdlib APIs directly, simply write some documentation explaining how to do the translation.
 
-### Step 2: System Dependencies and Basic I/O [In Progress]
+### Step 2: System Dependencies and Basic I/O [Done]
 - **Files**: `sysdeps.h`, `adb_io.h`
 - **Description**: Port platform-specific abstractions (wrappers for `read`, `write`, `close`) and the `ReadFdExactly`/`WriteFdExactly` utilities.
 - **Testing**:
     - Port `adb_io_test.cpp` to Rust.
-    - Port `sysdeps_test.cpp` (specifically `duplicate_fd` and `fd_exhaustion` which are currently missing).
+    - Port `sysdeps_test.cpp` (specifically `duplicate_fd` and `fd_exhaustion`).
     - Integration test: Read/write to a pipe and verify exact byte counts.
     - Add `WriteFdExactly_ENOSPC` test.
 - **Notes**:
     - First try to look for equivalent functionality in the standard library. A lot of the standard library functions in Rust are already platform-agnostic.
     - If it makes sense for callers to use the standard library APIs directly, simply write some documentation explaining how to do the translation.
-    - **Gaps**:
-        - `ReadOrderlyShutdown`: Still needs to be ported to `adb_io`.
-        - `WriteFdExactly` overloads for `&str` and `String` should be added to `adb_io` for parity.
-        - `WriteFdFmt`: Needs to be implemented (possibly as a macro).
-        - `set_file_block_mode`: Needs to be ported to `sysdeps` or `adb-utils`.
-        - `close_stdin`, `perror_str`: Still need to be ported to `adb-utils`.
 
 ### Step 3: Event Loop Abstraction [Done]
 - **Files**: `fdevent/fdevent.h`

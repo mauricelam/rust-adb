@@ -25,6 +25,38 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Condvar, Mutex};
 
+/// Redirects stdin to /dev/null.
+///
+/// Corresponds to the C++ function `close_stdin` in `original/adb_utils.cpp`.
+pub fn close_stdin() {
+    #[cfg(unix)]
+    {
+        // SAFETY: open and dup2 are standard libc functions.
+        unsafe {
+            let fd = libc::open(b"/dev/null\0".as_ptr() as *const libc::c_char, libc::O_RDONLY);
+            if fd == -1 {
+                eprintln!("failed to open /dev/null");
+                return;
+            }
+            if libc::dup2(fd, libc::STDIN_FILENO) == -1 {
+                eprintln!("failed to redirect stdin to /dev/null");
+            }
+            libc::close(fd);
+        }
+    }
+    #[cfg(windows)]
+    {
+        // Windows implementation would go here (redirecting to NUL).
+    }
+}
+
+/// Returns a string describing the last OS error, prefixed with the given message.
+///
+/// Corresponds to the C++ function `perror_str` in `original/adb_utils.cpp`.
+pub fn perror_str(msg: &str) -> String {
+    format!("{}: {}", msg, std::io::Error::last_os_error())
+}
+
 /// Ported from `original/adb_utils.cpp`: `unhex`
 pub fn unhex(s: &str) -> Option<u32> {
     u32::from_str_radix(s, 16).ok()
@@ -280,6 +312,12 @@ impl<T> Default for BlockingQueue<T> {
 mod tests {
     use super::*;
     use tempfile::tempdir;
+
+    #[test]
+    fn test_perror_str() {
+        let s = perror_str("test");
+        assert!(s.starts_with("test: "));
+    }
 
     #[test]
     fn test_unhex() {
