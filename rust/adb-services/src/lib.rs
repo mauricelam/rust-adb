@@ -22,6 +22,7 @@ use adb_protocol::shell_protocol::{ShellId, ShellProtocol};
 use adb_protocol::{ConnectionState, TransportType};
 use adb_socket_spec::{is_socket_spec, socket_spec_connect};
 use adb_sockets::{connect_to_remote, create_local_socket, LocalSocket, Socket, SocketRegistry};
+use adb_mdns::AdbMdns;
 use adb_transport::{
     acquire_one_transport, ATransport, FdConnection, TrackerOutputType, TransportId,
 };
@@ -29,7 +30,7 @@ use adb_utils::{parse_uint, unhex};
 use bytes::Bytes;
 use fdevent::fdevent::{Fdevent, FdeventHandle};
 use std::io::{Read, Write};
-use std::sync::{Arc, Mutex, Weak};
+use std::sync::{Arc, Mutex, OnceLock, Weak};
 use sysdeps::poll::{adb_poll, AdbPollFd, POLLIN};
 use sysdeps::AdbFd;
 
@@ -1209,6 +1210,35 @@ pub fn reconnect_service(mut fd: AdbFd, transport: Option<&Arc<ATransport>>) {
     } else {
         adb_transport::kick_all_transports();
     }
+}
+
+static G_MDNS: OnceLock<Arc<AdbMdns>> = OnceLock::new();
+
+/// Initializes MDNS discovery.
+/// Ported from original/client/mdnsresponder_client.cpp: `StartMdnsResponderDiscovery`
+pub fn init_mdns() -> anyhow::Result<()> {
+    let mdns = Arc::new(AdbMdns::new()?);
+    G_MDNS
+        .set(mdns.clone())
+        .map_err(|_| anyhow::anyhow!("MDNS already initialized"))?;
+
+    mdns.browse(Some(Arc::new(|info| {
+        log::info!("Discovered MDNS service: {:?}", info);
+        // Extract IP and port
+        if let Some(ip) = info.ip_addresses.get(0) {
+            let address = format!("{}:{}", ip, info.port);
+            let mut response = String::new();
+            connect_device(address, &mut response);
+            log::info!("Auto-connect response: {}", response);
+        }
+    })))?;
+
+    Ok(())
+}
+
+/// Returns the MDNS discovery service.
+pub fn get_mdns() -> Option<Arc<AdbMdns>> {
+    G_MDNS.get().cloned()
 }
 
 struct SinkSocket {
