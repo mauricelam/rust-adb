@@ -343,8 +343,9 @@ impl ATransport {
     }
 
     pub fn run_disconnects(&self) {
-        let mut handlers = self.disconnects.lock().unwrap();
-        for (_, handler) in handlers.drain(..) {
+        let handlers: Vec<(u64, Box<dyn DisconnectHandler>)> =
+            self.disconnects.lock().unwrap().drain(..).collect();
+        for (_, handler) in handlers {
             handler.on_disconnect(self);
         }
     }

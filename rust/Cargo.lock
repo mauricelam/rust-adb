@@ -22,6 +22,26 @@ dependencies = [
 ]
 
 [[package]]
+name = "adb-listeners"
+version = "0.1.0"
+dependencies = [
+ "adb-protocol",
+ "adb-socket-spec",
+ "adb-sockets",
+ "adb-transport",
+ "adb-types",
+ "adb-utils",
+ "adb_io",
+ "anyhow",
+ "fdevent",
+ "libc",
+ "log",
+ "mio",
+ "sysdeps",
+ "thiserror",
+]
+
+[[package]]
 name = "adb-protocol"
 version = "0.1.0"
 dependencies = [
@@ -32,6 +52,7 @@ dependencies = [
 name = "adb-services"
 version = "0.1.0"
 dependencies = [
+ "adb-listeners",
  "adb-protocol",
  "adb-socket-spec",
  "adb-sockets",
