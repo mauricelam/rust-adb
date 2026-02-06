@@ -75,6 +75,7 @@ Each step involves porting 1-2 files and implementing a corresponding testing st
         - `WriteFdExactly` overloads for `&str` and `String` should be added to `adb_io` for parity.
         - `WriteFdFmt`: Needs to be implemented (possibly as a macro).
         - `set_file_block_mode`: Needs to be ported to `sysdeps` or `adb-utils`.
+        - `close_stdin`, `perror_str`: Still need to be ported to `adb-utils`.
 
 ### Step 3: Event Loop Abstraction [Done]
 - **Files**: `fdevent/fdevent.h`
@@ -139,9 +140,10 @@ Each step involves porting 1-2 files and implementing a corresponding testing st
     - Mock transport testing to verify state transitions (online, offline, authorizing).
 - **Notes**:
     - **Gaps (unresolved TODOs)**:
-        - `handle_packet` logic (A_OPEN, A_CLSE, etc.) is currently a placeholder.
-        - TLS handshake implementation is pending.
-        - `device_tracker` notification in `update_transports`.
+        - `FdConnection::do_tls_handshake` is currently a stub.
+        - USB transport (`UsbConnection`) is missing.
+    - **Resolved Gaps**:
+        - `device_tracker` notification in `update_transports`: Correctly implemented via `register_transport_observer`.
 
 ### Step 10: ADB Services [Done]
 - **Files**: `services.h`, `services.cpp`
@@ -155,9 +157,11 @@ Each step involves porting 1-2 files and implementing a corresponding testing st
     - Implemented Shell V2 protocol (multiplexing stdout/stderr/exit status) and PTY support.
     - Implemented Reverse Forwarding (forward, killforward, list-forward).
     - **Remaining Gaps**:
-        - `connect_emulator` and `connect_device` (stubbed).
         - `adb_wifi_pair_device` (stubbed).
-        - `track-app`, `sink`, `source` (to be addressed in future phases if needed).
+        - `track-app`, `cmd`, `abb`, `abb_exec` (to be addressed in future phases if needed).
+    - **Resolved Gaps**:
+        - `connect_emulator` and `connect_device`: Fully implemented in `adb-services`.
+        - `sink` and `source` services: Implemented via `SinkSocket` and `SourceSocket`.
 
 ## Architectural Guidance for Windows Support
 
@@ -180,15 +184,19 @@ Porting to Windows requires handling several platform-specific nuances:
 
 Once the core layers are fully ported and verified, the next phase will focus on completing the protocol state machine and advanced services.
 
-### Step 11: Protocol State Machine
+### Step 11: Protocol State Machine [Done]
 - **Description**: Implement the full ADB protocol state machine in `adb-transport`, handling all `A_*` commands.
 - **Testing**:
     - State machine unit tests with mocked transport.
+- **Notes**:
+    - `handle_packet` now processes all major commands (`A_CNXN`, `A_AUTH`, `A_OPEN`, `A_OKAY`, `A_CLSE`, `A_WRTE`, `A_STLS`, `A_SYNC`).
 
-### Step 12: Secure ADB (TLS)
+### Step 12: Secure ADB (TLS) [In Progress]
 - **Description**: Implement the TLS handshake and secure communication layer.
 - **Testing**:
     - Integration tests with TLS-enabled devices/emulators.
+- **Notes**:
+    - `FdConnection::do_tls_handshake` is currently a stub.
 
 ### Step 13: High-level Services Completion [Done]
 - **Description**: Implement JDWP tracking, reverse forwarding, and advanced shell features.
@@ -204,3 +212,36 @@ Once the core layers are fully ported and verified, the next phase will focus on
 
 - **Platform Parity**: Some sysdeps and socket-spec features are only implemented for Unix/Linux. Windows support is a significant remaining gap.
 - **Resource Limits**: Some tests (like `fdevent` smoke test) require increased file descriptor limits (`prlimit`).
+
+## Phase 3: Remaining Components and Platform Parity
+
+### Step 14: ADB Listeners
+- **Files**: `adb_listeners.h`, `adb_listeners.cpp`
+- **Description**: Port the listener management logic for both host and daemon.
+- **Testing**: Port `adb_listeners_test.cpp` and verify listener creation/deletion.
+
+### Step 15: File Sync Protocol
+- **Files**: `file_sync_protocol.h`
+- **Description**: Implement the full `sync:` service and the file transfer protocol.
+- **Testing**: Integration tests for `push`, `pull`, `stat`, and `list` operations.
+
+### Step 16: MDNS Support
+- **Files**: `adb_mdns.h`, `adb_mdns.cpp`
+- **Description**: Port MDNS discovery and service registration logic.
+- **Testing**: Verify discovery of MDNS-enabled devices.
+
+### Step 17: USB Transport Implementation
+- **Description**: Implement `UsbConnection` for host (libusb/WinUSB) and daemon (FunctionFS).
+- **Testing**: Integration tests with actual USB devices.
+
+### Step 18: Daemon Authentication Key Management
+- **Description**: Port logic for managing authorized keys (`adb_keys`) on the daemon side from `daemon/auth.cpp`.
+- **Testing**: Verify that authorized devices can connect and unauthorized ones are prompted.
+
+### Step 19: Advanced Daemon Services
+- **Description**: Port remaining services like `track-app`, `abb`, and `abb_exec`.
+- **Testing**: Verify correct dispatch and execution of these services.
+
+### Step 20: Full Windows Support
+- **Description**: Complete the platform-specific abstractions for Windows in `sysdeps` and `socket-spec`.
+- **Testing**: Ensure the entire test suite passes on Windows.
