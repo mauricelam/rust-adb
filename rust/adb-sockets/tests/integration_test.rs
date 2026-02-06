@@ -78,7 +78,7 @@ fn test_remote_to_local_flow() {
         }
     });
 
-    pair_b.write_all(b"hello").unwrap();
+    nix::unistd::write(pair_b, b"hello").unwrap();
 
     let mut success = false;
     for _ in 0..100 {
@@ -100,7 +100,7 @@ fn test_remote_to_local_flow() {
 
     running.store(false, Ordering::SeqCst);
     thread_handle.join().unwrap();
-    pair_b.close();
+    let _ = nix::unistd::close(pair_b);
 
     assert!(success, "No packets received by transport");
 }

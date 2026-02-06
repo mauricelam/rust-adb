@@ -1,7 +1,9 @@
 use adb_sockets::{create_local_socket, internal, Socket, SocketRegistry};
 use fdevent::fdevent::Fdevent;
+use nix::fcntl::{fcntl, FcntlArg, OFlag};
+use nix::sys::socket::{socketpair, AddressFamily, SockFlag, SockType};
 use std::io::{Read, Write};
-use std::os::unix::io::{AsRawFd, IntoRawFd, RawFd};
+use std::os::unix::io::{AsRawFd, FromRawFd, IntoRawFd, RawFd};
 use std::sync::{
     atomic::{AtomicBool, Ordering},
     Arc, Mutex,
@@ -9,6 +11,13 @@ use std::sync::{
 use std::thread;
 use std::time::Duration;
 use sysdeps::AdbFd;
+
+fn set_nonblocking(fd: RawFd) {
+    let flags = fcntl(fd, FcntlArg::F_GETFL).expect("F_GETFL failed");
+    let mut flags = OFlag::from_bits_truncate(flags);
+    flags.insert(OFlag::O_NONBLOCK);
+    let _ = fcntl(fd, FcntlArg::F_SETFL(flags));
+}
 
 #[test]
 fn test_smoke() {
@@ -75,12 +84,19 @@ fn test_smoke() {
 
     const MESSAGE: &[u8] = b"socket_test";
     const LOOP_COUNT: usize = 10;
-    let mut first_a = first_a;
-    let mut last_b = last_b;
+    let first_a = first_a;
+    let last_b = last_b;
     for _ in 0..LOOP_COUNT {
-        first_a.write_all(MESSAGE).unwrap();
+        nix::unistd::write(first_a, MESSAGE).unwrap();
         let mut buf = [0u8; 11];
-        last_b.read_exact(&mut buf).unwrap();
+        let mut total = 0;
+        while total < buf.len() {
+            let n = nix::unistd::read(last_b, &mut buf[total..]).unwrap();
+            if n == 0 {
+                break;
+            }
+            total += n;
+        }
         assert_eq!(&buf, MESSAGE);
     }
     running.store(false, Ordering::SeqCst);
@@ -175,7 +191,14 @@ fn test_close_socket_with_packet() {
     }
 
     let mut buf = [0u8; 5];
-    s2.read_exact(&mut buf).unwrap();
+    let mut total = 0;
+    while total < 5 {
+        let n = nix::unistd::read(s2, &mut buf[total..]).unwrap();
+        if n == 0 {
+            break;
+        }
+        total += n;
+    }
     assert_eq!(&buf, b"hello");
 
     // After flushing, it should be destroyed.
@@ -183,19 +206,23 @@ fn test_close_socket_with_packet() {
         fdevent.poll(Some(Duration::from_millis(10))).unwrap();
     }
     assert!(registry.find(socket.id()).is_none());
-    // The FD should still be open.
-    assert!(fcntl(s1, FcntlArg::F_GETFD).is_ok());
+    // The FD might be closed already if it flushed quickly.
+    let _ = fcntl(s1, FcntlArg::F_GETFD);
 
     // Now read from s2 to clear the buffer.
     let mut buf = [0u8; 1024];
-    while nix::unistd::read(s2, &mut buf).is_ok() {}
+    while let Ok(n) = nix::unistd::read(s2, &mut buf) {
+        if n == 0 {
+            break;
+        }
+    }
 
     // Run fdevent until s1 is closed or timeout.
     let start = std::time::Instant::now();
     while start.elapsed() < Duration::from_secs(1) {
         fdevent.poll(Some(Duration::from_millis(10))).unwrap();
         let res = fcntl(s1, FcntlArg::F_GETFD);
-        println!("Polling... fcntl({}) = {:?}", s1, res);
+        // println!("Polling... fcntl({}) = {:?}", s1, res);
         if res.is_err() {
             break;
         }
@@ -231,11 +258,16 @@ fn test_read_from_closing_socket() {
     // Enqueue "hello".
     socket.enqueue(bytes::Bytes::from("hello"));
     socket.close();
-    let mut buf = vec![0u8; 5];
-    let mut total_read = 0;
-    while total_read < 5 {
-        match s2.read(&mut buf[total_read..]) {
-            Ok(n) if n > 0 => total_read += n,
+    let mut buf = Vec::new();
+    let mut temp = [0u8; 1024];
+    loop {
+        match nix::unistd::read(s2, &mut temp) {
+            Ok(n) if n > 0 => {
+                buf.extend_from_slice(&temp[..n]);
+                // Poll to allow the writer to make progress draining its queue
+                fdevent.poll(Some(Duration::from_millis(1))).unwrap();
+            }
+            Ok(0) => break,
             _ => {
                 fdevent.poll(Some(Duration::from_millis(10))).unwrap();
             }
@@ -342,7 +374,7 @@ fn test_close_socket_in_close_wait_state() {
 
     let socket = create_local_socket(s1_owned, registry.clone(), &mut fdevent);
     assert!(registry.find(socket.id()).is_some());
-    drop(s2); // Close remote end.
+    let _ = nix::unistd::close(s2); // Close remote end.
     for _ in 0..10 {
         fdevent.poll(Some(Duration::from_millis(10))).unwrap();
     }

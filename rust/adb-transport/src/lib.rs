@@ -34,7 +34,6 @@ use adb_protocol::{ConnectionState, TransportType, A_VERSION_MIN, MAX_PAYLOAD};
 use adb_sockets::{Socket, Transport};
 use adb_types::{calculate_apacket_checksum, Amessage, Apacket, Block};
 use rust_adb_crypto::Key;
-use sysdeps::AdbFd;
 
 /// Ported from original/adb.h: `using TransportId = uint64_t;`
 pub type TransportId = u64;
@@ -299,6 +298,7 @@ impl ATransport {
 
     /// Ported from original/transport.cpp: `bool atransport::HandleRead(std::unique_ptr<apacket> p)`
     pub fn handle_read(self: &Arc<Self>, packet: Apacket) -> bool {
+        println!("Handle read: cmd={:?}", packet.msg.command);
         log::debug!(
             target: "transport",
             "{} remote read: {} {}",
@@ -697,9 +697,11 @@ fn send_tls_request(t: &Arc<ATransport>) {
 }
 
 fn handle_new_connection(t: &Arc<ATransport>, p: &Apacket) {
+    println!("Handle new connection");
     t.set_connection_state(ConnectionState::Offline);
     t.update_version(p.msg.arg0, p.msg.arg1);
     let banner = String::from_utf8_lossy(p.payload.get_ref());
+    println!("Banner: {}", banner);
     parse_banner(&banner, t);
 }
 
@@ -832,11 +834,6 @@ fn handle_close(t: &Arc<ATransport>, p: &Apacket) {
             }
         }
     }
-}
-
-fn handle_stls(t: &Arc<ATransport>, _p: &Apacket) {
-    t.use_tls.store(true, Ordering::SeqCst);
-    log::info!(target: "transport", "TLS requested, but not yet implemented");
 }
 
 fn handle_sync(t: &Arc<ATransport>, p: &Apacket) {
@@ -1601,6 +1598,7 @@ impl Connection for BlockingConnectionAdapter {
     }
 
     fn start(&self, transport: Weak<ATransport>) -> bool {
+        println!("Adapter start called");
         *self.transport.lock().unwrap() = Some(transport.clone());
         let stopped = self.stopped.clone();
         let underlying = self.underlying.clone();
@@ -1614,6 +1612,7 @@ impl Connection for BlockingConnectionAdapter {
             None => true,
             Some(h) => h.is_finished(),
         };
+        println!("Should start read: {}", should_start_read);
 
         if should_start_read {
             if let Some(h) = read_thread_lock.take() {
@@ -1624,6 +1623,7 @@ impl Connection for BlockingConnectionAdapter {
             let underlying_read = underlying.clone();
 
             *read_thread_lock = Some(std::thread::spawn(move || {
+                println!("Read thread started");
                 while !stopped_read.load(Ordering::SeqCst) {
                     match underlying_read.read() {
                         Ok(packet) => {
@@ -1637,9 +1637,13 @@ impl Connection for BlockingConnectionAdapter {
                                 break;
                             }
                         }
-                        Err(_) => break,
+                        Err(e) => {
+                            println!("Read thread error: {:?}", e);
+                            break;
+                        }
                     }
                 }
+                println!("Read thread exiting");
             }));
         }
 
@@ -1694,14 +1698,20 @@ impl Connection for BlockingConnectionAdapter {
     }
 
     fn do_tls_handshake(&self, key: &Key, auth_key: Option<&mut String>) -> bool {
+        println!("Adapter do_tls_handshake");
         let handle = self.read_thread.lock().unwrap().take();
         if let Some(h) = handle {
             let _ = h.join();
         }
 
         if self.underlying.do_tls_handshake(key, auth_key) {
-            if let Some(t_weak) = self.transport.lock().unwrap().clone() {
+            println!("Underlying handshake success");
+            let t_opt = self.transport.lock().unwrap().clone();
+            if let Some(t_weak) = t_opt {
+                println!("Restarting adapter with transport");
                 self.start(t_weak);
+            } else {
+                println!("No transport to restart adapter with");
             }
             return true;
         }
@@ -1711,15 +1721,6 @@ impl Connection for BlockingConnectionAdapter {
     fn reset(&self) {
         self.underlying.reset();
     }
-}
-
-/// Ported from original/transport.h: `struct BlockingConnection`
-pub trait BlockingConnection: Send + Sync {
-    fn read(&self) -> std::io::Result<Apacket>;
-    fn write(&self, packet: &Apacket) -> std::io::Result<()>;
-    fn do_tls_handshake(&self, key: &Key, auth_key: Option<&mut String>) -> bool;
-    fn close(&self);
-    fn reset(&self);
 }
 
 /// Ported from original/transport.h: `struct FdConnection`
@@ -1803,6 +1804,7 @@ impl FdConnection {
 impl FdConnection {
     fn read_tls_blocking(&self, buf: &mut [u8]) -> std::io::Result<()> {
         let mut pos = 0;
+        println!("read_tls_blocking: want {}", buf.len());
         while pos < buf.len() {
             let mut tls_lock = self.tls.lock().unwrap();
             let tls = tls_lock
@@ -1837,7 +1839,10 @@ impl FdConnection {
                     drop(tls_lock);
                     self.wait_for_ready(libc::POLLIN)?;
                 }
-                Err(e) => return Err(e),
+                Err(e) => {
+                    println!("Tls read error: {:?}", e);
+                    return Err(e);
+                }
             }
         }
         Ok(())
@@ -1944,12 +1949,50 @@ impl BlockingConnection for FdConnection {
     }
 
     fn do_tls_handshake(&self, _k: &Key, _ak: Option<&mut String>) -> bool {
-        false
+        let config = rustls::ClientConfig::builder()
+            .with_safe_defaults()
+            .with_custom_certificate_verifier(Arc::new(AdbServerCertVerifier))
+            .with_no_client_auth();
+
+        let config = Arc::new(config);
+        // "adb" is the server name usually used
+        let server_name = "adb".try_into().unwrap();
+        let mut conn = rustls::ClientConnection::new(config, server_name).unwrap();
+
+        // Perform handshake
+        while conn.is_handshaking() {
+            while conn.wants_write() {
+                if let Err(e) = conn.write_tls(&mut &self.file) {
+                    println!("Handshake write error: {:?}", e);
+                    return false;
+                }
+            }
+            if conn.is_handshaking() && conn.wants_read() {
+                match conn.read_tls(&mut &self.file) {
+                    Ok(0) => {
+                        println!("Handshake EOF");
+                        return false;
+                    }
+                    Ok(_) => {
+                        if let Err(e) = conn.process_new_packets() {
+                            println!("Handshake process error: {:?}", e);
+                            return false;
+                        }
+                    }
+                    Err(e) => {
+                        println!("Handshake read error: {:?}", e);
+                        return false;
+                    }
+                }
+            }
+        }
+
+        *self.tls.lock().unwrap() = Some(rustls::Connection::Client(conn));
+        true
     }
 
     fn close(&self) {
-        self.read_fd.lock().unwrap().close();
-        self.write_fd.lock().unwrap().close();
+        // TcpStream handles close on drop.
     }
 
     fn reset(&self) {

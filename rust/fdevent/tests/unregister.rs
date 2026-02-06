@@ -6,7 +6,6 @@ use fdevent::fdevent::{Fdevent, FdeventHandler};
 use mio::{Interest, Token};
 use std::io::Write;
 use std::os::unix::io::OwnedFd;
-use std::os::unix::io::OwnedFd;
 use std::os::unix::net::UnixStream;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;

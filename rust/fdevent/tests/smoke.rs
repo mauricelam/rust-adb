@@ -8,7 +8,6 @@ use mio::{Interest, Token};
 use std::collections::VecDeque;
 use std::io::{self, Read, Write};
 use std::os::unix::io::OwnedFd;
-use std::os::unix::io::OwnedFd;
 use std::os::unix::net::UnixStream;
 use std::sync::{Arc, Mutex};
 use std::thread;

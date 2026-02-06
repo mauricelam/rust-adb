@@ -20,10 +20,14 @@
 use adb_protocol::{A_CLSE, A_OKAY, A_OPEN, A_WRTE, INITIAL_DELAYED_ACK_BYTES, MAX_PAYLOAD};
 use adb_types::{Apacket, Block, IoVector};
 use bytes::Bytes;
-use fdevent::fdevent::{Fdevent, FdeventHandle, FdeventHandle, FdeventHandler};
+use fdevent::fdevent::{Fdevent, FdeventHandle, FdeventHandler};
+#[cfg(unix)]
+use mio::unix::SourceFd;
 use mio::{event::Event, Interest, Token};
 use std::collections::HashMap;
 use std::io::{Read, Write};
+#[cfg(unix)]
+use std::os::unix::io::{AsRawFd, OwnedFd, RawFd};
 use std::sync::{Arc, Mutex, Weak};
 use sysdeps::AdbFd;
 
@@ -193,6 +197,7 @@ struct LocalSocketInner {
     token: Token,
     current_interests: Option<Interest>,
     available_send_bytes: Option<i64>,
+    read_buffer: Vec<u8>,
 }
 
 impl LocalSocket {
@@ -220,6 +225,7 @@ impl LocalSocket {
                 token,
                 current_interests: Some(Interest::READABLE),
                 available_send_bytes: None,
+                read_buffer: vec![0u8; MAX_PAYLOAD],
             })),
         }
     }
@@ -390,22 +396,25 @@ impl LocalSocketInner {
             None => return,
         };
 
-        let mut source = SourceFd(&fd);
-        match (self.current_interests, new_interests) {
-            (Some(_), Some(new)) => {
-                self.mio_registry
-                    .reregister(&mut source, self.token, new)
-                    .ok();
+        #[cfg(unix)]
+        {
+            let mut source = SourceFd(&fd);
+            match (self.current_interests, new_interests) {
+                (Some(_), Some(new)) => {
+                    self.mio_registry
+                        .reregister(&mut source, self.token, new)
+                        .ok();
+                }
+                (Some(_), None) => {
+                    self.mio_registry.deregister(&mut source).ok();
+                }
+                (None, Some(new)) => {
+                    self.mio_registry
+                        .register(&mut source, self.token, new)
+                        .ok();
+                }
+                (None, None) => {}
             }
-            (Some(_), None) => {
-                self.mio_registry.deregister(&mut source).ok();
-            }
-            (None, Some(new)) => {
-                self.mio_registry
-                    .register(&mut source, self.token, new)
-                    .ok();
-            }
-            (None, None) => {}
         }
         self.current_interests = new_interests;
         let token = self.token;
@@ -459,12 +468,13 @@ impl LocalSocketInner {
         };
         if !self.packet_queue.is_empty() {
             let data = self.packet_queue.coalesce();
+            #[cfg(unix)]
             match nix::unistd::write(fd, &data) {
                 Ok(n) => {
                     bytes_flushed = n as u32;
                     self.packet_queue.drop_front(n);
                 }
-                Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                Err(e) if e == nix::errno::Errno::EWOULDBLOCK || e == nix::errno::Errno::EAGAIN => {
                     // fd full
                 }
                 Err(_) => {
@@ -530,12 +540,20 @@ impl FdeventHandler for LocalSocket {
                     Some(f) => f.as_raw_fd(),
                     None => return,
                 };
+                #[cfg(unix)]
                 match nix::unistd::read(fd, &mut inner.read_buffer) {
                     Ok(0) => (None, true),
-                    Ok(n) => (Some(Bytes::copy_from_slice(&buf[..n])), false),
-                    Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => (None, false),
+                    Ok(n) => (Some(Bytes::copy_from_slice(&inner.read_buffer[..n])), false),
+                    Err(e)
+                        if e == nix::errno::Errno::EWOULDBLOCK
+                            || e == nix::errno::Errno::EAGAIN =>
+                    {
+                        (None, false)
+                    }
                     Err(_) => (None, true),
                 }
+                #[cfg(not(unix))]
+                (None, false)
             };
 
             if let Some(bytes) = bytes_to_enqueue {
@@ -557,6 +575,9 @@ impl FdeventHandler for LocalSocket {
             }
             if is_eof {
                 fdevent.unregister(self.inner.lock().unwrap().token).ok();
+                // If the peer closed, we might be unable to write anymore.
+                // Try flushing to trigger a write error if applicable.
+                self.inner.lock().unwrap().flush_incoming();
                 self.close();
             }
         }

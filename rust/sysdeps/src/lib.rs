@@ -1,12 +1,15 @@
-pub mod errno;
 pub mod env;
+pub mod errno;
 pub mod net;
 pub mod poll;
 
 #[cfg(unix)]
 use std::os::unix::io::{AsRawFd, FromRawFd, IntoRawFd, OwnedFd, RawFd};
 #[cfg(windows)]
-use std::os::windows::io::{AsRawHandle, AsRawSocket, FromRawHandle, FromRawSocket, IntoRawHandle, IntoRawSocket, RawHandle, RawSocket};
+use std::os::windows::io::{
+    AsRawHandle, AsRawSocket, FromRawHandle, FromRawSocket, IntoRawHandle, IntoRawSocket,
+    RawHandle, RawSocket,
+};
 
 use std::io::{Read, Write};
 
@@ -76,6 +79,15 @@ impl AdbFd {
     #[cfg(windows)]
     pub unsafe fn from_raw_socket(s: RawSocket) -> Self {
         Self::Socket(std::net::TcpStream::from_raw_socket(s as _))
+    }
+
+    /// Converts the `AdbFd` into an `OwnedFd` (Unix only).
+    #[cfg(unix)]
+    pub fn try_into_owned_fd(self) -> Option<OwnedFd> {
+        match self {
+            Self::File(f) => Some(f.into()),
+            _ => None,
+        }
     }
 }
 

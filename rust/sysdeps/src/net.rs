@@ -1,14 +1,14 @@
 #[cfg(unix)]
-use std::os::unix::io::{AsRawFd, FromRawFd, OwnedFd};
-#[cfg(unix)]
 use libc;
+#[cfg(unix)]
+use std::os::unix::io::{AsRawFd, OwnedFd};
 
 #[cfg(windows)]
 use std::os::windows::io::{AsRawSocket, FromRawSocket, OwnedSocket};
 #[cfg(windows)]
-use windows_sys::Win32::Networking::WinSock::*;
-#[cfg(windows)]
 use std::sync::Once;
+#[cfg(windows)]
+use windows_sys::Win32::Networking::WinSock::*;
 
 #[cfg(windows)]
 static WSA_STARTUP: Once = Once::new();
@@ -35,7 +35,8 @@ pub fn set_tcp_keepalive<T: AsRawFd>(socket: &T, interval_sec: i32) -> bool {
             &enable as *const _ as *const libc::c_void,
             std::mem::size_of_val(&enable) as libc::socklen_t,
         )
-    } != 0 {
+    } != 0
+    {
         return false;
     }
 
@@ -53,7 +54,8 @@ pub fn set_tcp_keepalive<T: AsRawFd>(socket: &T, interval_sec: i32) -> bool {
                 &interval_sec as *const _ as *const libc::c_void,
                 std::mem::size_of_val(&interval_sec) as libc::socklen_t,
             )
-        } != 0 {
+        } != 0
+        {
             return false;
         }
         if unsafe {
@@ -64,7 +66,8 @@ pub fn set_tcp_keepalive<T: AsRawFd>(socket: &T, interval_sec: i32) -> bool {
                 &interval_sec as *const _ as *const libc::c_void,
                 std::mem::size_of_val(&interval_sec) as libc::socklen_t,
             )
-        } != 0 {
+        } != 0
+        {
             return false;
         }
         let keepcnt: libc::c_int = 10;
@@ -76,7 +79,8 @@ pub fn set_tcp_keepalive<T: AsRawFd>(socket: &T, interval_sec: i32) -> bool {
                 &keepcnt as *const _ as *const libc::c_void,
                 std::mem::size_of_val(&keepcnt) as libc::socklen_t,
             )
-        } != 0 {
+        } != 0
+        {
             return false;
         }
     }
@@ -91,7 +95,8 @@ pub fn set_tcp_keepalive<T: AsRawFd>(socket: &T, interval_sec: i32) -> bool {
                 &interval_sec as *const _ as *const libc::c_void,
                 std::mem::size_of_val(&interval_sec) as libc::socklen_t,
             )
-        } != 0 {
+        } != 0
+        {
             return false;
         }
     }
@@ -164,7 +169,14 @@ pub fn network_peek<T: AsRawFd>(socket: &T) -> Option<isize> {
     let fd = socket.as_raw_fd();
     #[cfg(not(target_os = "macos"))]
     {
-        let ret = unsafe { libc::recv(fd, std::ptr::null_mut(), 0, libc::MSG_PEEK | libc::MSG_TRUNC) };
+        let ret = unsafe {
+            libc::recv(
+                fd,
+                std::ptr::null_mut(),
+                0,
+                libc::MSG_PEEK | libc::MSG_TRUNC,
+            )
+        };
         if ret == -1 {
             None
         } else {
@@ -184,7 +196,8 @@ pub fn network_peek<T: AsRawFd>(socket: &T) -> Option<isize> {
                 &mut upper_bound_bytes as *mut _ as *mut libc::c_void,
                 &mut optlen,
             )
-        } == -1 {
+        } == -1
+        {
             None
         } else {
             Some(upper_bound_bytes as isize)
@@ -213,7 +226,10 @@ pub fn adb_socketpair() -> std::io::Result<(AdbFd, AdbFd)> {
     {
         use std::os::unix::net::UnixStream;
         let (s1, s2) = UnixStream::pair()?;
-        Ok((AdbFd::from(OwnedFd::from(s1)), AdbFd::from(OwnedFd::from(s2))))
+        Ok((
+            AdbFd::from(OwnedFd::from(s1)),
+            AdbFd::from(OwnedFd::from(s2)),
+        ))
     }
     #[cfg(windows)]
     {
