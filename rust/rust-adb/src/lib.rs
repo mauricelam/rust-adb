@@ -1,6 +1,7 @@
 use adb_io::{read_protocol_string, send_protocol_string, read_orderly_shutdown};
-use adb_protocol::TransportType;
-use adb_socket_spec::{socket_spec_connect, NativeOwnedHandle};
+pub use adb_protocol::TransportType;
+pub use adb_socket_spec::NativeOwnedHandle;
+use adb_socket_spec::socket_spec_connect;
 use std::io::{Read, Write};
 use std::sync::{Mutex, OnceLock};
 use thiserror::Error;
@@ -22,7 +23,7 @@ pub enum AdbClientError {
     ServiceFailed(String),
 }
 
-type Result<T> = std::result::Result<T, AdbClientError>;
+pub type Result<T> = std::result::Result<T, AdbClientError>;
 
 static G_ADB_TRANSPORT: Mutex<TransportType> = Mutex::new(TransportType::Any);
 static G_ADB_SERIAL: Mutex<Option<String>> = Mutex::new(None);
