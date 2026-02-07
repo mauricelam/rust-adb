@@ -204,6 +204,10 @@ mod tests {
 
     #[test]
     fn test_load_save_authorized_keys() {
+        {
+            let mut keys = get_authorized_keys().lock().unwrap();
+            keys.clear();
+        }
         let dir = tempfile::tempdir().unwrap();
         let adb_keys_path = dir.path().join("adb_keys");
         std::env::set_var("ADB_VENDOR_KEYS", &adb_keys_path);
