@@ -242,3 +242,57 @@ Once the core layers are fully ported and verified, the next phase will focus on
 ### Step 20: Full Windows Support
 - **Description**: Complete the platform-specific abstractions for Windows in `sysdeps` and `socket-spec`.
 - **Testing**: Ensure the entire test suite passes on Windows.
+
+## Proposed Crate Reorganization
+
+To improve maintainability and reduce the overhead of managing numerous small crates, the following reorganization is proposed. This plan consolidates the current 17 crates into 8 logically coherent ones.
+
+### 1. `adb-core`
+**Consolidates:** `adb-types`, `adb-protocol`, `adb_io`, `adb-utils`, `trace`
+**Rationale:** These crates form the foundational layer of the ADB protocol. They are almost always used together and provide the basic data structures, constants, and I/O utilities required by all other components.
+
+### 2. `adb-net`
+**Consolidates:** `adb-sockets`, `adb-listeners`, `socket-spec`
+**Rationale:** This grouping handles all socket-related abstractions, listener management, and the parsing of ADB socket specifications. It centralizes the networking logic that isn't transport-specific.
+
+### 3. `adb-transport`
+**Consolidates:** `adb-transport`, `adb-usb`, `adb-mdns`
+**Rationale:** Consolidates the transport layer management with its specific implementations (USB and mDNS discovery). This allows for a cleaner interface between the generic transport logic and the platform/hardware-specific backends.
+
+### 4. `adb-auth`
+**Consolidates:** `adb-auth`, `rust-adb-pairing-auth`, `rust-adb-crypto`
+**Rationale:** Centralizes all authentication and cryptographic logic, including RSA key management, token signing, and the newer pairing protocol.
+
+### 5. `adb-fdevent` (formerly `fdevent`)
+**Rationale:** Maintains the event loop as a standalone, low-dependency crate. Renamed for consistency with the `adb-` prefix.
+
+### 6. `adb-sys` (formerly `sysdeps`)
+**Rationale:** Follows the Rust convention of using the `-sys` suffix for low-level system abstractions and platform-specific FFI.
+
+### 7. `adb-services`
+**Rationale:** Continues to host high-level service implementations (Shell, Sync, Forwarding, etc.).
+
+### 8. `adb-daemon`
+**Rationale:** The entry point and top-level logic for the ADB daemon application.
+
+### Summary of Changes
+| Current Crate | New Location |
+|---|---|
+| `adb-types` | `adb-core::types` |
+| `adb-protocol` | `adb-core::protocol` |
+| `adb_io` | `adb-core::io` |
+| `adb-utils` | `adb-core::utils` |
+| `trace` | `adb-core::trace` |
+| `adb-sockets` | `adb-net::sockets` |
+| `adb-listeners` | `adb-net::listeners` |
+| `socket-spec` | `adb-net::spec` |
+| `adb-transport` | `adb-transport::core` |
+| `adb-usb` | `adb-transport::usb` |
+| `adb-mdns` | `adb-transport::mdns` |
+| `adb-auth` | `adb-auth::core` |
+| `rust-adb-pairing-auth` | `adb-auth::pairing` |
+| `rust-adb-crypto` | `adb-auth::crypto` |
+| `fdevent` | `adb-fdevent` |
+| `sysdeps` | `adb-sys` |
+| `adb-services` | `adb-services` |
+| `adb-daemon` | `adb-daemon` |
