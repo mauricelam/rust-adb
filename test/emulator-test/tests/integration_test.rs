@@ -51,7 +51,10 @@ impl Drop for EmulatorGuard {
 
 fn get_adb_path() -> std::path::PathBuf {
     if let Ok(adb_bin) = env::var("ADB_BINARY") {
-        return std::path::PathBuf::from(adb_bin);
+        let p = std::path::PathBuf::from(adb_bin);
+        if p.exists() {
+            return p;
+        }
     }
     if let Ok(home) = env::var("ANDROID_HOME") {
         let mut p = std::path::PathBuf::from(home);
@@ -59,6 +62,14 @@ fn get_adb_path() -> std::path::PathBuf {
         p.push("adb");
         if p.exists() {
             return p;
+        }
+        #[cfg(windows)]
+        {
+            let mut p_win = p.clone();
+            p_win.set_extension("exe");
+            if p_win.exists() {
+                return p_win;
+            }
         }
     }
     std::path::PathBuf::from("adb")
@@ -73,8 +84,13 @@ fn run_adb(args: &[&str]) -> Output {
 
 fn is_emulator_reachable() -> bool {
     let output = run_adb(&["devices"]);
-    let devices = String::from_utf8_lossy(&output.stdout);
-    devices.contains("emulator-5554") && devices.contains("\tdevice")
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    println!("adb devices stdout: {}", stdout);
+    if !stderr.is_empty() {
+        println!("adb devices stderr: {}", stderr);
+    }
+    stdout.contains("emulator-5554") && stdout.contains("\tdevice")
 }
 
 fn wait_for_boot() {

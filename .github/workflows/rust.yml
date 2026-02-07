@@ -24,14 +24,28 @@ jobs:
     runs-on: ubuntu-latest
     steps:
     - uses: actions/checkout@v3
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.12'
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install pytest
     - name: List files for debugging
       run: |
         pwd
         ls -F
         ls -R test/
+        find . -maxdepth 3 -name "*.py"
+    - name: Run integration test
+      env:
+        ADB_BINARY: ${{ github.workspace }}/binaries/linux/adb
+        RUST_ADB_BINARY: ${{ github.workspace }}/binaries/linux/adb # Placeholder until Rust binary is available
+      run: pytest test/rust_adb_integration_test.py
 
   rust-integration-test:
-    runs-on: macos-latest
+    runs-on: macos-13
     steps:
     - uses: actions/checkout@v3
     - name: Set up Rust
@@ -39,5 +53,9 @@ jobs:
     - name: Run Rust Integration Test
       uses: reactivecircus/android-emulator-runner@v2
       with:
-        api-level: 29
+        api-level: 30
+        target: default
+        arch: x86_64
+        disable-animations: true
+        force-avd-creation: true
         script: cd test/emulator-test && cargo test --verbose
