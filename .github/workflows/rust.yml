@@ -28,3 +28,21 @@ jobs:
     - name: Run workspace tests
       run: cargo test --verbose --workspace -- --test-threads=1
       working-directory: rust
+
+  integration-test:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v3
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.12'
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install pytest
+    - name: Run integration test
+      env:
+        ADB_BINARY: ${{ github.workspace }}/binaries/linux/adb
+        RUST_ADB_BINARY: ${{ github.workspace }}/binaries/linux/adb # Placeholder until Rust binary is available
+      run: pytest test/rust_adb_integration_test.py
