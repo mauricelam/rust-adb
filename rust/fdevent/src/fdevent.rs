@@ -12,8 +12,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use thiserror::Error;
 
-use std::os::fd::OwnedFd;
-// use sysdeps::AdbFd;
+use sysdeps::AdbFd;
 
 /// Errors that can occur when using `fdevent`.
 #[derive(Error, Debug)]
@@ -169,7 +168,7 @@ pub struct Fdevent {
     /// A map from tokens to their corresponding event handlers.
     handlers: HashMap<Token, Box<dyn FdeventHandler>>,
     /// A map from tokens to their owned file descriptors, mio sources, and interests.
-    fds: HashMap<Token, (Arc<OwnedFd>, Option<MioSource>, Option<Interest>)>,
+    fds: HashMap<Token, (Arc<AdbFd>, Option<MioSource>, Option<Interest>)>,
     /// A map from tokens to their registered timeouts.
     timeouts: HashMap<Token, (Instant, Duration)>,
     /// The queue of functions to be executed on the looper thread.
@@ -223,7 +222,7 @@ impl Fdevent {
     /// * `interest` - The initial set of events to monitor.
     pub fn register(
         &mut self,
-        fd: Arc<OwnedFd>,
+        fd: Arc<AdbFd>,
         handler: Box<dyn FdeventHandler>,
         interest: Interest,
     ) -> FdeventResult<Token> {
@@ -308,7 +307,7 @@ impl Fdevent {
     /// # Arguments
     ///
     /// * `token` - The token returned by [`Self::register`].
-    pub fn unregister(&mut self, token: Token) -> FdeventResult<Arc<OwnedFd>> {
+    pub fn unregister(&mut self, token: Token) -> FdeventResult<Arc<AdbFd>> {
         let (fd, source, current_interest) = self.fds.remove(&token).ok_or_else(|| {
             FdeventError::Io(io::Error::new(io::ErrorKind::NotFound, "Token not found"))
         })?;

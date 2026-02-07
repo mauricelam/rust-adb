@@ -23,11 +23,14 @@ use bytes::Bytes;
 use fdevent::fdevent::{Fdevent, FdeventHandle, FdeventHandler};
 #[cfg(unix)]
 use mio::unix::SourceFd;
+#[cfg(windows)]
+use std::os::windows::io::FromRawSocket;
 use mio::{event::Event, Interest, Token};
 use std::collections::HashMap;
-use std::io::{Read, Write};
 #[cfg(unix)]
-use std::os::unix::io::{AsRawFd, OwnedFd, RawFd};
+use std::os::unix::io::{AsRawFd, RawFd};
+#[cfg(windows)]
+use std::os::windows::io::{AsRawHandle, AsRawSocket, RawHandle, RawSocket};
 use std::sync::{Arc, Mutex, Weak};
 use sysdeps::AdbFd;
 
@@ -185,7 +188,7 @@ pub struct LocalSocket {
 /// Inner state of a [`LocalSocket`].
 struct LocalSocketInner {
     id: u32,
-    fd: Option<Arc<OwnedFd>>,
+    fd: Option<Arc<AdbFd>>,
     packet_queue: IoVector,
     peer: Option<Weak<dyn Socket>>,
     transport: Option<Arc<dyn Transport>>,
@@ -204,7 +207,7 @@ impl LocalSocket {
     /// Creates a new `LocalSocket`.
     pub fn new(
         id: u32,
-        fd: Arc<OwnedFd>,
+        fd: Arc<AdbFd>,
         registry: Arc<SocketRegistry>,
         mio_registry: mio::Registry,
         fdevent_handle: FdeventHandle,
@@ -243,6 +246,7 @@ impl LocalSocket {
     }
 
     /// Returns the file descriptor associated with the socket.
+    #[cfg(unix)]
     pub fn fd(&self) -> RawFd {
         self.inner
             .lock()
@@ -251,6 +255,30 @@ impl LocalSocket {
             .as_ref()
             .map(|f| f.as_raw_fd())
             .unwrap_or(-1)
+    }
+
+    /// Returns the handle associated with the socket (Windows only).
+    #[cfg(windows)]
+    pub fn handle(&self) -> RawHandle {
+        self.inner
+            .lock()
+            .unwrap()
+            .fd
+            .as_ref()
+            .map(|f| f.as_raw_handle())
+            .unwrap_or(std::ptr::null_mut())
+    }
+
+    /// Returns the socket associated with the socket (Windows only).
+    #[cfg(windows)]
+    pub fn socket(&self) -> RawSocket {
+        self.inner
+            .lock()
+            .unwrap()
+            .fd
+            .as_ref()
+            .map(|f| f.as_raw_socket())
+            .unwrap_or(windows_sys::Win32::Networking::WinSock::INVALID_SOCKET as RawSocket)
     }
 
     /// Returns the socket registry associated with the socket.
@@ -391,13 +419,12 @@ impl LocalSocketInner {
             return;
         }
 
-        let fd = match &self.fd {
-            Some(f) => f.as_raw_fd(),
-            None => return,
-        };
-
         #[cfg(unix)]
         {
+            let fd = match &self.fd {
+                Some(f) => f.as_raw_fd(),
+                None => return,
+            };
             let mut source = SourceFd(&fd);
             match (self.current_interests, new_interests) {
                 (Some(_), Some(new)) => {
@@ -414,6 +441,37 @@ impl LocalSocketInner {
                         .ok();
                 }
                 (None, None) => {}
+            }
+        }
+        #[cfg(windows)]
+        {
+            let s_raw = match &self.fd {
+                Some(f) => f.as_raw_socket(),
+                None => return,
+            };
+            if s_raw != windows_sys::Win32::Networking::WinSock::INVALID_SOCKET as _ {
+                // SAFETY: s_raw is a valid socket.
+                let std_stream = unsafe { std::net::TcpStream::from_raw_socket(s_raw as _) };
+                let mut source = mio::net::TcpStream::from_std(std_stream);
+                match (self.current_interests, new_interests) {
+                    (Some(_), Some(new)) => {
+                        self.mio_registry
+                            .reregister(&mut source, self.token, new)
+                            .ok();
+                    }
+                    (Some(_), None) => {
+                        self.mio_registry.deregister(&mut source).ok();
+                    }
+                    (None, Some(new)) => {
+                        self.mio_registry
+                            .register(&mut source, self.token, new)
+                            .ok();
+                    }
+                    (None, None) => {}
+                }
+                // We MUST not let 'source' close the socket when dropped.
+                use std::os::windows::io::IntoRawSocket;
+                let _ = source.into_std().into_raw_socket();
             }
         }
         self.current_interests = new_interests;
@@ -462,23 +520,72 @@ impl LocalSocketInner {
     /// Ported from `local_socket_flush_incoming` in `original/sockets.cpp`.
     fn flush_incoming(&mut self) -> FlushResult {
         let mut bytes_flushed = 0;
-        let fd = match &self.fd {
-            Some(f) => f.as_raw_fd(),
-            None => return FlushResult::Destroyed,
-        };
         if !self.packet_queue.is_empty() {
             let data = self.packet_queue.coalesce();
+            let fd = match &self.fd {
+                Some(f) => f,
+                None => return FlushResult::Destroyed,
+            };
+
             #[cfg(unix)]
-            match nix::unistd::write(fd, &data) {
-                Ok(n) => {
-                    bytes_flushed = n as u32;
-                    self.packet_queue.drop_front(n);
+            {
+                match nix::unistd::write(fd.as_raw_fd(), &data) {
+                    Ok(n) => {
+                        bytes_flushed = n as u32;
+                        self.packet_queue.drop_front(n);
+                    }
+                    Err(e)
+                        if e == nix::errno::Errno::EWOULDBLOCK || e == nix::errno::Errno::EAGAIN =>
+                    {
+                        // fd full
+                    }
+                    Err(_) => {
+                        self.has_write_error = true;
+                    }
                 }
-                Err(e) if e == nix::errno::Errno::EWOULDBLOCK || e == nix::errno::Errno::EAGAIN => {
-                    // fd full
-                }
-                Err(_) => {
-                    self.has_write_error = true;
+            }
+            #[cfg(windows)]
+            {
+                let s = fd.as_raw_socket();
+                if s != windows_sys::Win32::Networking::WinSock::INVALID_SOCKET as _ {
+                    let res = unsafe {
+                        windows_sys::Win32::Networking::WinSock::send(
+                            s as _,
+                            data.as_ptr() as *const _,
+                            data.len() as i32,
+                            0,
+                        )
+                    };
+                    if res >= 0 {
+                        bytes_flushed = res as u32;
+                        self.packet_queue.drop_front(res as usize);
+                    } else {
+                        let err =
+                            unsafe { windows_sys::Win32::Networking::WinSock::WSAGetLastError() };
+                        if err == windows_sys::Win32::Networking::WinSock::WSAEWOULDBLOCK {
+                            // full
+                        } else {
+                            self.has_write_error = true;
+                        }
+                    }
+                } else {
+                    let h = fd.as_raw_handle();
+                    let mut written = 0;
+                    let res = unsafe {
+                        windows_sys::Win32::Storage::FileSystem::WriteFile(
+                            h as _,
+                            data.as_ptr() as *const _,
+                            data.len() as u32,
+                            &mut written,
+                            std::ptr::null_mut(),
+                        )
+                    };
+                    if res != 0 {
+                        bytes_flushed = written;
+                        self.packet_queue.drop_front(written as usize);
+                    } else {
+                        self.has_write_error = true;
+                    }
                 }
             }
         }
@@ -537,11 +644,12 @@ impl FdeventHandler for LocalSocket {
             let (bytes_to_enqueue, is_eof) = {
                 let mut inner = self.inner.lock().unwrap();
                 let fd = match &inner.fd {
-                    Some(f) => f.as_raw_fd(),
+                    Some(f) => f.clone(),
                     None => return,
                 };
+
                 #[cfg(unix)]
-                match nix::unistd::read(fd, &mut inner.read_buffer) {
+                match nix::unistd::read(fd.as_raw_fd(), &mut inner.read_buffer) {
                     Ok(0) => (None, true),
                     Ok(n) => (Some(Bytes::copy_from_slice(&inner.read_buffer[..n])), false),
                     Err(e)
@@ -552,8 +660,61 @@ impl FdeventHandler for LocalSocket {
                     }
                     Err(_) => (None, true),
                 }
-                #[cfg(not(unix))]
-                (None, false)
+                #[cfg(windows)]
+                {
+                    let s = fd.as_raw_socket();
+                    if s != windows_sys::Win32::Networking::WinSock::INVALID_SOCKET as _ {
+                        let res = unsafe {
+                            windows_sys::Win32::Networking::WinSock::recv(
+                                s as _,
+                                inner.read_buffer.as_mut_ptr() as *mut _,
+                                inner.read_buffer.len() as i32,
+                                0,
+                            )
+                        };
+                        if res > 0 {
+                            (
+                                Some(Bytes::copy_from_slice(&inner.read_buffer[..res as usize])),
+                                false,
+                            )
+                        } else if res == 0 {
+                            (None, true)
+                        } else {
+                            let err = unsafe {
+                                windows_sys::Win32::Networking::WinSock::WSAGetLastError()
+                            };
+                            if err == windows_sys::Win32::Networking::WinSock::WSAEWOULDBLOCK {
+                                (None, false)
+                            } else {
+                                (None, true)
+                            }
+                        }
+                    } else {
+                        let h = fd.as_raw_handle();
+                        let mut read = 0;
+                        let res = unsafe {
+                            windows_sys::Win32::Storage::FileSystem::ReadFile(
+                                h as _,
+                                inner.read_buffer.as_mut_ptr() as *mut _,
+                                inner.read_buffer.len() as u32,
+                                &mut read,
+                                std::ptr::null_mut(),
+                            )
+                        };
+                        if res != 0 {
+                            if read > 0 {
+                                (
+                                    Some(Bytes::copy_from_slice(&inner.read_buffer[..read as usize])),
+                                    false,
+                                )
+                            } else {
+                                (None, true)
+                            }
+                        } else {
+                            (None, true)
+                        }
+                    }
+                }
             };
 
             if let Some(bytes) = bytes_to_enqueue {
@@ -696,7 +857,7 @@ impl Socket for RemoteSocket {
 /// Creates a new local socket and registers it with the `fdevent` looper.
 /// Ported from `create_local_socket` in `original/sockets.cpp`.
 pub fn create_local_socket(
-    fd: OwnedFd,
+    fd: AdbFd,
     registry: Arc<SocketRegistry>,
     fdevent: &mut Fdevent,
 ) -> Arc<LocalSocket> {

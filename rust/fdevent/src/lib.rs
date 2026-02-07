@@ -13,8 +13,7 @@
 //! use fdevent::fdevent::{Fdevent, FdeventHandler};
 //! use mio::{Interest, Token};
 //! use mio::event::Event;
-//! use std::os::unix::io::OwnedFd;
-//! use std::os::unix::net::UnixStream;
+//! use sysdeps::AdbFd;
 //! use std::sync::Arc;
 //!
 //! struct MyHandler;
@@ -33,9 +32,9 @@
 //!
 //! fn main() -> Result<(), Box<dyn std::error::Error>> {
 //!     let mut fdevent = Fdevent::new()?;
-//!     let (stream, _) = UnixStream::pair()?;
+//!     let (s1, s2) = sysdeps::net::adb_socketpair()?;
 //!     let handler = Box::new(MyHandler);
-//!     let token = fdevent.register(Arc::new(OwnedFd::from(stream)), handler, Interest::READABLE)?;
+//!     let token = fdevent.register(Arc::new(s1), handler, Interest::READABLE)?;
 //!
 //!     // Poll for events in a loop
 //!     // fdevent.poll(None)?;

@@ -52,10 +52,10 @@ fn unregister_with_pending_event() {
     });
 
     let _t1 = fdevent
-        .register(Arc::new(OwnedFd::from(r1)), h1, Interest::READABLE)
+        .register(Arc::new(OwnedFd::from(r1).into()), h1, Interest::READABLE)
         .unwrap();
     let t2 = fdevent
-        .register(Arc::new(OwnedFd::from(r2)), h2, Interest::READABLE)
+        .register(Arc::new(OwnedFd::from(r2).into()), h2, Interest::READABLE)
         .unwrap();
 
     // Handler 1 will unregister Handler 2

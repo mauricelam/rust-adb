@@ -29,7 +29,7 @@ fn test_file_sync_basic() {
 
     // Start sync service in a thread
     std::thread::spawn(move || {
-        file_sync_service(s2_fd);
+        file_sync_service(s2_fd.into());
     });
 
     let mut conn = SyncConnection::new(OwnedFd::from(s1));
@@ -100,7 +100,7 @@ fn test_file_sync_v2() {
 
     // Start sync service in a thread
     std::thread::spawn(move || {
-        file_sync_service(s2_fd);
+        file_sync_service(s2_fd.into());
     });
 
     let mut conn = SyncConnection::new(OwnedFd::from(s1));

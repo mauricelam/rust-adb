@@ -22,8 +22,12 @@ use adb_sockets::{connect_to_remote, create_local_socket, LocalSocket, Socket, S
 use adb_transport::{ATransport, DisconnectHandler};
 use fdevent::fdevent::{Fdevent, FdeventHandle, FdeventHandler};
 use mio::{Interest, Token};
-use std::os::unix::io::{AsRawFd, FromRawFd, OwnedFd, RawFd};
+#[cfg(unix)]
+use std::os::unix::io::{AsRawFd, FromRawFd};
+#[cfg(windows)]
+use std::os::windows::io::{AsRawSocket, FromRawSocket, RawSocket};
 use std::sync::{Arc, Mutex, OnceLock, Weak};
+use sysdeps::AdbFd;
 
 pub const K_SMART_SOCKET_CONNECT_TO: &str = "*smartsocket*";
 
@@ -51,7 +55,7 @@ pub struct Listener {
     pub local_name: Mutex<String>,
     pub connect_to: String,
     pub transport: Option<Arc<ATransport>>,
-    pub fd: Arc<OwnedFd>,
+    pub fd: Arc<AdbFd>,
     pub token: Token,
     pub disconnect_id: Option<u64>,
     pub fdevent: FdeventHandle,
@@ -70,7 +74,7 @@ fn get_listeners() -> &'static Mutex<Vec<Arc<Listener>>> {
 }
 
 struct ListenerHandler {
-    fd: RawFd,
+    fd: Arc<AdbFd>,
     connect_to: String,
     transport: Option<Weak<ATransport>>,
     registry: Weak<SocketRegistry>,
@@ -79,29 +83,58 @@ struct ListenerHandler {
 impl FdeventHandler for ListenerHandler {
     fn on_event(&mut self, event: &mio::event::Event, fdevent: &mut Fdevent) {
         if event.is_readable() {
-            unsafe {
-                let client_fd = libc::accept(self.fd, std::ptr::null_mut(), std::ptr::null_mut());
-                if client_fd >= 0 {
-                    let client_fd = OwnedFd::from_raw_fd(client_fd);
-                    if let Some(registry) = self.registry.upgrade() {
-                        let socket = create_local_socket(client_fd, registry, fdevent);
-                        if self.connect_to == K_SMART_SOCKET_CONNECT_TO {
-                            if let Some(cb) = SMART_SOCKET_CALLBACK.get() {
-                                cb(socket, fdevent);
-                            } else {
-                                log::error!("SmartSocket callback not set");
-                                socket.close();
-                            }
+            let client_fd = match () {
+                #[cfg(unix)]
+                () => {
+                    let res = unsafe {
+                        libc::accept(self.fd.as_raw_fd(), std::ptr::null_mut(), std::ptr::null_mut())
+                    };
+                    if res >= 0 {
+                        Some(AdbFd::from(unsafe {
+                            std::os::unix::io::OwnedFd::from_raw_fd(res)
+                        }))
+                    } else {
+                        None
+                    }
+                }
+                #[cfg(windows)]
+                () => {
+                    let res = unsafe {
+                        windows_sys::Win32::Networking::WinSock::accept(
+                            self.fd.as_raw_socket() as _,
+                            std::ptr::null_mut(),
+                            std::ptr::null_mut(),
+                        )
+                    };
+                    if res != windows_sys::Win32::Networking::WinSock::INVALID_SOCKET as _ {
+                        Some(AdbFd::from(unsafe {
+                            std::os::windows::io::OwnedSocket::from_raw_socket(res as _)
+                        }))
+                    } else {
+                        None
+                    }
+                }
+            };
+
+            if let Some(client_fd) = client_fd {
+                if let Some(registry) = self.registry.upgrade() {
+                    let socket = create_local_socket(client_fd, registry, fdevent);
+                    if self.connect_to == K_SMART_SOCKET_CONNECT_TO {
+                        if let Some(cb) = SMART_SOCKET_CALLBACK.get() {
+                            cb(socket, fdevent);
                         } else {
-                            if let Some(t_arc) = self.transport.as_ref().and_then(|t| t.upgrade()) {
-                                socket.set_transport(t_arc.clone() as Arc<dyn adb_sockets::Transport>);
-                            }
-                            connect_to_remote(&socket, &self.connect_to);
+                            log::error!("SmartSocket callback not set");
+                            socket.close();
                         }
                     } else {
-                        // No registry, can't create socket.
-                        log::error!("No SocketRegistry available for listener");
+                        if let Some(t_arc) = self.transport.as_ref().and_then(|t| t.upgrade()) {
+                            socket.set_transport(t_arc.clone() as Arc<dyn adb_sockets::Transport>);
+                        }
+                        connect_to_remote(&socket, &self.connect_to);
                     }
+                } else {
+                    // No registry, can't create socket.
+                    log::error!("No SocketRegistry available for listener");
                 }
             }
         }
@@ -178,7 +211,7 @@ pub fn install_listener(
 
     let mut resolved_port = 0;
     let fd = match socket_spec_listen(local_name, Some(&mut resolved_port)) {
-        Ok(fd) => fd,
+        Ok(fd) => AdbFd::from(fd),
         Err(e) => return Err((InstallStatus::CannotBind, e)),
     };
 
@@ -188,8 +221,9 @@ pub fn install_listener(
         local_name.to_string()
     };
 
+    let fd_arc = Arc::new(fd);
     let handler = Box::new(ListenerHandler {
-        fd: fd.as_raw_fd(),
+        fd: fd_arc.clone(),
         connect_to: connect_to.to_string(),
         transport: transport.as_ref().map(|t| Arc::downgrade(t)),
         registry: Arc::downgrade(&registry),
@@ -199,19 +233,23 @@ pub fn install_listener(
     // But mio doesn't like that?
     // Let's use Interest::READABLE if not disabled.
     let token = if (flags & INSTALL_LISTENER_DISABLED) == 0 {
-        fdevent.register(Arc::new(fd.try_clone().unwrap()), handler, Interest::READABLE).unwrap()
+        fdevent
+            .register(fd_arc.clone(), handler, Interest::READABLE)
+            .unwrap()
     } else {
         // For now, let's just register with READABLE and handle it.
         // In C++, DISABLED means it's created but not yet listening for READ.
         // We'll just register it anyway, but we should probably handle DISABLED better.
-        fdevent.register(Arc::new(fd.try_clone().unwrap()), handler, Interest::READABLE).unwrap()
+        fdevent
+            .register(fd_arc.clone(), handler, Interest::READABLE)
+            .unwrap()
     };
 
     let mut listener = Listener {
         local_name: Mutex::new(actual_local_name),
         connect_to: connect_to.to_string(),
         transport: transport.clone(),
-        fd: Arc::new(fd),
+        fd: fd_arc,
         token,
         disconnect_id: None,
         fdevent: fdevent.get_handle(),

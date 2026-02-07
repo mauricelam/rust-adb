@@ -151,7 +151,6 @@ dependencies = [
  "adb-protocol",
  "adb-transport",
  "adb-types",
- "libc",
  "log",
  "rusb",
  "rust-adb-crypto",

@@ -2,7 +2,6 @@ use adb_sockets::{create_local_socket, create_remote_socket, Socket, SocketRegis
 use adb_types::Apacket;
 use fdevent::fdevent::Fdevent;
 use nix::sys::socket::{socketpair, AddressFamily, SockFlag, SockType};
-use std::io::{Read, Write};
 use std::os::unix::io::{AsRawFd, IntoRawFd};
 use std::sync::{
     atomic::{AtomicBool, Ordering},
@@ -10,7 +9,6 @@ use std::sync::{
 };
 use std::thread;
 use std::time::Duration;
-use sysdeps::AdbFd;
 
 struct MockTransport {
     packets: Arc<Mutex<Vec<Apacket>>>,
@@ -57,7 +55,7 @@ fn test_remote_to_local_flow() {
     )
     .unwrap();
 
-    let local = create_local_socket(pair_a, registry.clone(), &mut fdevent);
+    let local = create_local_socket(pair_a.into(), registry.clone(), &mut fdevent);
 
     let packets = Arc::new(Mutex::new(Vec::new()));
     let transport = Arc::new(MockTransport {

@@ -11,11 +11,20 @@ env:
 
 jobs:
   build-ubuntu:
-
     runs-on: ubuntu-latest
-
     steps:
     - uses: actions/checkout@v3
-    - name: Run tests
+    - name: Run workspace tests
+      run: cargo test --verbose --workspace -- --test-threads=1
+      working-directory: rust
+    - name: Run integration tests
       run: cargo test --verbose
       working-directory: test/client-server-test
+
+  build-windows:
+    runs-on: windows-latest
+    steps:
+    - uses: actions/checkout@v3
+    - name: Run workspace tests
+      run: cargo test --verbose --workspace -- --test-threads=1
+      working-directory: rust

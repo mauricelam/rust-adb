@@ -127,7 +127,7 @@ fn smoke() {
         });
         let w_token = fdevent
             .register(
-                Arc::new(OwnedFd::from(write_fd)),
+                Arc::new(OwnedFd::from(write_fd).into()),
                 writer_handler,
                 Interest::WRITABLE,
             )
@@ -139,7 +139,7 @@ fn smoke() {
         });
         fdevent
             .register(
-                Arc::new(OwnedFd::from(read_fd)),
+                Arc::new(OwnedFd::from(read_fd).into()),
                 reader_handler,
                 Interest::READABLE,
             )

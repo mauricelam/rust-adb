@@ -18,19 +18,19 @@ use adb_io::{read_exactly, write_exactly};
 use adb_protocol::file_sync_protocol::*;
 use std::fs::{File, OpenOptions};
 use std::io::{Read, Write};
+#[cfg(unix)]
 use std::os::unix::fs::{MetadataExt, PermissionsExt};
-use std::os::unix::io::OwnedFd;
 use std::path::Path;
+use sysdeps::AdbFd;
 use zerocopy::IntoBytes;
 
-pub fn file_sync_service(fd: OwnedFd) {
-    let mut file = File::from(fd);
+pub fn file_sync_service(mut fd: AdbFd) {
     let mut buffer = vec![0u8; SYNC_DATA_MAX];
 
-    while handle_sync_command(&mut file, &mut buffer) {}
+    while handle_sync_command(&mut fd, &mut buffer) {}
 }
 
-fn handle_sync_command(file: &mut File, buffer: &mut [u8]) -> bool {
+fn handle_sync_command(file: &mut AdbFd, buffer: &mut [u8]) -> bool {
     let mut request = SyncRequest {
         id: 0,
         path_length: 0,
@@ -89,7 +89,7 @@ fn handle_sync_command(file: &mut File, buffer: &mut [u8]) -> bool {
     true
 }
 
-fn send_sync_fail(file: &mut File, reason: &str) -> std::io::Result<()> {
+fn send_sync_fail(file: &mut AdbFd, reason: &str) -> std::io::Result<()> {
     let msg = SyncData {
         id: ID_FAIL,
         size: reason.len() as u32,
@@ -98,7 +98,7 @@ fn send_sync_fail(file: &mut File, reason: &str) -> std::io::Result<()> {
     write_exactly(file, reason.as_bytes())
 }
 
-fn do_lstat_v1(file: &mut File, path: &str) -> std::io::Result<()> {
+fn do_lstat_v1(file: &mut AdbFd, path: &str) -> std::io::Result<()> {
     let mut msg = SyncStatV1 {
         id: ID_LSTAT_V1,
         mode: 0,
@@ -107,15 +107,22 @@ fn do_lstat_v1(file: &mut File, path: &str) -> std::io::Result<()> {
     };
 
     if let Ok(metadata) = std::fs::symlink_metadata(path) {
-        msg.mode = metadata.mode();
-        msg.size = metadata.size() as u32;
-        msg.mtime = metadata.mtime() as u32;
+        #[cfg(unix)]
+        {
+            msg.mode = metadata.mode();
+            msg.size = metadata.size() as u32;
+            msg.mtime = metadata.mtime() as u32;
+        }
+        #[cfg(windows)]
+        {
+            msg.size = metadata.len() as u32;
+        }
     }
 
     write_exactly(file, msg.as_bytes())
 }
 
-fn do_stat_v2(file: &mut File, id: u32, path: &str) -> std::io::Result<()> {
+fn do_stat_v2(file: &mut AdbFd, id: u32, path: &str) -> std::io::Result<()> {
     let mut msg = SyncStatV2 {
         id,
         error: 0,
@@ -139,26 +146,33 @@ fn do_stat_v2(file: &mut File, id: u32, path: &str) -> std::io::Result<()> {
 
     match result {
         Ok(st) => {
-            msg.dev = st.dev();
-            msg.ino = st.ino();
-            msg.mode = st.mode();
-            msg.nlink = st.nlink() as u32;
-            msg.uid = st.uid();
-            msg.gid = st.gid();
-            msg.size = st.size();
-            msg.atime = st.atime();
-            msg.mtime = st.mtime();
-            msg.ctime = st.ctime();
+            #[cfg(unix)]
+            {
+                msg.dev = st.dev();
+                msg.ino = st.ino();
+                msg.mode = st.mode();
+                msg.nlink = st.nlink() as u32;
+                msg.uid = st.uid();
+                msg.gid = st.gid();
+                msg.size = st.size();
+                msg.atime = st.atime();
+                msg.mtime = st.mtime();
+                msg.ctime = st.ctime();
+            }
+            #[cfg(windows)]
+            {
+                msg.size = st.len();
+            }
         }
         Err(e) => {
-            msg.error = e.raw_os_error().unwrap_or(libc::EINVAL) as u32;
+            msg.error = e.raw_os_error().unwrap_or(sysdeps::errno::errno_from_wire(22)) as u32; // 22 is EINVAL
         }
     }
 
     write_exactly(file, msg.as_bytes())
 }
 
-fn do_list(file: &mut File, v2: bool, path: &str) -> std::io::Result<()> {
+fn do_list(file: &mut AdbFd, v2: bool, path: &str) -> std::io::Result<()> {
     if let Ok(entries) = std::fs::read_dir(path) {
         for entry in entries {
             if let Ok(entry) = entry {
@@ -184,18 +198,25 @@ fn do_list(file: &mut File, v2: bool, path: &str) -> std::io::Result<()> {
                         namelen: name_bytes.len() as u32,
                     };
                     if let Ok(st) = metadata {
-                        msg.dev = st.dev();
-                        msg.ino = st.ino();
-                        msg.mode = st.mode();
-                        msg.nlink = st.nlink() as u32;
-                        msg.uid = st.uid();
-                        msg.gid = st.gid();
-                        msg.size = st.size();
-                        msg.atime = st.atime();
-                        msg.mtime = st.mtime();
-                        msg.ctime = st.ctime();
+                        #[cfg(unix)]
+                        {
+                            msg.dev = st.dev();
+                            msg.ino = st.ino();
+                            msg.mode = st.mode();
+                            msg.nlink = st.nlink() as u32;
+                            msg.uid = st.uid();
+                            msg.gid = st.gid();
+                            msg.size = st.size();
+                            msg.atime = st.atime();
+                            msg.mtime = st.mtime();
+                            msg.ctime = st.ctime();
+                        }
+                        #[cfg(windows)]
+                        {
+                            msg.size = st.len();
+                        }
                     } else {
-                        msg.error = libc::EACCES as u32;
+                        msg.error = sysdeps::errno::errno_from_wire(13) as u32; // 13 is EACCES
                     }
                     write_exactly(file, msg.as_bytes())?;
                     write_exactly(file, name_bytes)?;
@@ -208,9 +229,16 @@ fn do_list(file: &mut File, v2: bool, path: &str) -> std::io::Result<()> {
                         namelen: name_bytes.len() as u32,
                     };
                     if let Ok(st) = metadata {
-                        msg.mode = st.mode();
-                        msg.size = st.size() as u32;
-                        msg.mtime = st.mtime() as u32;
+                        #[cfg(unix)]
+                        {
+                            msg.mode = st.mode();
+                            msg.size = st.size() as u32;
+                            msg.mtime = st.mtime() as u32;
+                        }
+                        #[cfg(windows)]
+                        {
+                            msg.size = st.len() as u32;
+                        }
                         write_exactly(file, msg.as_bytes())?;
                         write_exactly(file, name_bytes)?;
                     }
@@ -248,15 +276,15 @@ fn do_list(file: &mut File, v2: bool, path: &str) -> std::io::Result<()> {
     }
 }
 
-fn do_list_v1(file: &mut File, path: &str) -> std::io::Result<()> {
+fn do_list_v1(file: &mut AdbFd, path: &str) -> std::io::Result<()> {
     do_list(file, false, path)
 }
 
-fn do_list_v2(file: &mut File, path: &str) -> std::io::Result<()> {
+fn do_list_v2(file: &mut AdbFd, path: &str) -> std::io::Result<()> {
     do_list(file, true, path)
 }
 
-fn do_send_v1(file: &mut File, spec: &str, buffer: &mut [u8]) -> bool {
+fn do_send_v1(file: &mut AdbFd, spec: &str, buffer: &mut [u8]) -> bool {
     // spec is "/path,mode"
     let comma = match spec.rfind(',') {
         Some(idx) => idx,
@@ -279,7 +307,7 @@ fn do_send_v1(file: &mut File, spec: &str, buffer: &mut [u8]) -> bool {
     send_impl(file, path, mode, CompressionType::None, false, buffer)
 }
 
-fn do_send_v2(file: &mut File, path: &str, buffer: &mut [u8]) -> bool {
+fn do_send_v2(file: &mut AdbFd, path: &str, buffer: &mut [u8]) -> bool {
     let mut setup = SyncSendV2 {
         id: 0,
         mode: 0,
@@ -308,7 +336,7 @@ fn do_send_v2(file: &mut File, path: &str, buffer: &mut [u8]) -> bool {
 }
 
 #[allow(unused_assignments)]
-fn send_impl(file: &mut File, path: &str, mode: u32, compression: CompressionType, dry_run: bool, buffer: &mut [u8]) -> bool {
+fn send_impl(file: &mut AdbFd, path: &str, mode: u32, compression: CompressionType, dry_run: bool, buffer: &mut [u8]) -> bool {
     if compression != CompressionType::None {
         let _ = send_sync_fail(file, "compression not supported");
         return false;
@@ -324,6 +352,7 @@ fn send_impl(file: &mut File, path: &str, mode: u32, compression: CompressionTyp
     } else {
         match OpenOptions::new().write(true).create(true).truncate(true).open(path) {
             Ok(f) => {
+                #[cfg(unix)]
                 let _ = f.set_permissions(std::fs::Permissions::from_mode(mode & 0o777));
                 Some(f)
             }
@@ -372,19 +401,22 @@ fn send_impl(file: &mut File, path: &str, mode: u32, compression: CompressionTyp
     if let Some(f) = dest_file {
         drop(f);
         // Set timestamp
-        let times = [
-            libc::timeval {
-                tv_sec: timestamp as libc::time_t,
-                tv_usec: 0,
-            },
-            libc::timeval {
-                tv_sec: timestamp as libc::time_t,
-                tv_usec: 0,
-            },
-        ];
-        unsafe {
-            if let Ok(path_c) = std::ffi::CString::new(path) {
-                libc::utimes(path_c.as_ptr(), times.as_ptr());
+        #[cfg(unix)]
+        {
+            let times = [
+                libc::timeval {
+                    tv_sec: timestamp as libc::time_t,
+                    tv_usec: 0,
+                },
+                libc::timeval {
+                    tv_sec: timestamp as libc::time_t,
+                    tv_usec: 0,
+                },
+            ];
+            unsafe {
+                if let Ok(path_c) = std::ffi::CString::new(path) {
+                    libc::utimes(path_c.as_ptr(), times.as_ptr());
+                }
             }
         }
     }
@@ -393,11 +425,11 @@ fn send_impl(file: &mut File, path: &str, mode: u32, compression: CompressionTyp
     write_exactly(file, okay.as_bytes()).is_ok()
 }
 
-fn do_recv_v1(file: &mut File, path: &str, buffer: &mut [u8]) -> bool {
+fn do_recv_v1(file: &mut AdbFd, path: &str, buffer: &mut [u8]) -> bool {
     recv_impl(file, path, CompressionType::None, buffer)
 }
 
-fn do_recv_v2(file: &mut File, path: &str, buffer: &mut [u8]) -> bool {
+fn do_recv_v2(file: &mut AdbFd, path: &str, buffer: &mut [u8]) -> bool {
     let mut setup = SyncRecvV2 { id: 0, flags: 0 };
     if read_exactly(file, setup.as_mut_bytes()).is_err() {
         return false;
@@ -415,7 +447,7 @@ fn do_recv_v2(file: &mut File, path: &str, buffer: &mut [u8]) -> bool {
     recv_impl(file, path, compression, buffer)
 }
 
-fn recv_impl(file: &mut File, path: &str, compression: CompressionType, buffer: &mut [u8]) -> bool {
+fn recv_impl(file: &mut AdbFd, path: &str, compression: CompressionType, buffer: &mut [u8]) -> bool {
     if compression != CompressionType::None {
         let _ = send_sync_fail(file, "compression not supported");
         return false;

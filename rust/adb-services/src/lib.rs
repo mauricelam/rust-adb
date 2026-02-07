@@ -549,11 +549,7 @@ pub fn host_service_to_socket(
             wait_service(fd, serial, transport_id, spec);
         })
         .ok()?;
-        return Some(create_local_socket(
-            fd.try_into_owned_fd().unwrap(),
-            registry,
-            fdevent,
-        ));
+        return Some(create_local_socket(fd, registry, fdevent));
     }
 
     if let Some(host) = name.strip_prefix("connect:") {
@@ -562,11 +558,7 @@ pub fn host_service_to_socket(
             connect_service(fd, host);
         })
         .ok()?;
-        return Some(create_local_socket(
-            fd.try_into_owned_fd().unwrap(),
-            registry,
-            fdevent,
-        ));
+        return Some(create_local_socket(fd, registry, fdevent));
     }
 
     if let Some(pair_spec) = name.strip_prefix("pair:") {
@@ -577,11 +569,7 @@ pub fn host_service_to_socket(
                 pair_service(fd, host, password);
             })
             .ok()?;
-            return Some(create_local_socket(
-                fd.try_into_owned_fd().unwrap(),
-                registry,
-                fdevent,
-            ));
+            return Some(create_local_socket(fd, registry, fdevent));
         }
     }
 
@@ -1109,11 +1097,7 @@ pub fn daemon_service_to_fd(name: &str, transport: &Arc<ATransport>) -> Option<A
         let cmd = cmd.to_string();
         let transport_clone = transport.clone();
         return create_service_thread("reverse", move |fd| {
-            reverse_service::reverse_service(
-                fd.try_into_owned_fd().unwrap(),
-                &cmd,
-                transport_clone,
-            );
+            reverse_service::reverse_service(fd, &cmd, transport_clone);
         })
         .ok();
     }
@@ -1429,11 +1413,7 @@ mod integration_tests {
         let registry = Arc::new(SocketRegistry::new());
         let mut fdevent = Fdevent::new().unwrap();
         let (s1, _s2) = sysdeps::net::adb_socketpair().unwrap();
-        let client_socket = create_local_socket(
-            s1.try_into_owned_fd().unwrap(),
-            registry.clone(),
-            &mut fdevent,
-        );
+        let client_socket = create_local_socket(s1, registry.clone(), &mut fdevent);
 
         connect_to_smartsocket(client_socket.clone(), &mut fdevent);
 
@@ -1457,11 +1437,7 @@ mod integration_tests {
         let registry = Arc::new(SocketRegistry::new());
         let mut fdevent = Fdevent::new().unwrap();
         let (s1, s2) = sysdeps::net::adb_socketpair().unwrap();
-        let client_socket = create_local_socket(
-            s1.try_into_owned_fd().unwrap(),
-            registry.clone(),
-            &mut fdevent,
-        );
+        let client_socket = create_local_socket(s1, registry.clone(), &mut fdevent);
 
         connect_to_smartsocket(client_socket.clone(), &mut fdevent);
 

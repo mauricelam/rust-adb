@@ -42,7 +42,7 @@ fn timeout() {
         events: events.clone(),
     });
     let token = fdevent
-        .register(Arc::new(OwnedFd::from(r)), handler, Interest::READABLE)
+        .register(Arc::new(OwnedFd::from(r).into()), handler, Interest::READABLE)
         .unwrap();
 
     let delta = Duration::from_millis(100);

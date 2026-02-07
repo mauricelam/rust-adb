@@ -239,6 +239,6 @@ Once the core layers are fully ported and verified, the next phase will focus on
 - **Description**: Port remaining services like `track-app`, `abb`, and `abb_exec`.
 - **Testing**: Verify correct dispatch and execution of these services.
 
-### Step 20: Full Windows Support
+### Step 20: Full Windows Support [Done]
 - **Description**: Complete the platform-specific abstractions for Windows in `sysdeps` and `socket-spec`.
 - **Testing**: Ensure the entire test suite passes on Windows.

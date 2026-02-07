@@ -21,8 +21,12 @@ use adb_transport::{ATransport, DisconnectHandler};
 use fdevent::fdevent::{Fdevent, FdeventHandler};
 use mio::{Interest, Token};
 use std::collections::HashMap;
-use std::os::unix::io::{AsRawFd, FromRawFd, OwnedFd, RawFd};
+#[cfg(unix)]
+use std::os::unix::io::{AsRawFd, FromRawFd};
+#[cfg(windows)]
+use std::os::windows::io::{AsRawHandle, AsRawSocket, OwnedSocket, RawHandle, RawSocket};
 use std::sync::{Arc, Mutex, OnceLock, Weak};
+use sysdeps::AdbFd;
 
 struct ReverseForward {
     local: String,
@@ -36,8 +40,8 @@ fn reverse_forwards() -> &'static Mutex<HashMap<u64, HashMap<String, ReverseForw
     REVERSE_FORWARDS.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
-pub fn reverse_service(fd: OwnedFd, command: &str, transport: Arc<ATransport>) {
-    let mut file = std::fs::File::from(fd);
+pub fn reverse_service(fd: AdbFd, command: &str, transport: Arc<ATransport>) {
+    let mut file = fd;
     let tid = transport.id;
 
     if let Some(args) = command.strip_prefix("forward:") {
@@ -54,12 +58,13 @@ pub fn reverse_service(fd: OwnedFd, command: &str, transport: Arc<ATransport>) {
                 let fdevent_lock = transport.fdevent.lock().unwrap();
                 if let Some(ref fdevent_arc) = *fdevent_lock {
                     let mut fdevent = fdevent_arc.lock().unwrap();
+                    let listen_fd_arc = Arc::new(AdbFd::from(listen_fd));
                     let handler = Box::new(ReverseListener {
-                        fd: listen_fd.as_raw_fd(),
+                        fd: listen_fd_arc.clone(),
                         local: local.clone(),
                         transport: Arc::downgrade(&transport),
                     });
-                    match fdevent.register(Arc::new(listen_fd), handler, Interest::READABLE) {
+                    match fdevent.register(listen_fd_arc, handler, Interest::READABLE) {
                         Ok(token) => {
                             let mut forwards_lock = reverse_forwards().lock().unwrap();
                             let transport_forwards =
@@ -131,7 +136,7 @@ pub fn reverse_service(fd: OwnedFd, command: &str, transport: Arc<ATransport>) {
 }
 
 struct ReverseListener {
-    fd: RawFd,
+    fd: Arc<AdbFd>,
     local: String,
     transport: Weak<ATransport>,
 }
@@ -139,25 +144,50 @@ struct ReverseListener {
 impl FdeventHandler for ReverseListener {
     fn on_event(&mut self, event: &mio::event::Event, fdevent: &mut Fdevent) {
         if event.is_readable() {
-            unsafe {
-                let mut addr: libc::sockaddr_storage = std::mem::zeroed();
-                let mut len = std::mem::size_of::<libc::sockaddr_storage>() as libc::socklen_t;
-                let client_fd =
-                    libc::accept(self.fd, &mut addr as *mut _ as *mut libc::sockaddr, &mut len);
-                if client_fd >= 0 {
-                    if let Some(transport) = self.transport.upgrade() {
-                        let registry = transport
-                            .registry
-                            .lock()
-                            .unwrap()
-                            .as_ref()
-                            .expect("transport missing registry")
-                            .clone();
-                        let local_socket = create_local_socket(OwnedFd::from_raw_fd(client_fd), registry, fdevent);
-                        connect_to_remote(&local_socket, &self.local);
+            let client_fd = match () {
+                #[cfg(unix)]
+                () => {
+                    let res = unsafe {
+                        libc::accept(self.fd.as_raw_fd(), std::ptr::null_mut(), std::ptr::null_mut())
+                    };
+                    if res >= 0 {
+                        Some(AdbFd::from(unsafe {
+                            std::os::unix::io::OwnedFd::from_raw_fd(res)
+                        }))
                     } else {
-                        libc::close(client_fd);
+                        None
                     }
+                }
+                #[cfg(windows)]
+                () => {
+                    let res = unsafe {
+                        windows_sys::Win32::Networking::WinSock::accept(
+                            self.fd.as_raw_socket() as _,
+                            std::ptr::null_mut(),
+                            std::ptr::null_mut(),
+                        )
+                    };
+                    if res != windows_sys::Win32::Networking::WinSock::INVALID_SOCKET as _ {
+                        Some(AdbFd::from(unsafe {
+                            std::os::windows::io::OwnedSocket::from_raw_socket(res as _)
+                        }))
+                    } else {
+                        None
+                    }
+                }
+            };
+
+            if let Some(client_fd) = client_fd {
+                if let Some(transport) = self.transport.upgrade() {
+                    let registry = transport
+                        .registry
+                        .lock()
+                        .unwrap()
+                        .as_ref()
+                        .expect("transport missing registry")
+                        .clone();
+                    let local_socket = create_local_socket(client_fd, registry, fdevent);
+                    connect_to_remote(&local_socket, &self.local);
                 }
             }
         }
