@@ -97,7 +97,8 @@ impl Drop for MioSource {
                 // We need to make sure the mio stream doesn't close the socket when dropped,
                 // because AdbFd still owns it.
                 use std::os::windows::io::IntoRawSocket;
-                let _ = stream.into_std().into_raw_socket();
+                let std_stream = std::net::TcpStream::from(stream);
+                let _ = std_stream.into_raw_socket();
             }
         }
     }
@@ -237,7 +238,7 @@ impl Fdevent {
             }
             #[cfg(windows)]
             () => {
-                use std::os::windows::io::AsRawSocket;
+                use std::os::windows::io::{AsRawSocket, FromRawSocket};
                 let s_raw = fd.as_raw_socket();
                 if s_raw != windows_sys::Win32::Networking::WinSock::INVALID_SOCKET as _ {
                     // SAFETY: s_raw is a valid socket.

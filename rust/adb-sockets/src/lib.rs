@@ -457,6 +457,7 @@ impl LocalSocketInner {
             };
             if s_raw != windows_sys::Win32::Networking::WinSock::INVALID_SOCKET as _ {
                 // SAFETY: s_raw is a valid socket.
+                use std::os::windows::io::FromRawSocket;
                 let std_stream = unsafe { std::net::TcpStream::from_raw_socket(s_raw as _) };
                 let mut source = mio::net::TcpStream::from_std(std_stream);
                 match (self.current_interests, new_interests) {
@@ -477,7 +478,8 @@ impl LocalSocketInner {
                 }
                 // We MUST not let 'source' close the socket when dropped.
                 use std::os::windows::io::IntoRawSocket;
-                let _ = source.into_std().into_raw_socket();
+                let std_stream = std::net::TcpStream::from(source);
+                let _ = std_stream.into_raw_socket();
             }
         }
         self.current_interests = new_interests;
