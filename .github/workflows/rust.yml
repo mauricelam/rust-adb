@@ -53,4 +53,4 @@ jobs:
       uses: reactivecircus/android-emulator-runner@v2
       with:
         api-level: 29
-        script: cd rust && cargo test -p rust-adb --test integration_test -- --nocapture
+        script: cd test/emulator-test && cargo test --verbose
