@@ -16,6 +16,19 @@ struct EmulatorGuard {
 
 impl EmulatorGuard {
     fn new() -> Self {
+        let android_home = env::var("ANDROID_HOME");
+
+        // Ensure ADB server is running
+        let adb_path = if let Ok(ref home) = android_home {
+            let mut p = std::path::PathBuf::from(home);
+            p.push("platform-tools");
+            p.push("adb");
+            p
+        } else {
+            std::path::PathBuf::from("adb")
+        };
+        let _ = Command::new(adb_path).arg("start-server").status();
+
         if is_emulator_reachable() {
             println!("Emulator already reachable.");
             return Self { child: None };
@@ -26,7 +39,9 @@ impl EmulatorGuard {
         let avd_name = env::var("RS_ADB_AVD_NAME").unwrap_or_else(|_| "test".to_string());
 
         // Use $ANDROID_HOME/emulator/emulator
-        let emulator_path = format!("{}/emulator/emulator", android_home);
+        let mut emulator_path = std::path::PathBuf::from(android_home);
+        emulator_path.push("emulator");
+        emulator_path.push("emulator");
 
         let child = Command::new(emulator_path)
             .args(&["-avd", &avd_name, "-no-window", "-gpu", "libguestgl", "-no-audio"])
