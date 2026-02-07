@@ -7,15 +7,14 @@ use fdevent::fdevent::{Fdevent, FdeventHandler};
 use mio::{Interest, Token};
 use std::collections::VecDeque;
 use std::io::{self, Read, Write};
-use std::os::unix::io::OwnedFd;
-use std::os::unix::net::UnixStream;
+use sysdeps::AdbFd;
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
 
 struct SharedPipe {
-    reader: UnixStream,
-    writer: UnixStream,
+    reader: AdbFd,
+    writer: AdbFd,
     queue: VecDeque<u8>,
     writer_token: Token,
 }
@@ -89,7 +88,7 @@ impl FdeventHandler for WriterHandler {
 fn smoke() {
     let mut fdevent = Fdevent::new().unwrap();
 
-    let (first_r, mut writer) = UnixStream::pair().unwrap();
+    let (first_r, mut writer) = sysdeps::net::adb_socketpair().unwrap();
     first_r.set_nonblocking(true).unwrap();
     writer.set_nonblocking(true).unwrap();
 
@@ -98,14 +97,14 @@ fn smoke() {
 
     for _ in 0..128 {
         // Reduced from 512 to avoid FD limits in some environments
-        let (r, w) = UnixStream::pair().unwrap();
+        let (r, w) = sysdeps::net::adb_socketpair().unwrap();
         r.set_nonblocking(true).unwrap();
         w.set_nonblocking(true).unwrap();
         read_fds.push(r);
         write_fds.push(w);
     }
 
-    let (mut reader, last_w) = UnixStream::pair().unwrap();
+    let (mut reader, last_w) = sysdeps::net::adb_socketpair().unwrap();
     reader.set_nonblocking(true).unwrap();
     last_w.set_nonblocking(true).unwrap();
     write_fds.push(last_w);
@@ -127,7 +126,7 @@ fn smoke() {
         });
         let w_token = fdevent
             .register(
-                Arc::new(OwnedFd::from(write_fd).into()),
+                Arc::new(write_fd),
                 writer_handler,
                 Interest::WRITABLE,
             )
@@ -139,7 +138,7 @@ fn smoke() {
         });
         fdevent
             .register(
-                Arc::new(OwnedFd::from(read_fd).into()),
+                Arc::new(read_fd),
                 reader_handler,
                 Interest::READABLE,
             )

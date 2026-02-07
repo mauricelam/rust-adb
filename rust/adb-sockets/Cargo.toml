@@ -14,6 +14,7 @@ thiserror = "1.0.44"
 bytes = "1"
 log = "0.4.20"
 mio = { version = "0.8.11", features = ["os-poll", "net", "os-ext"] }
+[target.'cfg(unix)'.dependencies]
 nix = { version = "0.27.1", features = ["fs", "socket"] }
 
 [dev-dependencies]

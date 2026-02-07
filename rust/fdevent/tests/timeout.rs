@@ -5,8 +5,6 @@
 use fdevent::fdevent::{Fdevent, FdeventHandler};
 use mio::Interest;
 use std::io::Write;
-use std::os::unix::io::OwnedFd;
-use std::os::unix::net::UnixStream;
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
@@ -35,14 +33,14 @@ impl FdeventHandler for TimeoutHandler {
 fn timeout() {
     let mut fdevent = Fdevent::new().unwrap();
     let events = Arc::new(Mutex::new(Vec::new()));
-    let (r, mut w) = UnixStream::pair().unwrap();
+    let (r, mut w) = sysdeps::net::adb_socketpair().unwrap();
     r.set_nonblocking(true).unwrap();
 
     let handler = Box::new(TimeoutHandler {
         events: events.clone(),
     });
     let token = fdevent
-        .register(Arc::new(OwnedFd::from(r).into()), handler, Interest::READABLE)
+        .register(Arc::new(r), handler, Interest::READABLE)
         .unwrap();
 
     let delta = Duration::from_millis(100);

@@ -18,21 +18,18 @@ use adb_services::file_sync_client::SyncConnection;
 use adb_services::file_sync_service::file_sync_service;
 use std::fs::File;
 use std::io::{Read, Write};
-use std::os::unix::io::OwnedFd;
-use std::os::unix::net::UnixStream;
 use tempfile::tempdir;
 
 #[test]
 fn test_file_sync_basic() {
-    let (s1, s2) = UnixStream::pair().unwrap();
-    let s2_fd = OwnedFd::from(s2);
+    let (s1, s2) = sysdeps::net::adb_socketpair().unwrap();
 
     // Start sync service in a thread
     std::thread::spawn(move || {
-        file_sync_service(s2_fd.into());
+        file_sync_service(s2);
     });
 
-    let mut conn = SyncConnection::new(OwnedFd::from(s1));
+    let mut conn = SyncConnection::new(s1);
     let tmp = tempdir().unwrap();
     let local_file = tmp.path().join("local.txt");
     let remote_file = tmp.path().join("remote.txt");
@@ -95,15 +92,14 @@ fn test_file_sync_basic() {
 
 #[test]
 fn test_file_sync_v2() {
-    let (s1, s2) = UnixStream::pair().unwrap();
-    let s2_fd = OwnedFd::from(s2);
+    let (s1, s2) = sysdeps::net::adb_socketpair().unwrap();
 
     // Start sync service in a thread
     std::thread::spawn(move || {
-        file_sync_service(s2_fd.into());
+        file_sync_service(s2);
     });
 
-    let mut conn = SyncConnection::new(OwnedFd::from(s1));
+    let mut conn = SyncConnection::new(s1);
     conn.have_stat_v2 = true;
     conn.have_ls_v2 = true;
     conn.have_sendrecv_v2 = true;

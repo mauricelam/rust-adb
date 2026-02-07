@@ -286,6 +286,12 @@ impl LocalSocket {
         let inner = self.inner.lock().unwrap();
         inner.registry.upgrade()
     }
+
+    /// Returns the underlying file descriptor.
+    pub fn get_fd(&self) -> Option<Arc<AdbFd>> {
+        let inner = self.inner.lock().unwrap();
+        inner.fd.clone()
+    }
 }
 
 /// Connects a local socket to a remote service.

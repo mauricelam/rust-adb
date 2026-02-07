@@ -37,7 +37,7 @@ use sysdeps::AdbFd;
 #[cfg(unix)]
 use std::os::unix::io::{AsRawFd, FromRawFd, IntoRawFd};
 #[cfg(windows)]
-use std::os::windows::io::{AsRawSocket, FromRawHandle, IntoRawHandle};
+use std::os::windows::io::{AsRawHandle, AsRawSocket, FromRawHandle, IntoRawHandle};
 
 /// Initializes ADB services, including setting up the smartsocket callback.
 pub fn init_adb_services() {
@@ -62,9 +62,6 @@ pub mod jdwp_service;
 /// Module handling file sync services.
 pub mod file_sync_service;
 pub mod file_sync_client;
-
-/// Module handling ABB services.
-pub mod abb_service;
 
 /// Creates a socket pair, starts a new thread with the provided function,
 /// and returns one end of the socket pair as an `AdbFd`.
@@ -407,11 +404,9 @@ impl Socket for SmartSocket {
                     host_service_to_socket(service, serial, transport_id, registry.clone(), fdevent)
                 {
                     if let Some(ls) = local_socket_arc {
-                        let fd = ls.fd();
-                        unsafe {
-                            let mut f = std::fs::File::from_raw_fd(fd);
-                            let _ = adb_io::send_okay(&mut f);
-                            std::mem::forget(f);
+                        if let Some(fd_arc) = ls.get_fd() {
+                            let mut fd = fd_arc.try_clone().unwrap_or(AdbFd::None);
+                            let _ = adb_io::send_okay(&mut fd);
                         }
 
                         ls.set_peer(s2.clone());
@@ -420,14 +415,12 @@ impl Socket for SmartSocket {
                     }
                 } else {
                     if let Some(ls) = local_socket_arc {
-                        let fd = ls.fd();
-                        unsafe {
-                            let mut f = std::fs::File::from_raw_fd(fd);
+                        if let Some(fd_arc) = ls.get_fd() {
+                            let mut fd = fd_arc.try_clone().unwrap_or(AdbFd::None);
                             let _ = adb_io::send_fail(
-                                &mut f,
+                                &mut fd,
                                 &format!("unknown host service '{}'", service),
                             );
-                            std::mem::forget(f);
                         }
                         ls.close();
                         dispatched = true;
@@ -600,7 +593,7 @@ pub fn service_to_fd(name: &str, _transport: Option<&Arc<ATransport>>) -> std::i
     }
 }
 
-use crate::jdwp_service::{register_jdwp_observer, JdwpTracker, TrackerKind};
+use crate::jdwp_service::{register_jdwp_observer, JdwpTracker};
 
 /// Dispatches a daemon-side service request to a socket.
 /// Ported from `daemon_service_to_socket` in `original/daemon/services.cpp`.
@@ -611,29 +604,17 @@ pub fn daemon_service_to_socket(
     let registry = transport.registry.lock().unwrap().as_ref()?.clone();
     if name == "jdwp" {
         let id = registry.alloc_id();
-        let s = Arc::new(JdwpTracker::new(id, registry.clone(), TrackerKind::Jdwp, false));
+        let s = Arc::new(JdwpTracker::new(id, registry.clone(), false));
         registry.install(s.clone());
         return Some(s);
     }
     if name == "track-jdwp" {
         let id = registry.alloc_id();
-        let s = Arc::new(JdwpTracker::new(id, registry.clone(), TrackerKind::Jdwp, true));
+        let s = Arc::new(JdwpTracker::new(id, registry.clone(), true));
         let s_weak = Arc::downgrade(&s);
         register_jdwp_observer(Box::new(move || {
             if let Some(s) = s_weak.upgrade() {
-                s.send_process_list();
-            }
-        }));
-        registry.install(s.clone());
-        return Some(s);
-    }
-    if name == "track-app" {
-        let id = registry.alloc_id();
-        let s = Arc::new(JdwpTracker::new(id, registry.clone(), TrackerKind::App, true));
-        let s_weak = Arc::downgrade(&s);
-        register_jdwp_observer(Box::new(move || {
-            if let Some(s) = s_weak.upgrade() {
-                s.send_process_list();
+                s.send_jdwp_list();
             }
         }));
         registry.install(s.clone());
@@ -1088,9 +1069,6 @@ pub fn shell_service(adb_fd: AdbFd, args: &str) {
 /// Dispatches a service to a file descriptor on the daemon side.
 /// Ported from `daemon_service_to_fd` in `original/daemon/services.cpp`.
 pub fn daemon_service_to_fd(name: &str, transport: &Arc<ATransport>) -> Option<AdbFd> {
-    if name.starts_with("abb:") || name.starts_with("abb_exec:") {
-        return abb_service::execute_abb_command(name);
-    }
     if let Some(args) = name.strip_prefix("shell") {
         let args = args.to_string();
         return create_service_thread("shell", move |fd| {
@@ -1107,9 +1085,7 @@ pub fn daemon_service_to_fd(name: &str, transport: &Arc<ATransport>) -> Option<A
     }
     if name.starts_with("sync:") {
         return create_service_thread("sync", |fd| {
-            if let Some(owned_fd) = fd.try_into_owned_fd() {
-                file_sync_service::file_sync_service(owned_fd);
-            }
+            file_sync_service::file_sync_service(fd);
         })
         .ok();
     }

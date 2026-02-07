@@ -24,8 +24,9 @@
 use std::collections::VecDeque;
 
 use std::io::{Read, Write};
-use std::net::TcpStream;
-use std::os::unix::io::{AsRawFd, OwnedFd};
+#[cfg(unix)]
+use std::os::unix::io::AsRawFd;
+use sysdeps::AdbFd;
 use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, OnceLock, Weak};
 use std::time::SystemTime;
@@ -145,9 +146,6 @@ pub enum ReconnectResult {
 
 pub type ReconnectCallback = Box<dyn Fn(&ATransport) -> ReconnectResult + Send + Sync>;
 
-/// Callback for when a new public key needs authorization.
-pub type AuthPromptCallback = Arc<dyn Fn(&Arc<ATransport>, &str) + Send + Sync>;
-
 pub trait DisconnectHandler: Send + Sync {
     fn on_disconnect(&self, transport: &ATransport);
 }
@@ -185,8 +183,6 @@ pub struct ATransport {
     pub auth_keys: Mutex<VecDeque<rust_adb_crypto::Key>>,
     pub failed_auth_attempts: AtomicUsize,
     pub auth_key: Mutex<String>,
-    pub auth_token: Mutex<[u8; adb_auth::TOKEN_SIZE]>,
-    pub auth_prompt: Mutex<Option<AuthPromptCallback>>,
 }
 
 pub trait ServiceSocketCreator: Send + Sync {
@@ -229,8 +225,6 @@ impl ATransport {
             auth_keys: Mutex::new(VecDeque::new()),
             failed_auth_attempts: AtomicUsize::new(0),
             auth_key: Mutex::new(String::new()),
-            auth_token: Mutex::new([0u8; adb_auth::TOKEN_SIZE]),
-            auth_prompt: Mutex::new(None),
         }
     }
 
@@ -705,20 +699,12 @@ fn send_tls_request(t: &Arc<ATransport>) {
 }
 
 fn handle_new_connection(t: &Arc<ATransport>, p: &Apacket) {
+    println!("Handle new connection");
     t.set_connection_state(ConnectionState::Offline);
     t.update_version(p.msg.arg0, p.msg.arg1);
     let banner = String::from_utf8_lossy(p.payload.get_ref());
+    println!("Banner: {}", banner);
     parse_banner(&banner, t);
-
-    if t.get_connection_state() == ConnectionState::Host && !t.use_tls.load(Ordering::SeqCst) {
-        // We are the daemon, and the remote is a host.
-        // For now, let's assume auth is always required.
-        adb_daemon::ensure_authorized_keys_loaded();
-        t.set_connection_state(ConnectionState::Authorizing);
-        let (auth_packet, token) = adb_daemon::send_auth_request();
-        *t.auth_token.lock().unwrap() = token;
-        t.write(auth_packet);
-    }
 }
 
 fn handle_auth(t: &Arc<ATransport>, p: &Apacket) {
@@ -742,28 +728,6 @@ fn handle_auth(t: &Arc<ATransport>, p: &Apacket) {
                 }
             } else {
                 send_auth_publickey(t);
-            }
-        }
-        adb_auth::ADB_AUTH_SIGNATURE => {
-            let token = t.auth_token.lock().unwrap();
-            if adb_daemon::adbd_auth_verify_all(&*token, p.payload.get_ref()) {
-                t.set_connection_state(ConnectionState::Device);
-                send_connect(t);
-            } else {
-                t.set_connection_state(ConnectionState::Unauthorized);
-            }
-        }
-        adb_auth::ADB_AUTH_RSAPUBLICKEY => {
-            let public_key = String::from_utf8_lossy(p.payload.get_ref());
-            let public_key = public_key.trim_end_matches('\0');
-            log::info!("Received new public key: {}", public_key);
-
-            let prompt = t.auth_prompt.lock().unwrap().clone();
-            if let Some(prompt) = prompt {
-                prompt(t, public_key);
-            } else {
-                // If no prompt callback, just stay in Unauthorized state.
-                t.set_connection_state(ConnectionState::Unauthorized);
             }
         }
         _ => {
@@ -1523,8 +1487,7 @@ mod tests {
         });
 
         let stream = TcpStream::connect(addr).expect("Failed to connect");
-        let fd = OwnedFd::from(stream);
-        let fd_conn = Arc::new(FdConnection::new(fd));
+        let fd_conn = Arc::new(FdConnection::new(AdbFd::from(stream)));
         let adapter = Arc::new(BlockingConnectionAdapter::new(fd_conn.clone()));
         let transport = Arc::new(ATransport::new(
             TransportType::Local,
@@ -1565,121 +1528,6 @@ mod tests {
 
         adapter.stop();
         server_thread.join().expect("Server thread panicked");
-    }
-
-    #[test]
-    fn test_daemon_auth_flow() {
-        use base64::Engine;
-
-        let dir = tempfile::tempdir().unwrap();
-        let adb_keys_path = dir.path().join("adb_keys");
-        std::env::set_var("ADB_VENDOR_KEYS", &adb_keys_path);
-        adb_daemon::load_authorized_keys().unwrap();
-
-        let t = Arc::new(ATransport::new_offline(TransportType::Local));
-        let conn = Arc::new(MockConnection::new());
-        t.set_connection(conn.clone());
-
-        // 1. Receive A_CNXN from host
-        let mut p = Apacket::default();
-        p.msg.command = adb_protocol::A_CNXN;
-        p.payload = Block::from_vec(b"host::features=shell_v2".to_vec());
-        p.msg.data_length = p.payload.get_ref().len() as u32;
-
-        handle_packet(p, &t);
-
-        // Should be Authorizing and have sent a TOKEN request
-        assert_eq!(t.get_connection_state(), ConnectionState::Authorizing);
-        {
-            let written = conn.written.lock().unwrap();
-            assert_eq!(written.len(), 1);
-            assert_eq!(written[0].msg.command, adb_protocol::A_AUTH);
-            assert_eq!(written[0].msg.arg0, adb_auth::ADB_AUTH_TOKEN);
-        }
-
-        let token = *t.auth_token.lock().unwrap();
-        assert_ne!(token, [0u8; adb_auth::TOKEN_SIZE]);
-
-        // 2. Receive A_AUTH (SIGNATURE)
-        let key = rust_adb_crypto::new_rsa_2048().unwrap();
-        let sig = adb_auth::adb_auth_sign(&key, &token).unwrap();
-
-        // Add the public key to authorized keys
-        let pubkey_struct = key.android_pubkey().unwrap();
-        let pubkey_bytes: [u8; std::mem::size_of::<rust_adb_crypto::AndroidPubkey>()] =
-            unsafe { std::mem::transmute(pubkey_struct) };
-        let pubkey_b64 = base64::engine::general_purpose::STANDARD.encode(&pubkey_bytes);
-        adb_daemon::save_authorized_key(&pubkey_b64).unwrap();
-
-        let mut p_sig = Apacket::default();
-        p_sig.msg.command = adb_protocol::A_AUTH;
-        p_sig.msg.arg0 = adb_auth::ADB_AUTH_SIGNATURE;
-        p_sig.payload = Block::from_vec(sig);
-        p_sig.msg.data_length = p_sig.payload.get_ref().len() as u32;
-
-        handle_packet(p_sig, &t);
-
-        // Should be Device (online) and have sent A_CNXN
-        assert_eq!(t.get_connection_state(), ConnectionState::Device);
-        {
-            let written = conn.written.lock().unwrap();
-            assert_eq!(written.len(), 2);
-            assert_eq!(written[1].msg.command, adb_protocol::A_CNXN);
-        }
-
-        std::env::remove_var("ADB_VENDOR_KEYS");
-    }
-
-    #[test]
-    fn test_daemon_auth_flow_with_prompt() {
-        use base64::Engine;
-
-        let dir = tempfile::tempdir().unwrap();
-        let adb_keys_path = dir.path().join("adb_keys");
-        std::env::set_var("ADB_VENDOR_KEYS", &adb_keys_path);
-
-        let t = Arc::new(ATransport::new_offline(TransportType::Local));
-        let conn = Arc::new(MockConnection::new());
-        t.set_connection(conn.clone());
-
-        // Set prompt callback
-        let prompt_called = Arc::new(AtomicBool::new(false));
-        let prompt_called_clone = prompt_called.clone();
-        *t.auth_prompt.lock().unwrap() = Some(Arc::new(move |t_inner, key| {
-            prompt_called_clone.store(true, Ordering::SeqCst);
-            // Auto-authorize for the test
-            adb_daemon::save_authorized_key(key).unwrap();
-            t_inner.set_connection_state(ConnectionState::Device);
-            send_connect(t_inner);
-        }));
-
-        // 1. Receive A_CNXN from host
-        let mut p = Apacket::default();
-        p.msg.command = adb_protocol::A_CNXN;
-        p.payload = Block::from_vec(b"host::features=shell_v2".to_vec());
-        p.msg.data_length = p.payload.get_ref().len() as u32;
-
-        handle_packet(p, &t);
-
-        // 2. Receive A_AUTH (RSAPUBLICKEY)
-        let key = rust_adb_crypto::new_rsa_2048().unwrap();
-        let pubkey_struct = key.android_pubkey().unwrap();
-        let pubkey_bytes: [u8; std::mem::size_of::<rust_adb_crypto::AndroidPubkey>()] =
-            unsafe { std::mem::transmute(pubkey_struct) };
-        let pubkey_b64 = base64::engine::general_purpose::STANDARD.encode(&pubkey_bytes);
-
-        let mut p_pub = Apacket::default();
-        p_pub.msg.command = adb_protocol::A_AUTH;
-        p_pub.msg.arg0 = adb_auth::ADB_AUTH_RSAPUBLICKEY;
-        p_pub.payload = Block::from_vec(pubkey_b64.into_bytes());
-        p_pub.msg.data_length = p_pub.payload.get_ref().len() as u32;
-
-        handle_packet(p_pub, &t);
-
-        assert!(prompt_called.load(Ordering::SeqCst));
-        assert_eq!(t.get_connection_state(), ConnectionState::Device);
-
-        std::env::remove_var("ADB_VENDOR_KEYS");
     }
 }
 
@@ -1880,23 +1728,25 @@ impl Connection for BlockingConnectionAdapter {
 
 /// Ported from original/transport.h: `struct FdConnection`
 pub struct FdConnection {
-    file: TcpStream,
+    file: AdbFd,
     tls: Mutex<Option<rustls::Connection>>,
 }
 
 impl FdConnection {
-    pub fn new(fd: OwnedFd) -> Self {
-        let file = TcpStream::from(fd);
-        let _ = file.set_nonblocking(true);
+    pub fn new(fd: AdbFd) -> Self {
+        let _ = fd.set_nonblocking(true);
         Self {
-            file,
+            file: fd,
             tls: Mutex::new(None),
         }
     }
 
     fn wait_for_ready(&self, events: i16) -> std::io::Result<()> {
         let pfd = sysdeps::poll::AdbPollFd {
+            #[cfg(unix)]
             fd: self.file.as_raw_fd(),
+            #[cfg(windows)]
+            fd: self.file.as_raw_socket() as usize,
             events,
             revents: 0,
         };
@@ -1916,7 +1766,8 @@ impl FdConnection {
     fn read_fully(&self, buf: &mut [u8]) -> std::io::Result<()> {
         let mut pos = 0;
         while pos < buf.len() {
-            match (&self.file).read(&mut buf[pos..]) {
+            let mut file_ref = &self.file;
+            match file_ref.read(&mut buf[pos..]) {
                 Ok(0) => {
                     return Err(std::io::Error::new(
                         std::io::ErrorKind::UnexpectedEof,
@@ -1936,7 +1787,8 @@ impl FdConnection {
     fn write_fully(&self, buf: &[u8]) -> std::io::Result<()> {
         let mut pos = 0;
         while pos < buf.len() {
-            match (&self.file).write(&buf[pos..]) {
+            let mut file_ref = &self.file;
+            match file_ref.write(&buf[pos..]) {
                 Ok(0) => {
                     return Err(std::io::Error::new(
                         std::io::ErrorKind::WriteZero,
@@ -1976,7 +1828,8 @@ impl FdConnection {
             }
 
             // 2. Need more data from the network
-            match tls.read_tls(&mut &self.file) {
+            let mut file_ref = &self.file;
+            match tls.read_tls(&mut file_ref) {
                 Ok(0) => {
                     return Err(std::io::Error::new(
                         std::io::ErrorKind::UnexpectedEof,
@@ -2020,7 +1873,8 @@ impl FdConnection {
                 return Ok(());
             }
 
-            match tls.write_tls(&mut &self.file) {
+            let mut file_ref = &self.file;
+            match tls.write_tls(&mut file_ref) {
                 Ok(_) => {}
                 Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
                     drop(tls_lock);
@@ -2174,7 +2028,8 @@ impl BlockingConnection for FdConnection {
 
         loop {
             while conn.wants_write() {
-                match conn.write_tls(&mut &self.file) {
+                let mut file_ref = &self.file;
+                match conn.write_tls(&mut file_ref) {
                     Ok(_) => {}
                     Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
                         if let Err(e) = self.wait_for_ready(libc::POLLOUT) {
@@ -2194,7 +2049,8 @@ impl BlockingConnection for FdConnection {
             }
 
             if conn.wants_read() {
-                match conn.read_tls(&mut &self.file) {
+                let mut file_ref = &self.file;
+                match conn.read_tls(&mut file_ref) {
                     Ok(0) => {
                         log::error!(target: "transport", "TLS read EOF during handshake");
                         return false;

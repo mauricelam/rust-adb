@@ -111,7 +111,7 @@ pub fn set_tcp_keepalive<T: AsRawSocket>(socket: &T, interval_sec: i32) -> bool 
     let enable: i32 = if interval_sec > 0 { 1 } else { 0 };
     unsafe {
         setsockopt(
-            s,
+            s as usize,
             SOL_SOCKET,
             SO_KEEPALIVE,
             &enable as *const _ as *const _,
@@ -143,7 +143,7 @@ pub fn disable_tcp_nagle<T: AsRawSocket>(socket: &T) {
     let off: i32 = 1;
     unsafe {
         setsockopt(
-            s,
+            s as usize,
             IPPROTO_TCP as _,
             TCP_NODELAY as _,
             &off as *const _ as *const _,
@@ -209,9 +209,9 @@ pub fn network_peek<T: AsRawFd>(socket: &T) -> Option<isize> {
 pub fn network_peek<T: AsRawSocket>(socket: &T) -> Option<isize> {
     ensure_wsa_startup();
     let s = socket.as_raw_socket();
-    let mut available: i32 = 0;
+    let mut available: u32 = 0;
     unsafe {
-        if ioctlsocket(s, FIONREAD, &mut available) == 0 {
+        if ioctlsocket(s as usize, FIONREAD, &mut available) == 0 {
             Some(available as isize)
         } else {
             None

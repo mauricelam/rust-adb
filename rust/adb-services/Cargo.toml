@@ -18,10 +18,9 @@ adb-listeners = { path = "../adb-listeners" }
 anyhow = "1.0"
 log = "0.4.20"
 libc = "0.2"
-nix = { version = "0.27", features = ["term", "fs", "process", "net", "socket", "uio"] }
+nix = { version = "0.27", features = ["term", "fs", "process", "net"] }
 mio = { version = "0.8", features = ["net", "os-poll"] }
 bytes = "1.5.0"
-prost = "0.13"
 zerocopy = { version = "0.8.38", features = ["derive"] }
 
 

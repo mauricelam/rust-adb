@@ -8,7 +8,7 @@ use std::os::unix::io::{AsRawFd, FromRawFd, IntoRawFd, OwnedFd, RawFd};
 #[cfg(windows)]
 use std::os::windows::io::{
     AsRawHandle, AsRawSocket, FromRawHandle, FromRawSocket, IntoRawHandle, IntoRawSocket,
-    RawHandle, RawSocket,
+    OwnedHandle, OwnedSocket, RawHandle, RawSocket,
 };
 
 use std::io::{Read, Write};
@@ -33,17 +33,37 @@ impl From<OwnedFd> for AdbFd {
     }
 }
 
-#[cfg(windows)]
 impl From<std::fs::File> for AdbFd {
     fn from(f: std::fs::File) -> Self {
         Self::File(f)
     }
 }
 
-#[cfg(windows)]
 impl From<std::net::TcpStream> for AdbFd {
     fn from(s: std::net::TcpStream) -> Self {
-        Self::Socket(s)
+        #[cfg(unix)]
+        {
+            Self::File(std::fs::File::from(std::os::unix::io::OwnedFd::from(s)))
+        }
+        #[cfg(windows)]
+        {
+            Self::Socket(s)
+        }
+    }
+}
+
+
+#[cfg(windows)]
+impl From<OwnedSocket> for AdbFd {
+    fn from(s: OwnedSocket) -> Self {
+        Self::Socket(std::net::TcpStream::from(s))
+    }
+}
+
+#[cfg(windows)]
+impl From<OwnedHandle> for AdbFd {
+    fn from(h: OwnedHandle) -> Self {
+        Self::File(std::fs::File::from(h))
     }
 }
 
@@ -87,6 +107,41 @@ impl AdbFd {
         match self {
             Self::File(f) => Some(f.into()),
             _ => None,
+        }
+    }
+
+    /// Sets the non-blocking mode of the file descriptor.
+    pub fn set_nonblocking(&self, nonblocking: bool) -> std::io::Result<()> {
+        match self {
+            Self::File(f) => {
+                #[cfg(unix)]
+                {
+                    use std::os::unix::io::AsRawFd;
+                    let fd = f.as_raw_fd();
+                    let mut flags = unsafe { libc::fcntl(fd, libc::F_GETFL) };
+                    if flags < 0 {
+                        return Err(std::io::Error::last_os_error());
+                    }
+                    if nonblocking {
+                        flags |= libc::O_NONBLOCK;
+                    } else {
+                        flags &= !libc::O_NONBLOCK;
+                    }
+                    if unsafe { libc::fcntl(fd, libc::F_SETFL, flags) } < 0 {
+                        return Err(std::io::Error::last_os_error());
+                    }
+                    Ok(())
+                }
+                #[cfg(windows)]
+                {
+                    // Non-blocking mode for files on Windows is complex and often set at creation.
+                    // For now, we assume it's already set or not needed for files.
+                    Ok(())
+                }
+            }
+            #[cfg(windows)]
+            Self::Socket(s) => s.set_nonblocking(nonblocking),
+            Self::None => Err(std::io::Error::new(std::io::ErrorKind::Other, "Closed")),
         }
     }
 }
@@ -153,31 +208,65 @@ impl IntoRawSocket for AdbFd {
 
 impl Read for AdbFd {
     fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
-        match self {
-            Self::File(f) => f.read(buf),
+        (&*self).read(buf)
+    }
+}
+
+impl Read for &AdbFd {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        match *self {
+            AdbFd::File(ref f) => {
+                let mut f_ref = f;
+                f_ref.read(buf)
+            }
             #[cfg(windows)]
-            Self::Socket(s) => s.read(buf),
-            Self::None => Err(std::io::Error::new(std::io::ErrorKind::Other, "Closed")),
+            AdbFd::Socket(ref s) => {
+                let mut s_ref = s;
+                s_ref.read(buf)
+            }
+            AdbFd::None => Err(std::io::Error::new(std::io::ErrorKind::Other, "Closed")),
         }
     }
 }
 
 impl Write for AdbFd {
     fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
-        match self {
-            Self::File(f) => f.write(buf),
+        (&*self).write(buf)
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        (&*self).flush()
+    }
+}
+
+impl Write for &AdbFd {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        match *self {
+            AdbFd::File(ref f) => {
+                let mut f_ref = f;
+                f_ref.write(buf)
+            }
             #[cfg(windows)]
-            Self::Socket(s) => s.write(buf),
-            Self::None => Err(std::io::Error::new(std::io::ErrorKind::Other, "Closed")),
+            AdbFd::Socket(ref s) => {
+                let mut s_ref = s;
+                s_ref.write(buf)
+            }
+            AdbFd::None => Err(std::io::Error::new(std::io::ErrorKind::Other, "Closed")),
         }
     }
 
     fn flush(&mut self) -> std::io::Result<()> {
-        match self {
-            Self::File(f) => f.flush(),
+        match *self {
+            AdbFd::File(ref f) => {
+                let mut f_ref = f;
+                f_ref.flush()
+            }
             #[cfg(windows)]
-            Self::Socket(s) => s.flush(),
-            Self::None => Ok(()),
+            AdbFd::Socket(ref s) => {
+                let mut s_ref = s;
+                s_ref.flush()
+            }
+            AdbFd::None => Ok(()),
         }
     }
 }

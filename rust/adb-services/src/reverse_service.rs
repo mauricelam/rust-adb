@@ -22,11 +22,11 @@ use fdevent::fdevent::{Fdevent, FdeventHandler};
 use mio::{Interest, Token};
 use std::collections::HashMap;
 #[cfg(unix)]
-use std::os::unix::io::{AsRawFd, FromRawFd};
+use std::os::unix::io::AsRawFd;
 #[cfg(unix)]
 use libc;
 #[cfg(windows)]
-use std::os::windows::io::{AsRawHandle, AsRawSocket, OwnedSocket, RawHandle, RawSocket};
+use std::os::windows::io::AsRawSocket;
 use std::sync::{Arc, Mutex, OnceLock, Weak};
 use sysdeps::AdbFd;
 
@@ -153,9 +153,7 @@ impl FdeventHandler for ReverseListener {
                         libc::accept(self.fd.as_raw_fd(), std::ptr::null_mut(), std::ptr::null_mut())
                     };
                     if res >= 0 {
-                        Some(AdbFd::from(unsafe {
-                            std::os::unix::io::OwnedFd::from_raw_fd(res)
-                        }))
+                        Some(unsafe { AdbFd::from_raw_fd(res) })
                     } else {
                         None
                     }
@@ -170,9 +168,7 @@ impl FdeventHandler for ReverseListener {
                         )
                     };
                     if res != windows_sys::Win32::Networking::WinSock::INVALID_SOCKET as _ {
-                        Some(AdbFd::from(unsafe {
-                            std::os::windows::io::OwnedSocket::from_raw_socket(res as _)
-                        }))
+                        Some(unsafe { AdbFd::from_raw_socket(res as _) })
                     } else {
                         None
                     }

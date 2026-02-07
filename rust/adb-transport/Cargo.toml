@@ -11,7 +11,6 @@ adb-utils = { path = "../adb-utils" }
 sysdeps = { path = "../sysdeps" }
 trace = { path = "../trace" }
 adb-auth = { path = "../adb-auth" }
-adb-daemon = { path = "../adb-daemon" }
 rust-adb-crypto = { path = "../crypto" }
 fdevent = { path = "../fdevent" }
 bytes = "1"
@@ -21,7 +20,3 @@ libc = "0.2"
 log = "0.4"
 rustls = { version = "0.21", features = ["dangerous_configuration"] }
 rustls-pemfile = "1.0"
-
-[dev-dependencies]
-tempfile = "3.3"
-base64 = "0.21"

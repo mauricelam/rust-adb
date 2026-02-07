@@ -16,22 +16,21 @@
 
 use adb_io::{read_exactly, write_exactly};
 use adb_protocol::file_sync_protocol::*;
-use std::fs::File;
 use std::io::{Read, Write};
-use std::os::unix::io::{FromRawFd, IntoRawFd, OwnedFd};
+use sysdeps::AdbFd;
 use zerocopy::IntoBytes;
 
 pub struct SyncConnection {
-    file: File,
+    file: AdbFd,
     pub have_stat_v2: bool,
     pub have_ls_v2: bool,
     pub have_sendrecv_v2: bool,
 }
 
 impl SyncConnection {
-    pub fn new(fd: OwnedFd) -> Self {
+    pub fn new(fd: AdbFd) -> Self {
         Self {
-            file: unsafe { File::from_raw_fd(fd.into_raw_fd()) },
+            file: fd,
             have_stat_v2: false, // Default to false, should be set based on features
             have_ls_v2: false,
             have_sendrecv_v2: false,
@@ -122,7 +121,7 @@ impl SyncConnection {
     }
 
     pub fn push(&mut self, lpath: &str, rpath: &str, mtime: u32, mode: u32) -> std::io::Result<()> {
-        let mut lfile = File::open(lpath)?;
+        let mut lfile = std::fs::File::open(lpath)?;
 
         if self.have_sendrecv_v2 {
             let req = SyncRequest { id: ID_SEND_V2, path_length: rpath.len() as u32 };
@@ -172,7 +171,7 @@ impl SyncConnection {
             self.send_request(ID_RECV_V1, rpath)?;
         }
 
-        let mut lfile = File::create(lpath)?;
+        let mut lfile = std::fs::File::create(lpath)?;
         loop {
             let mut msg = SyncData { id: 0, size: 0 };
             read_exactly(&mut self.file, msg.as_mut_bytes())?;

@@ -1,3 +1,4 @@
+#![cfg(unix)]
 use adb_sockets::{create_local_socket, create_remote_socket, Socket, SocketRegistry, Transport};
 use adb_types::Apacket;
 use fdevent::fdevent::Fdevent;

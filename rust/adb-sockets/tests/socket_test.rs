@@ -1,3 +1,4 @@
+#![cfg(unix)]
 use adb_sockets::{create_local_socket, internal, Socket, SocketRegistry};
 use fdevent::fdevent::Fdevent;
 use nix::fcntl::{fcntl, FcntlArg, OFlag};

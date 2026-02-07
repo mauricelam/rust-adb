@@ -38,14 +38,14 @@ pub fn errno_to_wire(errno: i32) -> i32 {
     {
         // On Windows, these can come from WSAGetLastError() or GetLastError()
         match errno as u32 {
-            ERROR_ACCESS_DENIED | WSAEACCES => 13,
-            ERROR_FILE_EXISTS | ERROR_ALREADY_EXISTS => 17,
-            ERROR_INVALID_ADDRESS | WSAEFAULT => 14,
-            ERROR_INVALID_PARAMETER | WSAEINVAL => 22,
-            ERROR_FILE_NOT_FOUND | ERROR_PATH_NOT_FOUND => 2,
-            ERROR_NOT_ENOUGH_MEMORY | WSA_NOT_ENOUGH_MEMORY => 12,
+            v if v == ERROR_ACCESS_DENIED || v == WSAEACCES as u32 => 13,
+            v if v == ERROR_FILE_EXISTS || v == ERROR_ALREADY_EXISTS => 17,
+            v if v == ERROR_INVALID_ADDRESS || v == WSAEFAULT as u32 => 14,
+            v if v == ERROR_INVALID_PARAMETER || v == WSAEINVAL as u32 => 22,
+            v if v == ERROR_FILE_NOT_FOUND || v == ERROR_PATH_NOT_FOUND => 2,
+            v if v == ERROR_NOT_ENOUGH_MEMORY || v == WSA_NOT_ENOUGH_MEMORY as u32 => 12,
             ERROR_DISK_FULL => 28,
-            ERROR_DIRECTORY | ERROR_INVALID_NAME => 20,
+            v if v == ERROR_DIRECTORY || v == ERROR_INVALID_NAME => 20,
             ERROR_PRIVILEGE_NOT_HELD => 1,
             _ => 22, // Default to EINVAL for unknown errors
         }

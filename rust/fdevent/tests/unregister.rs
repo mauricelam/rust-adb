@@ -5,8 +5,6 @@
 use fdevent::fdevent::{Fdevent, FdeventHandler};
 use mio::{Interest, Token};
 use std::io::Write;
-use std::os::unix::io::OwnedFd;
-use std::os::unix::net::UnixStream;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -33,8 +31,8 @@ impl FdeventHandler for TestHandler {
 #[test]
 fn unregister_with_pending_event() {
     let mut fdevent = Fdevent::new().unwrap();
-    let (r1, mut w1) = UnixStream::pair().unwrap();
-    let (r2, mut w2) = UnixStream::pair().unwrap();
+    let (r1, mut w1) = sysdeps::net::adb_socketpair().unwrap();
+    let (r2, mut w2) = sysdeps::net::adb_socketpair().unwrap();
     r1.set_nonblocking(true).unwrap();
     r2.set_nonblocking(true).unwrap();
 
@@ -52,10 +50,10 @@ fn unregister_with_pending_event() {
     });
 
     let _t1 = fdevent
-        .register(Arc::new(OwnedFd::from(r1).into()), h1, Interest::READABLE)
+        .register(Arc::new(r1), h1, Interest::READABLE)
         .unwrap();
     let t2 = fdevent
-        .register(Arc::new(OwnedFd::from(r2).into()), h2, Interest::READABLE)
+        .register(Arc::new(r2), h2, Interest::READABLE)
         .unwrap();
 
     // Handler 1 will unregister Handler 2
