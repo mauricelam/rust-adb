@@ -24,6 +24,8 @@ use fdevent::fdevent::{Fdevent, FdeventHandle, FdeventHandler};
 use mio::{Interest, Token};
 #[cfg(unix)]
 use std::os::unix::io::{AsRawFd, FromRawFd};
+#[cfg(unix)]
+use libc;
 #[cfg(windows)]
 use std::os::windows::io::{AsRawSocket, FromRawSocket, RawSocket};
 use std::sync::{Arc, Mutex, OnceLock, Weak};

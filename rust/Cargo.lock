@@ -1367,6 +1367,7 @@ dependencies = [
  "serial_test",
  "tempfile",
  "users",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]

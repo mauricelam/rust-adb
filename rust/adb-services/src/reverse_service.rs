@@ -23,6 +23,8 @@ use mio::{Interest, Token};
 use std::collections::HashMap;
 #[cfg(unix)]
 use std::os::unix::io::{AsRawFd, FromRawFd};
+#[cfg(unix)]
+use libc;
 #[cfg(windows)]
 use std::os::windows::io::{AsRawHandle, AsRawSocket, OwnedSocket, RawHandle, RawSocket};
 use std::sync::{Arc, Mutex, OnceLock, Weak};
