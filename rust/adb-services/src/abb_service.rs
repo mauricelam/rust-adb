@@ -14,6 +14,14 @@
  * limitations under the License.
  */
 
+//! ABB (Android Bind Body) service implementation.
+//!
+//! This module implements the `abb` and `abb_exec` services, which are used to
+//! execute shell commands more efficiently by communicating with a persistent
+//! `abb` daemon on the device.
+//!
+//! Ported from `original/daemon/abb_service.cpp` and `original/daemon/abb.cpp`.
+
 use adb_io::send_protocol_string;
 use sysdeps::AdbFd;
 use std::sync::Mutex;
@@ -24,17 +32,25 @@ use std::os::unix::io::{AsRawFd, FromRawFd, IntoRawFd, RawFd};
 #[cfg(unix)]
 use nix::sys::socket::{recvmsg, ControlMessageOwned, MsgFlags};
 
+/// Manages a persistent connection to the `abb` daemon.
+///
+/// Ported from `AbbProcess` in `original/daemon/abb_service.cpp`.
 pub struct AbbProcess {
+    /// The socket connected to the `abb` daemon.
     socket: Mutex<Option<AdbFd>>,
 }
 
 impl AbbProcess {
+    /// Creates a new `AbbProcess` instance.
     pub const fn new() -> Self {
         Self {
             socket: Mutex::new(None),
         }
     }
 
+    /// Starts the `abb` process and returns a socket connected to it.
+    ///
+    /// Ported from `AbbProcess::startAbbProcess` in `original/daemon/abb_service.cpp`.
     #[cfg(unix)]
     fn start_abb_process() -> std::io::Result<AdbFd> {
         let (s0, s1) = sysdeps::net::adb_socketpair()?;
@@ -55,6 +71,9 @@ impl AbbProcess {
         Ok(s0)
     }
 
+    /// Sends a command to the `abb` daemon and receives a file descriptor for the command's I/O.
+    ///
+    /// Ported from `AbbProcess::sendCommand` in `original/daemon/abb_service.cpp`.
     #[cfg(unix)]
     pub fn send_command(&self, command: &str) -> Option<AdbFd> {
         let mut socket_guard = self.socket.lock().unwrap();
@@ -100,14 +119,20 @@ impl AbbProcess {
         None
     }
 
+    /// Sends a command to the `abb` daemon and receives a file descriptor for the command's I/O.
+    /// Stub implementation for non-Unix platforms.
     #[cfg(not(unix))]
     pub fn send_command(&self, _command: &str) -> Option<AdbFd> {
         None
     }
 }
 
+/// Global instance of the `abb` process manager.
 static ABB_PROCESS: AbbProcess = AbbProcess::new();
 
+/// Executes an `abb` or `abb_exec` command.
+///
+/// Ported from `execute_abb_command` in `original/daemon/abb_service.cpp`.
 pub fn execute_abb_command(command: &str) -> Option<AdbFd> {
     ABB_PROCESS.send_command(command)
 }
