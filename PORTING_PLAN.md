@@ -245,54 +245,54 @@ Once the core layers are fully ported and verified, the next phase will focus on
 
 ## Proposed Crate Reorganization
 
-To improve maintainability and reduce the overhead of managing numerous small crates, the following reorganization is proposed. This plan consolidates the current 17 crates into 8 logically coherent ones.
+To align more closely with the original C++ codebase and simplify the project structure, the following reorganization is proposed. This plan consolidates the current 18 crates into 3 primary crates.
 
-### 1. `adb-core`
-**Consolidates:** `adb-types`, `adb-protocol`, `adb_io`, `adb-utils`, `trace`
-**Rationale:** These crates form the foundational layer of the ADB protocol. They are almost always used together and provide the basic data structures, constants, and I/O utilities required by all other components.
+### 1. `adb-daemon`
+**Purpose:** Contains all daemon-specific logic, corresponding to the C++ `daemon/` directory.
+**Organization:**
+- `usb`: Daemon-side USB transport (FunctionFS).
+- `services`: Daemon-side service implementations.
+- `auth`: Daemon-side authentication key management.
 
-### 2. `adb-net`
-**Consolidates:** `adb-sockets`, `adb-listeners`, `socket-spec`
-**Rationale:** This grouping handles all socket-related abstractions, listener management, and the parsing of ADB socket specifications. It centralizes the networking logic that isn't transport-specific.
+### 2. `adb-client`
+**Purpose:** Contains all client-specific logic, corresponding to the C++ `client/` directory.
+**Organization:**
+- `usb`: Host-side USB transport (libusb/WinUSB).
+- `services`: Host-side service implementations and smartsocket dispatching.
+- `mdns`: mDNS discovery and service registration.
 
-### 3. `adb-transport`
-**Consolidates:** `adb-transport`, `adb-usb`, `adb-mdns`
-**Rationale:** Consolidates the transport layer management with its specific implementations (USB and mDNS discovery). This allows for a cleaner interface between the generic transport logic and the platform/hardware-specific backends.
-
-### 4. `adb-auth`
-**Consolidates:** `adb-auth`, `rust-adb-pairing-auth`, `rust-adb-crypto`
-**Rationale:** Centralizes all authentication and cryptographic logic, including RSA key management, token signing, and the newer pairing protocol.
-
-### 5. `adb-fdevent` (formerly `fdevent`)
-**Rationale:** Maintains the event loop as a standalone, low-dependency crate. Renamed for consistency with the `adb-` prefix.
-
-### 6. `adb-sys` (formerly `sysdeps`)
-**Rationale:** Follows the Rust convention of using the `-sys` suffix for low-level system abstractions and platform-specific FFI.
-
-### 7. `adb-services`
-**Rationale:** Continues to host high-level service implementations (Shell, Sync, Forwarding, etc.).
-
-### 8. `adb-daemon`
-**Rationale:** The entry point and top-level logic for the ADB daemon application.
+### 3. `adb-core`
+**Purpose:** Contains all remaining common code used by both the client and the daemon.
+**Organization:**
+- `sysdeps`: Platform-specific abstractions.
+- `fdevent`: Event loop abstraction.
+- `protocol`: ADB protocol constants, packet reading, and state machines.
+- `types`: Core data structures (`Apacket`, `Amessage`, `IoVector`).
+- `io`: Basic I/O utilities (`ReadFdExactly`, `WriteFdExactly`).
+- `crypto`: RSA and authentication cryptographic primitives.
+- `sockets`: Local and remote socket management.
+- `listeners`: Listener management logic.
+- `socket_spec`: Socket specification parsing.
+- `utils`: General utility functions.
 
 ### Summary of Changes
 | Current Crate | New Location |
 |---|---|
-| `adb-types` | `adb-core::types` |
+| `adb-daemon` | `adb-daemon` |
+| `adb-services` | `adb-daemon::services` / `adb-client::services` |
+| `adb-usb` | `adb-daemon::usb` / `adb-client::usb` |
+| `adb-auth` | `adb-daemon::auth` / `adb-core::auth` |
+| `adb-mdns` | `adb-client::mdns` |
+| `adb-transport` | `adb-core::transport` |
 | `adb-protocol` | `adb-core::protocol` |
+| `adb-types` | `adb-core::types` |
 | `adb_io` | `adb-core::io` |
 | `adb-utils` | `adb-core::utils` |
+| `adb-sockets` | `adb-core::sockets` |
+| `adb-listeners` | `adb-core::listeners` |
+| `socket-spec` | `adb-core::socket_spec` |
+| `crypto` | `adb-core::crypto` |
+| `rust-adb-pairing-auth` | `adb-core::pairing` |
+| `fdevent` | `adb-core::fdevent` |
+| `sysdeps` | `adb-core::sysdeps` |
 | `trace` | `adb-core::trace` |
-| `adb-sockets` | `adb-net::sockets` |
-| `adb-listeners` | `adb-net::listeners` |
-| `socket-spec` | `adb-net::spec` |
-| `adb-transport` | `adb-transport::core` |
-| `adb-usb` | `adb-transport::usb` |
-| `adb-mdns` | `adb-transport::mdns` |
-| `adb-auth` | `adb-auth::core` |
-| `rust-adb-pairing-auth` | `adb-auth::pairing` |
-| `rust-adb-crypto` | `adb-auth::crypto` |
-| `fdevent` | `adb-fdevent` |
-| `sysdeps` | `adb-sys` |
-| `adb-services` | `adb-services` |
-| `adb-daemon` | `adb-daemon` |
