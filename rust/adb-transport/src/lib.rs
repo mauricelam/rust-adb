@@ -713,9 +713,9 @@ fn handle_new_connection(t: &Arc<ATransport>, p: &Apacket) {
     if t.get_connection_state() == ConnectionState::Host && !t.use_tls.load(Ordering::SeqCst) {
         // We are the daemon, and the remote is a host.
         // For now, let's assume auth is always required.
-        adb_auth::ensure_authorized_keys_loaded();
+        adb_daemon::ensure_authorized_keys_loaded();
         t.set_connection_state(ConnectionState::Authorizing);
-        let (auth_packet, token) = adb_auth::send_auth_request();
+        let (auth_packet, token) = adb_daemon::send_auth_request();
         *t.auth_token.lock().unwrap() = token;
         t.write(auth_packet);
     }
@@ -746,7 +746,7 @@ fn handle_auth(t: &Arc<ATransport>, p: &Apacket) {
         }
         adb_auth::ADB_AUTH_SIGNATURE => {
             let token = t.auth_token.lock().unwrap();
-            if adb_auth::adbd_auth_verify_all(&*token, p.payload.get_ref()) {
+            if adb_daemon::adbd_auth_verify_all(&*token, p.payload.get_ref()) {
                 t.set_connection_state(ConnectionState::Device);
                 send_connect(t);
             } else {
@@ -1574,7 +1574,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let adb_keys_path = dir.path().join("adb_keys");
         std::env::set_var("ADB_VENDOR_KEYS", &adb_keys_path);
-        adb_auth::load_authorized_keys().unwrap();
+        adb_daemon::load_authorized_keys().unwrap();
 
         let t = Arc::new(ATransport::new_offline(TransportType::Local));
         let conn = Arc::new(MockConnection::new());
@@ -1606,9 +1606,10 @@ mod tests {
 
         // Add the public key to authorized keys
         let pubkey_struct = key.android_pubkey().unwrap();
-        let pubkey_bytes: [u8; 524] = unsafe { std::mem::transmute(pubkey_struct) };
+        let pubkey_bytes: [u8; std::mem::size_of::<rust_adb_crypto::AndroidPubkey>()] =
+            unsafe { std::mem::transmute(pubkey_struct) };
         let pubkey_b64 = base64::engine::general_purpose::STANDARD.encode(&pubkey_bytes);
-        adb_auth::save_authorized_key(&pubkey_b64).unwrap();
+        adb_daemon::save_authorized_key(&pubkey_b64).unwrap();
 
         let mut p_sig = Apacket::default();
         p_sig.msg.command = adb_protocol::A_AUTH;
@@ -1647,7 +1648,7 @@ mod tests {
         *t.auth_prompt.lock().unwrap() = Some(Arc::new(move |t_inner, key| {
             prompt_called_clone.store(true, Ordering::SeqCst);
             // Auto-authorize for the test
-            adb_auth::save_authorized_key(key).unwrap();
+            adb_daemon::save_authorized_key(key).unwrap();
             t_inner.set_connection_state(ConnectionState::Device);
             send_connect(t_inner);
         }));

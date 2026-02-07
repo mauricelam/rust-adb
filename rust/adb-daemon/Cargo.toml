@@ -1,0 +1,20 @@
+[package]
+name = "adb-daemon"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+anyhow = "1.0"
+adb-auth = { path = "../adb-auth" }
+adb-protocol = { path = "../adb-protocol" }
+adb-types = { path = "../adb-types" }
+adb-utils = { path = "../adb-utils" }
+rust-adb-crypto = { path = "../crypto" }
+base64 = "0.21"
+log = "0.4"
+rand = "0.8"
+rsa = "0.9"
+sha1 = "0.10"
+
+[dev-dependencies]
+tempfile = "3.3"
