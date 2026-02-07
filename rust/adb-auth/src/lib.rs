@@ -19,18 +19,17 @@
 //! Ported from:
 //! - `original/adb_auth.h`
 //! - `original/client/auth.cpp`
-//! - `original/daemon/auth.cpp`
 
 use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
-use adb_types::{Amessage, Apacket, Block};
+use adb_types::{Apacket, Block};
 use anyhow::anyhow;
 use base64::{engine::general_purpose, Engine as _};
-use rsa::pkcs1v15::{SigningKey, VerifyingKey};
-use rsa::signature::{SignatureEncoding, Signer, Verifier};
+use rsa::pkcs1v15::SigningKey;
+use rsa::signature::{SignatureEncoding, Signer};
 use rust_adb_crypto::{new_rsa_2048, Key};
 use sha1::Sha1;
 
@@ -46,7 +45,7 @@ lazy_static::lazy_static! {
 
 const A_AUTH: u32 = 0x48545541;
 
-/// Ported from `original/client/auth.cpp`: `get_user_key_path`
+/// Ported from `original/client/auth.cpp`: `get_user_key_path` equivalent.
 fn get_user_key_path() -> anyhow::Result<PathBuf> {
     Ok(Path::join(
         &adb_utils::adb_get_android_dir_path()
@@ -55,7 +54,7 @@ fn get_user_key_path() -> anyhow::Result<PathBuf> {
     ))
 }
 
-/// Ported from `original/client/auth.cpp`: `generate_key`
+/// Ported from `original/client/auth.cpp`: `generate_key` equivalent.
 pub fn adb_auth_keygen(filename: &Path) -> anyhow::Result<()> {
     let key = new_rsa_2048()?;
     let pem = key.to_pem_string()?;
@@ -68,7 +67,7 @@ pub fn adb_auth_keygen(filename: &Path) -> anyhow::Result<()> {
     }
 
     let pubkey_struct = key.android_pubkey()?;
-    // SAFETY: AndroidPubkey is #[repr(C)] and has a fixed size of 524 bytes.
+    // SAFETY: AndroidPubkey is #[repr(C)] and has a fixed size.
     let pubkey_bytes: [u8; std::mem::size_of::<rust_adb_crypto::AndroidPubkey>()] =
         unsafe { std::mem::transmute(pubkey_struct) };
     let pubkey_b64 = general_purpose::STANDARD.encode(pubkey_bytes);
@@ -85,7 +84,7 @@ pub fn adb_auth_keygen(filename: &Path) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Ported from `original/client/auth.cpp`: `load_key`
+/// Ported from `original/client/auth.cpp`: `load_key` equivalent.
 pub fn load_key(path: &Path) -> anyhow::Result<()> {
     let content = fs::read_to_string(path)?;
     let key = Key::from_pem(&content)?;
@@ -95,7 +94,7 @@ pub fn load_key(path: &Path) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Ported from `original/client/auth.cpp`: `adb_auth_init`
+/// Ported from `original/client/auth.cpp`: `adb_auth_init` equivalent.
 pub fn adb_auth_init() -> anyhow::Result<()> {
     let path = get_user_key_path()?;
     if !path.exists() {
@@ -108,7 +107,7 @@ pub fn adb_auth_init() -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Ported from `original/client/auth.cpp`: `adb_auth_sign`
+/// Ported from `original/client/auth.cpp`: `adb_auth_sign` equivalent.
 pub fn adb_auth_sign(key: &Key, token: &[u8]) -> anyhow::Result<Vec<u8>> {
     let signing_key = SigningKey::<Sha1>::new_unprefixed(key.privkey().clone());
     let signature = signing_key
@@ -117,64 +116,7 @@ pub fn adb_auth_sign(key: &Key, token: &[u8]) -> anyhow::Result<Vec<u8>> {
     Ok(signature.to_vec())
 }
 
-/// Ported from `original/daemon/auth.cpp`: `adbd_auth_verify`
-pub fn adbd_auth_verify(token: &[u8], sig: &[u8], public_key_line: &str) -> bool {
-    let public_key_b64 = public_key_line.split_whitespace().next().unwrap_or("");
-    let pubkey_encoded = match general_purpose::STANDARD.decode(public_key_b64) {
-        Ok(d) => d,
-        Err(_) => return false,
-    };
-
-    if pubkey_encoded.len() != std::mem::size_of::<rust_adb_crypto::AndroidPubkey>() {
-        return false;
-    }
-
-    // Decode the Android RSA pubkey format back to rsa::RsaPublicKey.
-    // SAFETY: We checked the length above.
-    let pubkey_struct: rust_adb_crypto::AndroidPubkey =
-        unsafe { std::ptr::read_unaligned(pubkey_encoded.as_ptr() as *const _) };
-
-    let n = rsa::BigUint::from_bytes_le(&pubkey_struct.modulus);
-    let e = rsa::BigUint::from(pubkey_struct.exponent);
-
-    let pubkey = match rsa::RsaPublicKey::new(n, e) {
-        Ok(k) => k,
-        Err(_) => return false,
-    };
-
-    let verifying_key = VerifyingKey::<Sha1>::new_unprefixed(pubkey);
-    let signature = match rsa::pkcs1v15::Signature::try_from(sig) {
-        Ok(s) => s,
-        Err(_) => return false,
-    };
-    verifying_key.verify(token, &signature).is_ok()
-}
-
-/// Ported from `original/daemon/auth.cpp`: `send_auth_request`
-pub fn send_auth_request<W: std::io::Write>(writer: &mut W) -> anyhow::Result<[u8; TOKEN_SIZE]> {
-    let mut token = [0u8; TOKEN_SIZE];
-    use rand::RngCore;
-    rand::thread_rng().fill_bytes(&mut token);
-
-    let mut msg = Amessage::default();
-    msg.command = A_AUTH;
-    msg.arg0 = ADB_AUTH_TOKEN;
-    msg.data_length = TOKEN_SIZE as u32;
-    msg.magic = msg.command ^ 0xffffffff;
-
-    // In a real implementation, we'd write the message and the payload.
-    // Ported from adb_io.cpp logic (WriteFdExactly).
-
-    // SAFETY: Amessage is #[repr(C)] and has a fixed size.
-    // Transmuting it to a byte array for writing to the wire is safe.
-    let msg_bytes: [u8; std::mem::size_of::<Amessage>()] = unsafe { std::mem::transmute(msg) };
-    writer.write_all(&msg_bytes)?;
-    writer.write_all(&token)?;
-
-    Ok(token)
-}
-
-/// Ported from `original/client/auth.cpp`: `send_auth_response`
+/// Ported from `original/client/auth.cpp`: `send_auth_response` equivalent.
 pub fn send_auth_response(token: &[u8], key: &Key) -> anyhow::Result<Apacket> {
     let signature = adb_auth_sign(key, token)?;
 
@@ -190,8 +132,6 @@ pub fn send_auth_response(token: &[u8], key: &Key) -> anyhow::Result<Apacket> {
 
 #[cfg(test)]
 mod tests {
-    use rust_adb_crypto::AndroidPubkey;
-
     use super::*;
 
     #[test]
@@ -200,18 +140,5 @@ mod tests {
         let token = b"12345678901234567890";
         let sig = adb_auth_sign(&key, token).unwrap();
         assert!(!sig.is_empty());
-
-        let pubkey_struct = key.android_pubkey().unwrap();
-        let pubkey_bytes: [u8; std::mem::size_of::<AndroidPubkey>()] =
-            unsafe { std::mem::transmute(pubkey_struct) };
-        let pubkey_b64 = general_purpose::STANDARD.encode(pubkey_bytes);
-
-        // Verification should work even with full line (with comment)
-        let hostname = "test-host";
-        let login = "adb";
-        let comment = format!(" {}@{}", login, hostname);
-        let public_key_line = format!("{}{}", pubkey_b64, comment);
-
-        assert!(adbd_auth_verify(token, &sig, &public_key_line));
     }
 }

@@ -1,22 +1,20 @@
 [package]
-name = "adb-auth"
+name = "adb-daemon"
 version = "0.1.0"
 edition = "2021"
 
 [dependencies]
 anyhow = "1.0"
-libc = "0.2"
-rust-adb-crypto = { path = "../crypto" }
+adb-auth = { path = "../adb-auth" }
+adb-protocol = { path = "../adb-protocol" }
 adb-types = { path = "../adb-types" }
 adb-utils = { path = "../adb-utils" }
-adb_io = { path = "../adb_io" }
+rust-adb-crypto = { path = "../crypto" }
 base64 = "0.21"
 log = "0.4"
-lazy_static = "1.4"
 rand = "0.8"
 rsa = "0.9"
 sha1 = "0.10"
-hostname = "0.3"
 
 [dev-dependencies]
 tempfile = "3.3"

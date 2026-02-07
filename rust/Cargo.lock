@@ -19,6 +19,25 @@ dependencies = [
  "rsa",
  "rust-adb-crypto",
  "sha1",
+ "tempfile",
+]
+
+[[package]]
+name = "adb-daemon"
+version = "0.1.0"
+dependencies = [
+ "adb-auth",
+ "adb-protocol",
+ "adb-types",
+ "adb-utils",
+ "anyhow",
+ "base64 0.21.7",
+ "log",
+ "rand",
+ "rsa",
+ "rust-adb-crypto",
+ "sha1",
+ "tempfile",
 ]
 
 [[package]]
@@ -120,11 +139,13 @@ name = "adb-transport"
 version = "0.1.0"
 dependencies = [
  "adb-auth",
+ "adb-daemon",
  "adb-protocol",
  "adb-sockets",
  "adb-types",
  "adb-utils",
  "anyhow",
+ "base64 0.21.7",
  "bytes",
  "fdevent",
  "libc",
@@ -133,6 +154,7 @@ dependencies = [
  "rustls",
  "rustls-pemfile",
  "sysdeps",
+ "tempfile",
  "thiserror",
  "trace",
 ]

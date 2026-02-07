@@ -17,5 +17,5 @@ members = [
     "adb-listeners",
     "adb-usb",
     "adb-mdns",
-    "adb-listeners",
+    "adb-listeners", "adb-daemon",
 ]
