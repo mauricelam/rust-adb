@@ -1101,7 +1101,7 @@ pub fn daemon_service_to_fd(name: &str, transport: &Arc<ATransport>) -> Option<A
     }
     if name.starts_with("sync:") {
         return create_service_thread("sync", |fd| {
-            file_sync_service::file_sync_service(fd);
+            file_sync_service::file_sync_service(fd.try_into_owned_fd().unwrap());
         })
         .ok();
     }
