@@ -1,8 +1,6 @@
-mod adb_client;
-
 use clap::{Parser, Subcommand};
 use adb_protocol::TransportType;
-use crate::adb_client::{adb_set_transport, adb_set_socket_spec, adb_query, adb_connect, format_host_command};
+use rust_adb::{adb_set_transport, adb_set_socket_spec, adb_query, adb_connect, format_host_command};
 use std::io::{self, Read, Write};
 
 #[derive(Parser)]
