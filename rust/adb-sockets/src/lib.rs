@@ -478,8 +478,7 @@ impl LocalSocketInner {
                 }
                 // We MUST not let 'source' close the socket when dropped.
                 use std::os::windows::io::IntoRawSocket;
-                let std_stream = std::net::TcpStream::from(source);
-                let _ = std_stream.into_raw_socket();
+                let _ = source.into_raw_socket();
             }
         }
         self.current_interests = new_interests;

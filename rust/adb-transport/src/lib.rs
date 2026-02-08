@@ -299,7 +299,6 @@ impl ATransport {
 
     /// Ported from original/transport.cpp: `bool atransport::HandleRead(std::unique_ptr<apacket> p)`
     pub fn handle_read(self: &Arc<Self>, packet: Apacket) -> bool {
-        println!("Handle read: cmd={:?}", packet.msg.command);
         log::debug!(
             target: "transport",
             "{} remote read: {} {}",
@@ -699,11 +698,9 @@ fn send_tls_request(t: &Arc<ATransport>) {
 }
 
 fn handle_new_connection(t: &Arc<ATransport>, p: &Apacket) {
-    println!("Handle new connection");
     t.set_connection_state(ConnectionState::Offline);
     t.update_version(p.msg.arg0, p.msg.arg1);
     let banner = String::from_utf8_lossy(p.payload.get_ref());
-    println!("Banner: {}", banner);
     parse_banner(&banner, t);
 }
 
@@ -1425,6 +1422,9 @@ mod tests {
             // 2. Respond with STLS packet
             stream.write_all(&buf).expect("Failed to write STLS");
 
+            // Give client time to stop read thread
+            std::thread::sleep(std::time::Duration::from_millis(500));
+
             // 3. Perform TLS handshake as server
             let key = server_key;
             let cert = server_cert;
@@ -1603,7 +1603,6 @@ impl Connection for BlockingConnectionAdapter {
     }
 
     fn start(&self, transport: Weak<ATransport>) -> bool {
-        println!("Adapter start called");
         *self.transport.lock().unwrap() = Some(transport.clone());
         let stopped = self.stopped.clone();
         let underlying = self.underlying.clone();
@@ -1617,7 +1616,6 @@ impl Connection for BlockingConnectionAdapter {
             None => true,
             Some(h) => h.is_finished(),
         };
-        println!("Should start read: {}", should_start_read);
 
         if should_start_read {
             if let Some(h) = read_thread_lock.take() {
@@ -1628,7 +1626,6 @@ impl Connection for BlockingConnectionAdapter {
             let underlying_read = underlying.clone();
 
             *read_thread_lock = Some(std::thread::spawn(move || {
-                println!("Read thread started");
                 while !stopped_read.load(Ordering::SeqCst) {
                     match underlying_read.read() {
                         Ok(packet) => {
@@ -1642,13 +1639,11 @@ impl Connection for BlockingConnectionAdapter {
                                 break;
                             }
                         }
-                        Err(e) => {
-                            println!("Read thread error: {:?}", e);
+                    Err(_e) => {
                             break;
                         }
                     }
                 }
-                println!("Read thread exiting");
             }));
         }
 
@@ -1703,9 +1698,9 @@ impl Connection for BlockingConnectionAdapter {
     }
 
     fn do_tls_handshake(&self, key: &Key, auth_key: Option<&mut String>) -> bool {
-        println!("Adapter do_tls_handshake");
         let handle = self.read_thread.lock().unwrap().take();
         if let Some(h) = handle {
+            self.stopped.store(true, Ordering::SeqCst);
             let _ = h.join();
         }
 
@@ -1714,7 +1709,6 @@ impl Connection for BlockingConnectionAdapter {
             if let Some(t_weak) = t_weak {
                 self.start(t_weak);
             } else {
-                println!("No transport to restart adapter with");
             }
             return true;
         }
@@ -1750,7 +1744,7 @@ impl FdConnection {
             events,
             revents: 0,
         };
-        let res = sysdeps::poll::adb_poll(&mut [pfd], 5000); // 5s timeout
+        let res = sysdeps::poll::adb_poll(&mut [pfd], 100); // 100ms timeout
         if res == -1 {
             return Err(std::io::Error::last_os_error());
         }
@@ -1776,7 +1770,7 @@ impl FdConnection {
                 }
                 Ok(n) => pos += n,
                 Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
-                    self.wait_for_ready(libc::POLLIN)?;
+                    self.wait_for_ready(sysdeps::poll::POLLIN)?;
                 }
                 Err(e) => return Err(e),
             }
@@ -1797,7 +1791,7 @@ impl FdConnection {
                 }
                 Ok(n) => pos += n,
                 Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
-                    self.wait_for_ready(libc::POLLOUT)?;
+                    self.wait_for_ready(sysdeps::poll::POLLOUT)?;
                 }
                 Err(e) => return Err(e),
             }
@@ -1809,7 +1803,6 @@ impl FdConnection {
 impl FdConnection {
     fn read_tls_blocking(&self, buf: &mut [u8]) -> std::io::Result<()> {
         let mut pos = 0;
-        println!("read_tls_blocking: want {}", buf.len());
         while pos < buf.len() {
             let mut tls_lock = self.tls.lock().unwrap();
             let tls = tls_lock
@@ -1843,10 +1836,9 @@ impl FdConnection {
                 }
                 Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
                     drop(tls_lock);
-                    self.wait_for_ready(libc::POLLIN)?;
+                    self.wait_for_ready(sysdeps::poll::POLLIN)?;
                 }
                 Err(e) => {
-                    println!("Tls read error: {:?}", e);
                     return Err(e);
                 }
             }
@@ -1878,7 +1870,7 @@ impl FdConnection {
                 Ok(_) => {}
                 Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
                     drop(tls_lock);
-                    self.wait_for_ready(libc::POLLOUT)?;
+                    self.wait_for_ready(sysdeps::poll::POLLOUT)?;
                 }
                 Err(e) => return Err(e),
             }
@@ -2032,7 +2024,7 @@ impl BlockingConnection for FdConnection {
                 match conn.write_tls(&mut file_ref) {
                     Ok(_) => {}
                     Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
-                        if let Err(e) = self.wait_for_ready(libc::POLLOUT) {
+                        if let Err(e) = self.wait_for_ready(sysdeps::poll::POLLOUT) {
                             log::error!(target: "transport", "wait_for_ready (OUT) failed: {}", e);
                             return false;
                         }
@@ -2062,7 +2054,7 @@ impl BlockingConnection for FdConnection {
                         }
                     }
                     Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
-                        if let Err(e) = self.wait_for_ready(libc::POLLIN) {
+                        if let Err(e) = self.wait_for_ready(sysdeps::poll::POLLIN) {
                             log::error!(target: "transport", "wait_for_ready (IN) failed: {}", e);
                             return false;
                         }

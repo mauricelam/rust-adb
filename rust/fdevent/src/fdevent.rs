@@ -97,8 +97,7 @@ impl Drop for MioSource {
                 // We need to make sure the mio stream doesn't close the socket when dropped,
                 // because AdbFd still owns it.
                 use std::os::windows::io::IntoRawSocket;
-                let std_stream = std::net::TcpStream::from(stream);
-                let _ = std_stream.into_raw_socket();
+                let _ = stream.into_raw_socket();
             }
         }
     }

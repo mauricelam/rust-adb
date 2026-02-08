@@ -83,6 +83,7 @@ impl AdbFd {
         *self = Self::None;
     }
 
+
     /// Creates an `AdbFd` from a raw file descriptor (Unix only).
     #[cfg(unix)]
     pub unsafe fn from_raw_fd(fd: RawFd) -> Self {
