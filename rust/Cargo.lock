@@ -39,6 +39,7 @@ dependencies = [
  "mio 0.8.11",
  "sysdeps",
  "thiserror",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -83,6 +84,7 @@ dependencies = [
  "nix",
  "sysdeps",
  "tempfile",
+ "windows-sys 0.52.0",
  "zerocopy",
 ]
 
@@ -113,6 +115,7 @@ dependencies = [
  "sysdeps",
  "tempfile",
  "thiserror",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]

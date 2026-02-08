@@ -17,6 +17,9 @@ mio = { version = "0.8.11", features = ["os-poll", "net", "os-ext"] }
 [target.'cfg(unix)'.dependencies]
 nix = { version = "0.27.1", features = ["fs", "socket"] }
 
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.52.0", features = ["Win32_Networking_WinSock", "Win32_Storage_FileSystem"] }
+
 [dev-dependencies]
 env_logger = "0.10.0"
 tempfile = "3.8.0"
