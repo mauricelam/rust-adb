@@ -4,6 +4,8 @@ use num_bigint_dig::BigUint;
 use rsa::pkcs8::{DecodePrivateKey, EncodePrivateKey};
 use rsa::{traits::PublicKeyParts, RsaPrivateKey};
 
+/// Represents a cryptographic key, wrapping an RSA private key.
+/// Ported from original/crypto/include/adb/crypto/key.h
 pub struct Key(RsaPrivateKey);
 
 #[repr(C)]
@@ -76,11 +78,14 @@ impl Key {
     }
 
     /// Return the private key as a PEM encoded string.
+    /// Ported from original/crypto/key.cpp: `std::string Key::ToPEMString(EVP_PKEY* pkey)`
     pub fn to_pem_string(&self) -> anyhow::Result<String> {
         let pem = self.0.to_pkcs8_pem(Default::default())?;
         Ok(pem.to_string())
     }
 
+    /// Calculates the public key in the format "<pubkey> <user>@<host>".
+    /// Ported from original/crypto/rsa_2048_key.cpp: `bool CalculatePublicKey(std::string* out, RSA* private_key)`
     pub fn calculate_public_key(&self) -> anyhow::Result<String> {
         let pubkey = self.android_pubkey()?;
         let mut buf = Vec::with_capacity(524);
@@ -108,6 +113,8 @@ fn calculate_n0inv(n0: u32) -> u32 {
 
 pub const SHA256_DIGEST_LENGTH: usize = 32;
 
+/// Converts SHA256 bits to a hex string representation.
+/// Ported from original/tls/adb_ca_list.cpp: `std::string SHA256BitsToHexString(std::string_view sha256)`
 pub fn sha256_bits_to_hex_string(sha256: &[u8]) -> String {
     assert_eq!(sha256.len(), SHA256_DIGEST_LENGTH);
     let mut s = String::with_capacity(SHA256_DIGEST_LENGTH * 2);
@@ -117,6 +124,8 @@ pub fn sha256_bits_to_hex_string(sha256: &[u8]) -> String {
     s
 }
 
+/// Converts a SHA256 hex string back to bits.
+/// Ported from original/tls/adb_ca_list.cpp: `std::optional<std::string> SHA256HexStringToBits(std::string_view sha256_str)`
 pub fn sha256_hex_string_to_bits(sha256_str: &str) -> Option<Vec<u8>> {
     if sha256_str.len() != SHA256_DIGEST_LENGTH * 2 {
         return None;
@@ -132,12 +141,16 @@ pub fn sha256_hex_string_to_bits(sha256_str: &str) -> Option<Vec<u8>> {
 
 use rcgen::{Certificate, DistinguishedName};
 
+/// Generates a new 2048-bit RSA key.
+/// Ported from original/crypto/rsa_2048_key.cpp: `std::optional<Key> CreateRSA2048Key()`
 pub fn new_rsa_2048() -> anyhow::Result<Key> {
     let mut rng = rand::thread_rng();
     let key = RsaPrivateKey::new(&mut rng, 2048)?;
     Ok(Key(key))
 }
 
+/// Generates a self-signed X.509 certificate for the given key.
+/// Ported from original/crypto/x509_generator.cpp: `bssl::UniquePtr<X509> GenerateX509Certificate(EVP_PKEY* pkey)`
 pub fn generate_x509_certificate(key: &Key) -> anyhow::Result<Certificate> {
     let mut params = rcgen::CertificateParams::default();
     let mut distinguished_name = DistinguishedName::new();
@@ -160,10 +173,14 @@ pub fn generate_x509_certificate(key: &Key) -> anyhow::Result<Certificate> {
     Ok(cert)
 }
 
+/// Returns the X.509 certificate as a PEM encoded string.
+/// Ported from original/crypto/x509_generator.cpp: `std::string X509ToPEMString(X509* x509)`
 pub fn x509_to_pem_string(cert: &Certificate) -> anyhow::Result<String> {
     Ok(cert.serialize_pem()?)
 }
 
+/// Creates a CA issuer Distinguished Name from an encoded public key.
+/// Ported from original/tls/adb_ca_list.cpp: `bssl::UniquePtr<X509_NAME> CreateCAIssuerFromEncodedKey(std::string_view key)`
 pub fn create_ca_issuer_from_encoded_key(key: &str) -> anyhow::Result<Vec<u8>> {
     if key.is_empty() {
         return Err(anyhow!("Key cannot be empty"));
@@ -176,13 +193,20 @@ pub fn create_ca_issuer_from_encoded_key(key: &str) -> anyhow::Result<Vec<u8>> {
     params.distinguished_name = distinguished_name;
 
     let cert = Certificate::from_params(params)?;
-    Ok(cert.serialize_der()?)
+    let der = cert.serialize_der()?;
+    let (_, parsed_cert) = x509_parser::parse_x509_certificate(&der)
+        .map_err(|e| anyhow!("Failed to parse certificate: {}", e))?;
+
+    Ok(parsed_cert.tbs_certificate.subject.as_raw().to_vec())
 }
 
+use x509_parser::prelude::FromDer;
+
+/// Parses an encoded public key from a CA issuer Distinguished Name.
+/// Ported from original/tls/adb_ca_list.cpp: `std::optional<std::string> ParseEncodedKeyFromCAIssuer(X509_NAME* issuer)`
 pub fn parse_encoded_key_from_ca_issuer(der: &[u8]) -> anyhow::Result<Option<String>> {
-    let (_, cert) = x509_parser::parse_x509_certificate(der)
-        .map_err(|e| anyhow!("Failed to parse certificate: {}", e))?;
-    let subject = cert.subject();
+    let (_, subject) = x509_parser::x509::X509Name::from_der(der)
+        .map_err(|e| anyhow!("Failed to parse Name: {}", e))?;
 
     let mut is_adb_key = false;
     let mut key = None;
@@ -192,13 +216,17 @@ pub fn parse_encoded_key_from_ca_issuer(der: &[u8]) -> anyhow::Result<Option<Str
             let oid = attr.attr_type().to_string();
             // 2.5.4.10 is OrganizationName
             if oid == "2.5.4.10" {
-                if attr.attr_value().as_str()? == "AdbKey-0" {
-                    is_adb_key = true;
+                if let Ok(val) = attr.attr_value().as_str() {
+                    if val == "AdbKey-0" {
+                        is_adb_key = true;
+                    }
                 }
             }
             // 2.5.4.3 is CommonName
             if oid == "2.5.4.3" {
-                key = Some(attr.attr_value().as_str()?.to_string());
+                if let Ok(val) = attr.attr_value().as_str() {
+                    key = Some(val.to_string());
+                }
             }
         }
     }
@@ -213,7 +241,6 @@ pub fn parse_encoded_key_from_ca_issuer(der: &[u8]) -> anyhow::Result<Option<Str
 #[cfg(test)]
 mod tests {
     use super::*;
-    use base64::engine::general_purpose;
     use base64::Engine;
     use rsa::pkcs1v15;
     use rsa::signature::hazmat::{PrehashSigner, PrehashVerifier};
@@ -227,7 +254,7 @@ mod tests {
 
         // SAFETY: AndroidPubkey is #[repr(C)] and has a fixed size.
         let pubkey_bytes: [u8; 524] = unsafe { std::mem::transmute(pubkey_struct) };
-        let pubkey_b64 = general_purpose::STANDARD.encode(&pubkey_bytes);
+        let pubkey_b64 = base64::engine::general_purpose::STANDARD.encode(&pubkey_bytes);
         println!("pubkey_b64: {}", pubkey_b64);
 
         let pem = key.to_pem_string().unwrap();
@@ -268,7 +295,7 @@ mod tests {
         assert!(split[1].contains('@'));
 
         let pubkey_b64 = split[0];
-        let pubkey_bytes = general_purpose::STANDARD.decode(pubkey_b64).unwrap();
+        let pubkey_bytes = base64::engine::general_purpose::STANDARD.decode(pubkey_b64).unwrap();
         assert_eq!(pubkey_bytes.len(), 524);
     }
 

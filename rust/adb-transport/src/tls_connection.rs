@@ -3,11 +3,13 @@ use std::net::TcpStream;
 use std::sync::{Arc, Mutex};
 use std::time::SystemTime;
 
+/// Ported from original/tls/include/adb/tls/tls_connection.h: `enum class Role`
 pub enum Role {
     Server,
     Client,
 }
 
+/// Ported from original/tls/include/adb/tls/tls_connection.h: `enum class TlsError`
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TlsError {
     Success,
@@ -16,6 +18,8 @@ pub enum TlsError {
     UnknownFailure,
 }
 
+/// Ported from original/tls/include/adb/tls/tls_connection.h: `class TlsConnection`
+/// This struct wraps rustls to provide an ADB-compatible TLS connection API.
 pub struct TlsConnection {
     role: Role,
     stream: TcpStream,
@@ -27,13 +31,15 @@ pub struct TlsConnection {
 struct TlsConfig {
     trusted_certs: Vec<rustls::Certificate>,
     cert_verify_callback: Option<Box<dyn Fn() -> bool + Send + Sync>>,
-    ca_list: Vec<Vec<u8>>,
+    ca_list: Vec<rustls::DistinguishedName>,
     cert_callback: Option<Box<dyn Fn(&[Vec<u8>]) -> Option<(Vec<rustls::Certificate>, rustls::PrivateKey)> + Send + Sync>>,
     cert_chain: Vec<rustls::Certificate>,
     priv_key: rustls::PrivateKey,
 }
 
 impl TlsConnection {
+    /// Ported from original/tls/include/adb/tls/tls_connection.h:
+    /// `static std::unique_ptr<TlsConnection> Create(Role role, std::string_view cert, std::string_view priv_key, android::base::borrowed_fd fd);`
     pub fn create(role: Role, cert: &str, priv_key: &str, stream: TcpStream) -> anyhow::Result<Self> {
         if cert.is_empty() || priv_key.is_empty() {
             return Err(anyhow::anyhow!("Empty cert or key"));
@@ -64,6 +70,7 @@ impl TlsConnection {
         })
     }
 
+    /// Ported from original/tls/include/adb/tls/tls_connection.h: `virtual bool AddTrustedCertificate(std::string_view cert) = 0;`
     pub fn add_trusted_certificate(&mut self, cert: &str) -> bool {
         if let Ok(certs) = rustls_pemfile::certs(&mut cert.as_bytes()) {
             let mut config = self.config.lock().unwrap();
@@ -76,6 +83,7 @@ impl TlsConnection {
         }
     }
 
+    /// Ported from original/tls/include/adb/tls/tls_connection.h: `virtual void SetCertVerifyCallback(CertVerifyCb cb) = 0;`
     pub fn set_cert_verify_callback<F>(&mut self, cb: F)
     where
         F: Fn() -> bool + Send + Sync + 'static,
@@ -83,10 +91,12 @@ impl TlsConnection {
         self.config.lock().unwrap().cert_verify_callback = Some(Box::new(cb));
     }
 
+    /// Ported from original/tls/include/adb/tls/tls_connection.h: `virtual void SetClientCAList(STACK_OF(X509_NAME) * ca_list) = 0;`
     pub fn set_client_ca_list(&mut self, ca_list: Vec<Vec<u8>>) {
-        self.config.lock().unwrap().ca_list = ca_list;
+        self.config.lock().unwrap().ca_list = ca_list.into_iter().map(rustls::DistinguishedName::from).collect();
     }
 
+    /// Ported from original/tls/include/adb/tls/tls_connection.h: `virtual void SetCertificateCallback(SetCertCb cb) = 0;`
     pub fn set_certificate_callback<F>(&mut self, cb: F)
     where
         F: Fn(&[Vec<u8>]) -> Option<(Vec<rustls::Certificate>, rustls::PrivateKey)> + Send + Sync + 'static,
@@ -94,6 +104,7 @@ impl TlsConnection {
         self.config.lock().unwrap().cert_callback = Some(Box::new(cb));
     }
 
+    /// Ported from original/tls/include/adb/tls/tls_connection.h: `virtual std::vector<uint8_t> ExportKeyingMaterial(size_t length) = 0;`
     pub fn export_keying_material(&self, length: usize) -> Vec<u8> {
         let mut out = vec![0u8; length];
         if let Some(conn) = &self.connection {
@@ -107,10 +118,12 @@ impl TlsConnection {
         Vec::new()
     }
 
+    /// Ported from original/tls/include/adb/tls/tls_connection.h: `virtual void EnableClientPostHandshakeCheck(bool enable) = 0;`
     pub fn enable_client_post_handshake_check(&mut self, enable: bool) {
         self.post_handshake_check = enable;
     }
 
+    /// Ported from original/tls/include/adb/tls/tls_connection.h: `virtual TlsError DoHandshake() = 0;`
     pub fn do_handshake(&mut self) -> TlsError {
         let config_lock = self.config.lock().unwrap();
 
@@ -120,6 +133,7 @@ impl TlsConnection {
                     .with_safe_defaults()
                     .with_custom_certificate_verifier(Arc::new(AdbCertVerifier {
                         config: self.config.clone(),
+                        ca_list: Vec::new(),
                     }))
                     .with_client_cert_resolver(Arc::new(AdbCertResolver {
                         config: self.config.clone(),
@@ -135,6 +149,7 @@ impl TlsConnection {
                     .with_safe_defaults()
                     .with_client_cert_verifier(Arc::new(AdbCertVerifier {
                         config: self.config.clone(),
+                        ca_list: config_lock.ca_list.clone(),
                     }))
                     .with_cert_resolver(Arc::new(AdbCertResolver {
                         config: self.config.clone(),
@@ -172,6 +187,7 @@ impl TlsConnection {
         TlsError::Success
     }
 
+    /// Ported from original/tls/include/adb/tls/tls_connection.h: `virtual std::vector<uint8_t> ReadFully(size_t size) = 0;`
     pub fn read_fully(&mut self, size: usize) -> Vec<u8> {
         let mut buf = vec![0u8; size];
         if self.read_fully_buf(&mut buf) {
@@ -181,6 +197,7 @@ impl TlsConnection {
         }
     }
 
+    /// Ported from original/tls/include/adb/tls/tls_connection.h: `virtual bool ReadFully(void* buf, size_t size) = 0;`
     pub fn read_fully_buf(&mut self, buf: &mut [u8]) -> bool {
         let conn = match &mut self.connection {
             Some(c) => c,
@@ -190,17 +207,16 @@ impl TlsConnection {
         let mut pos = 0;
         while pos < buf.len() {
             match conn.reader().read(&mut buf[pos..]) {
-                Ok(n) if n > 0 => {
+                Ok(n) => {
                     pos += n;
-                }
-                Ok(0) => {
-                    match conn.complete_io(&mut self.stream) {
-                        Ok(io) if io.0 == 0 && io.1 == 0 => return false, // EOF
-                        Ok(_) => continue,
-                        Err(_) => return false,
+                    if n == 0 {
+                        match conn.complete_io(&mut self.stream) {
+                            Ok(io) if io.0 == 0 && io.1 == 0 => return false, // EOF
+                            Ok(_) => continue,
+                            Err(_) => return false,
+                        }
                     }
                 }
-                Ok(_) => continue,
                 Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
                     if conn.complete_io(&mut self.stream).is_err() {
                         return false;
@@ -212,6 +228,7 @@ impl TlsConnection {
         true
     }
 
+    /// Ported from original/tls/include/adb/tls/tls_connection.h: `virtual bool WriteFully(std::string_view data) = 0;`
     pub fn write_fully(&mut self, data: &[u8]) -> bool {
         let conn = match &mut self.connection {
             Some(c) => c,
@@ -221,15 +238,8 @@ impl TlsConnection {
         let mut pos = 0;
         while pos < data.len() {
             match conn.writer().write(&data[pos..]) {
-                Ok(n) if n > 0 => {
+                Ok(n) => {
                     pos += n;
-                }
-                Ok(0) => break,
-                Ok(_) => continue,
-                Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
-                    if conn.complete_io(&mut self.stream).is_err() {
-                        return false;
-                    }
                 }
                 Err(_) => return false,
             }
@@ -243,6 +253,7 @@ impl TlsConnection {
         true
     }
 
+    /// Ported from original/tls/include/adb/tls/tls_connection.h: `static bool SetCertAndKey(SSL* ssl, std::string_view cert_chain, std::string_view priv_key);`
     pub fn set_cert_and_key(_conn: &mut rustls::Connection, _cert: &str, _priv_key: &str) -> bool {
         true
     }
@@ -250,6 +261,7 @@ impl TlsConnection {
 
 struct AdbCertVerifier {
     config: Arc<Mutex<TlsConfig>>,
+    ca_list: Vec<rustls::DistinguishedName>,
 }
 
 impl rustls::client::ServerCertVerifier for AdbCertVerifier {
@@ -281,8 +293,7 @@ impl rustls::client::ServerCertVerifier for AdbCertVerifier {
 
 impl rustls::server::ClientCertVerifier for AdbCertVerifier {
     fn client_auth_root_subjects(&self) -> &[rustls::DistinguishedName] {
-        static EMPTY: Vec<rustls::DistinguishedName> = Vec::new();
-        &EMPTY
+        &self.ca_list
     }
 
     fn verify_client_cert(
@@ -353,18 +364,12 @@ mod tests {
     use std::net::TcpListener;
     use std::thread;
 
-    fn load_certs() -> (String, String, String, String) {
-        let key = rust_adb_crypto::new_rsa_2048().unwrap();
-        let cert = rust_adb_crypto::generate_x509_certificate(&key).unwrap();
-        let server_cert = rust_adb_crypto::x509_to_pem_string(&cert).unwrap();
-        let server_key = key.to_pem_string().unwrap();
-
-        let key = rust_adb_crypto::new_rsa_2048().unwrap();
-        let cert = rust_adb_crypto::generate_x509_certificate(&key).unwrap();
-        let client_cert = rust_adb_crypto::x509_to_pem_string(&cert).unwrap();
-        let client_key = key.to_pem_string().unwrap();
-
-        (server_cert, server_key, client_cert, client_key)
+    fn load_test_data() -> (String, String, String, String) {
+        let server_cert = include_str!("../tests/testdata/server.crt");
+        let server_key = include_str!("../tests/testdata/server.key");
+        let client_cert = include_str!("../tests/testdata/client.crt");
+        let client_key = include_str!("../tests/testdata/client.key");
+        (server_cert.to_string(), server_key.to_string(), client_cert.to_string(), client_key.to_string())
     }
 
     #[test]
@@ -377,7 +382,7 @@ mod tests {
 
     #[test]
     fn test_no_trusted_certificates() {
-        let (server_cert, server_key, client_cert, client_key) = load_certs();
+        let (server_cert, server_key, client_cert, client_key) = load_test_data();
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let addr = listener.local_addr().unwrap();
 
@@ -408,7 +413,7 @@ mod tests {
 
     #[test]
     fn test_add_trusted_certificates() {
-        let (server_cert, server_key, client_cert, client_key) = load_certs();
+        let (server_cert, server_key, client_cert, client_key) = load_test_data();
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let addr = listener.local_addr().unwrap();
 
@@ -452,7 +457,7 @@ mod tests {
 
     #[test]
     fn test_export_keying_material() {
-        let (server_cert, server_key, client_cert, client_key) = load_certs();
+        let (server_cert, server_key, client_cert, client_key) = load_test_data();
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let addr = listener.local_addr().unwrap();
 
@@ -492,7 +497,7 @@ mod tests {
 
     #[test]
     fn test_certificate_callback() {
-        let (server_cert, server_key, client_cert, client_key) = load_certs();
+        let (server_cert, server_key, client_cert, client_key) = load_test_data();
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let addr = listener.local_addr().unwrap();
 
@@ -542,7 +547,7 @@ mod tests {
 
     #[test]
     fn test_client_ca_list_adb_ca_list() {
-         let (server_cert, server_key, client_cert, client_key) = load_certs();
+         let (server_cert, server_key, client_cert, client_key) = load_test_data();
          let listener = TcpListener::bind("127.0.0.1:0").unwrap();
          let addr = listener.local_addr().unwrap();
 
