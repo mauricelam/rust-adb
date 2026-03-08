@@ -1,8 +1,11 @@
 use anyhow::anyhow;
+use base64::Engine;
 use num_bigint_dig::BigUint;
 use rsa::pkcs8::{DecodePrivateKey, EncodePrivateKey};
 use rsa::{traits::PublicKeyParts, RsaPrivateKey};
 
+/// Represents a cryptographic key, wrapping an RSA private key.
+/// Ported from original/crypto/include/adb/crypto/key.h
 pub struct Key(RsaPrivateKey);
 
 #[repr(C)]
@@ -75,9 +78,28 @@ impl Key {
     }
 
     /// Return the private key as a PEM encoded string.
+    /// Ported from original/crypto/key.cpp: `std::string Key::ToPEMString(EVP_PKEY* pkey)`
     pub fn to_pem_string(&self) -> anyhow::Result<String> {
         let pem = self.0.to_pkcs8_pem(Default::default())?;
         Ok(pem.to_string())
+    }
+
+    /// Calculates the public key in the format "<pubkey> <user>@<host>".
+    /// Ported from original/crypto/rsa_2048_key.cpp: `bool CalculatePublicKey(std::string* out, RSA* private_key)`
+    pub fn calculate_public_key(&self) -> anyhow::Result<String> {
+        let pubkey = self.android_pubkey()?;
+        let mut buf = Vec::with_capacity(524);
+        buf.extend_from_slice(&pubkey.modulus_size_words.to_le_bytes());
+        buf.extend_from_slice(&pubkey.n0inv.to_le_bytes());
+        buf.extend_from_slice(&pubkey.modulus);
+        buf.extend_from_slice(&pubkey.rr);
+        buf.extend_from_slice(&pubkey.exponent.to_le_bytes());
+
+        let encoded = base64::engine::general_purpose::STANDARD.encode(&buf);
+        let login = sysdeps::env::get_login_name_utf8().unwrap_or_else(|_| "unknown".to_string());
+        let host = sysdeps::env::get_host_name_utf8().unwrap_or_else(|_| "unknown".to_string());
+
+        Ok(format!("{} {}@{}", encoded, login, host))
     }
 }
 
@@ -89,14 +111,46 @@ fn calculate_n0inv(n0: u32) -> u32 {
     inv
 }
 
+pub const SHA256_DIGEST_LENGTH: usize = 32;
+
+/// Converts SHA256 bits to a hex string representation.
+/// Ported from original/tls/adb_ca_list.cpp: `std::string SHA256BitsToHexString(std::string_view sha256)`
+pub fn sha256_bits_to_hex_string(sha256: &[u8]) -> String {
+    assert_eq!(sha256.len(), SHA256_DIGEST_LENGTH);
+    let mut s = String::with_capacity(SHA256_DIGEST_LENGTH * 2);
+    for &b in sha256 {
+        s.push_str(&format!("{:02X}", b));
+    }
+    s
+}
+
+/// Converts a SHA256 hex string back to bits.
+/// Ported from original/tls/adb_ca_list.cpp: `std::optional<std::string> SHA256HexStringToBits(std::string_view sha256_str)`
+pub fn sha256_hex_string_to_bits(sha256_str: &str) -> Option<Vec<u8>> {
+    if sha256_str.len() != SHA256_DIGEST_LENGTH * 2 {
+        return None;
+    }
+    let mut res = Vec::with_capacity(SHA256_DIGEST_LENGTH);
+    for i in 0..SHA256_DIGEST_LENGTH {
+        let s = &sha256_str[i * 2..i * 2 + 2];
+        let b = u8::from_str_radix(s, 16).ok()?;
+        res.push(b);
+    }
+    Some(res)
+}
+
 use rcgen::{Certificate, DistinguishedName};
 
+/// Generates a new 2048-bit RSA key.
+/// Ported from original/crypto/rsa_2048_key.cpp: `std::optional<Key> CreateRSA2048Key()`
 pub fn new_rsa_2048() -> anyhow::Result<Key> {
     let mut rng = rand::thread_rng();
     let key = RsaPrivateKey::new(&mut rng, 2048)?;
     Ok(Key(key))
 }
 
+/// Generates a self-signed X.509 certificate for the given key.
+/// Ported from original/crypto/x509_generator.cpp: `bssl::UniquePtr<X509> GenerateX509Certificate(EVP_PKEY* pkey)`
 pub fn generate_x509_certificate(key: &Key) -> anyhow::Result<Certificate> {
     let mut params = rcgen::CertificateParams::default();
     let mut distinguished_name = DistinguishedName::new();
@@ -119,14 +173,74 @@ pub fn generate_x509_certificate(key: &Key) -> anyhow::Result<Certificate> {
     Ok(cert)
 }
 
+/// Returns the X.509 certificate as a PEM encoded string.
+/// Ported from original/crypto/x509_generator.cpp: `std::string X509ToPEMString(X509* x509)`
 pub fn x509_to_pem_string(cert: &Certificate) -> anyhow::Result<String> {
     Ok(cert.serialize_pem()?)
+}
+
+/// Creates a CA issuer Distinguished Name from an encoded public key.
+/// Ported from original/tls/adb_ca_list.cpp: `bssl::UniquePtr<X509_NAME> CreateCAIssuerFromEncodedKey(std::string_view key)`
+pub fn create_ca_issuer_from_encoded_key(key: &str) -> anyhow::Result<Vec<u8>> {
+    if key.is_empty() {
+        return Err(anyhow!("Key cannot be empty"));
+    }
+
+    let mut params = rcgen::CertificateParams::default();
+    let mut distinguished_name = DistinguishedName::new();
+    distinguished_name.push(rcgen::DnType::OrganizationName, "AdbKey-0");
+    distinguished_name.push(rcgen::DnType::CommonName, key);
+    params.distinguished_name = distinguished_name;
+
+    let cert = Certificate::from_params(params)?;
+    let der = cert.serialize_der()?;
+    let (_, parsed_cert) = x509_parser::parse_x509_certificate(&der)
+        .map_err(|e| anyhow!("Failed to parse certificate: {}", e))?;
+
+    Ok(parsed_cert.tbs_certificate.subject.as_raw().to_vec())
+}
+
+use x509_parser::prelude::FromDer;
+
+/// Parses an encoded public key from a CA issuer Distinguished Name.
+/// Ported from original/tls/adb_ca_list.cpp: `std::optional<std::string> ParseEncodedKeyFromCAIssuer(X509_NAME* issuer)`
+pub fn parse_encoded_key_from_ca_issuer(der: &[u8]) -> anyhow::Result<Option<String>> {
+    let (_, subject) = x509_parser::x509::X509Name::from_der(der)
+        .map_err(|e| anyhow!("Failed to parse Name: {}", e))?;
+
+    let mut is_adb_key = false;
+    let mut key = None;
+
+    for rdns in subject.iter_rdn() {
+        for attr in rdns.iter() {
+            let oid = attr.attr_type().to_string();
+            // 2.5.4.10 is OrganizationName
+            if oid == "2.5.4.10" {
+                if let Ok(val) = attr.attr_value().as_str() {
+                    if val == "AdbKey-0" {
+                        is_adb_key = true;
+                    }
+                }
+            }
+            // 2.5.4.3 is CommonName
+            if oid == "2.5.4.3" {
+                if let Ok(val) = attr.attr_value().as_str() {
+                    key = Some(val.to_string());
+                }
+            }
+        }
+    }
+
+    if is_adb_key {
+        Ok(key)
+    } else {
+        Ok(None)
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use base64::engine::general_purpose;
     use base64::Engine;
     use rsa::pkcs1v15;
     use rsa::signature::hazmat::{PrehashSigner, PrehashVerifier};
@@ -140,7 +254,7 @@ mod tests {
 
         // SAFETY: AndroidPubkey is #[repr(C)] and has a fixed size.
         let pubkey_bytes: [u8; 524] = unsafe { std::mem::transmute(pubkey_struct) };
-        let pubkey_b64 = general_purpose::STANDARD.encode(&pubkey_bytes);
+        let pubkey_b64 = base64::engine::general_purpose::STANDARD.encode(&pubkey_bytes);
         println!("pubkey_b64: {}", pubkey_b64);
 
         let pem = key.to_pem_string().unwrap();
@@ -170,5 +284,51 @@ mod tests {
             cert.get_key_pair().public_key_raw(),
             key_pair.public_key_raw()
         );
+    }
+
+    #[test]
+    fn test_calculate_public_key() {
+        let key = new_rsa_2048().unwrap();
+        let pubkey_plus_name = key.calculate_public_key().unwrap();
+        let split: Vec<&str> = pubkey_plus_name.split_whitespace().collect();
+        assert_eq!(split.len(), 2);
+        assert!(split[1].contains('@'));
+
+        let pubkey_b64 = split[0];
+        let pubkey_bytes = base64::engine::general_purpose::STANDARD.decode(pubkey_b64).unwrap();
+        assert_eq!(pubkey_bytes.len(), 524);
+    }
+
+    #[test]
+    fn test_sha256_utils() {
+        let mut bits = Vec::new();
+        for i in 0..SHA256_DIGEST_LENGTH {
+            bits.push(i as u8);
+        }
+
+        let hex = sha256_bits_to_hex_string(&bits);
+        assert_eq!(
+            hex,
+            "000102030405060708090A0B0C0D0E0F101112131415161718191A1B1C1D1E1F"
+        );
+
+        let out_bits = sha256_hex_string_to_bits(&hex).unwrap();
+        assert_eq!(bits, out_bits);
+
+        assert!(sha256_hex_string_to_bits("").is_none());
+        assert!(sha256_hex_string_to_bits("G0").is_none());
+    }
+
+    #[test]
+    fn test_ca_list_smoke() {
+        let key = "A45BC1FF6C89BF0E65F9BA153FBC98764969B4113F1CF878EEF9BF1C3F9C9227";
+        let der = create_ca_issuer_from_encoded_key(key).unwrap();
+        let out_key = parse_encoded_key_from_ca_issuer(&der).unwrap().unwrap();
+        assert_eq!(key, out_key);
+    }
+
+    #[test]
+    fn test_ca_list_empty_key() {
+        assert!(create_ca_issuer_from_encoded_key("").is_err());
     }
 }

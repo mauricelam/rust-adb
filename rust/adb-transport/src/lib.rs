@@ -35,6 +35,8 @@ use adb_sockets::{Socket, Transport};
 use adb_types::{calculate_apacket_checksum, Amessage, Apacket, Block};
 use rust_adb_crypto::Key;
 
+pub mod tls_connection;
+
 /// Ported from original/adb.h: `using TransportId = uint64_t;`
 pub type TransportId = u64;
 
