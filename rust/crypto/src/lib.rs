@@ -1,4 +1,5 @@
 use anyhow::anyhow;
+use base64::Engine;
 use num_bigint_dig::BigUint;
 use rsa::pkcs8::{DecodePrivateKey, EncodePrivateKey};
 use rsa::{traits::PublicKeyParts, RsaPrivateKey};
@@ -79,6 +80,22 @@ impl Key {
         let pem = self.0.to_pkcs8_pem(Default::default())?;
         Ok(pem.to_string())
     }
+
+    pub fn calculate_public_key(&self) -> anyhow::Result<String> {
+        let pubkey = self.android_pubkey()?;
+        let mut buf = Vec::with_capacity(524);
+        buf.extend_from_slice(&pubkey.modulus_size_words.to_le_bytes());
+        buf.extend_from_slice(&pubkey.n0inv.to_le_bytes());
+        buf.extend_from_slice(&pubkey.modulus);
+        buf.extend_from_slice(&pubkey.rr);
+        buf.extend_from_slice(&pubkey.exponent.to_le_bytes());
+
+        let encoded = base64::engine::general_purpose::STANDARD.encode(&buf);
+        let login = sysdeps::env::get_login_name_utf8().unwrap_or_else(|_| "unknown".to_string());
+        let host = sysdeps::env::get_host_name_utf8().unwrap_or_else(|_| "unknown".to_string());
+
+        Ok(format!("{} {}@{}", encoded, login, host))
+    }
 }
 
 fn calculate_n0inv(n0: u32) -> u32 {
@@ -87,6 +104,30 @@ fn calculate_n0inv(n0: u32) -> u32 {
         inv = inv.wrapping_mul(2u32.wrapping_sub(n0.wrapping_mul(inv)));
     }
     inv
+}
+
+pub const SHA256_DIGEST_LENGTH: usize = 32;
+
+pub fn sha256_bits_to_hex_string(sha256: &[u8]) -> String {
+    assert_eq!(sha256.len(), SHA256_DIGEST_LENGTH);
+    let mut s = String::with_capacity(SHA256_DIGEST_LENGTH * 2);
+    for &b in sha256 {
+        s.push_str(&format!("{:02X}", b));
+    }
+    s
+}
+
+pub fn sha256_hex_string_to_bits(sha256_str: &str) -> Option<Vec<u8>> {
+    if sha256_str.len() != SHA256_DIGEST_LENGTH * 2 {
+        return None;
+    }
+    let mut res = Vec::with_capacity(SHA256_DIGEST_LENGTH);
+    for i in 0..SHA256_DIGEST_LENGTH {
+        let s = &sha256_str[i * 2..i * 2 + 2];
+        let b = u8::from_str_radix(s, 16).ok()?;
+        res.push(b);
+    }
+    Some(res)
 }
 
 use rcgen::{Certificate, DistinguishedName};
@@ -121,6 +162,52 @@ pub fn generate_x509_certificate(key: &Key) -> anyhow::Result<Certificate> {
 
 pub fn x509_to_pem_string(cert: &Certificate) -> anyhow::Result<String> {
     Ok(cert.serialize_pem()?)
+}
+
+pub fn create_ca_issuer_from_encoded_key(key: &str) -> anyhow::Result<Vec<u8>> {
+    if key.is_empty() {
+        return Err(anyhow!("Key cannot be empty"));
+    }
+
+    let mut params = rcgen::CertificateParams::default();
+    let mut distinguished_name = DistinguishedName::new();
+    distinguished_name.push(rcgen::DnType::OrganizationName, "AdbKey-0");
+    distinguished_name.push(rcgen::DnType::CommonName, key);
+    params.distinguished_name = distinguished_name;
+
+    let cert = Certificate::from_params(params)?;
+    Ok(cert.serialize_der()?)
+}
+
+pub fn parse_encoded_key_from_ca_issuer(der: &[u8]) -> anyhow::Result<Option<String>> {
+    let (_, cert) = x509_parser::parse_x509_certificate(der)
+        .map_err(|e| anyhow!("Failed to parse certificate: {}", e))?;
+    let subject = cert.subject();
+
+    let mut is_adb_key = false;
+    let mut key = None;
+
+    for rdns in subject.iter_rdn() {
+        for attr in rdns.iter() {
+            let oid = attr.attr_type().to_string();
+            // 2.5.4.10 is OrganizationName
+            if oid == "2.5.4.10" {
+                if attr.attr_value().as_str()? == "AdbKey-0" {
+                    is_adb_key = true;
+                }
+            }
+            // 2.5.4.3 is CommonName
+            if oid == "2.5.4.3" {
+                key = Some(attr.attr_value().as_str()?.to_string());
+            }
+        }
+    }
+
+    if is_adb_key {
+        Ok(key)
+    } else {
+        Ok(None)
+    }
 }
 
 #[cfg(test)]
@@ -170,5 +257,51 @@ mod tests {
             cert.get_key_pair().public_key_raw(),
             key_pair.public_key_raw()
         );
+    }
+
+    #[test]
+    fn test_calculate_public_key() {
+        let key = new_rsa_2048().unwrap();
+        let pubkey_plus_name = key.calculate_public_key().unwrap();
+        let split: Vec<&str> = pubkey_plus_name.split_whitespace().collect();
+        assert_eq!(split.len(), 2);
+        assert!(split[1].contains('@'));
+
+        let pubkey_b64 = split[0];
+        let pubkey_bytes = general_purpose::STANDARD.decode(pubkey_b64).unwrap();
+        assert_eq!(pubkey_bytes.len(), 524);
+    }
+
+    #[test]
+    fn test_sha256_utils() {
+        let mut bits = Vec::new();
+        for i in 0..SHA256_DIGEST_LENGTH {
+            bits.push(i as u8);
+        }
+
+        let hex = sha256_bits_to_hex_string(&bits);
+        assert_eq!(
+            hex,
+            "000102030405060708090A0B0C0D0E0F101112131415161718191A1B1C1D1E1F"
+        );
+
+        let out_bits = sha256_hex_string_to_bits(&hex).unwrap();
+        assert_eq!(bits, out_bits);
+
+        assert!(sha256_hex_string_to_bits("").is_none());
+        assert!(sha256_hex_string_to_bits("G0").is_none());
+    }
+
+    #[test]
+    fn test_ca_list_smoke() {
+        let key = "A45BC1FF6C89BF0E65F9BA153FBC98764969B4113F1CF878EEF9BF1C3F9C9227";
+        let der = create_ca_issuer_from_encoded_key(key).unwrap();
+        let out_key = parse_encoded_key_from_ca_issuer(&der).unwrap().unwrap();
+        assert_eq!(key, out_key);
+    }
+
+    #[test]
+    fn test_ca_list_empty_key() {
+        assert!(create_ca_issuer_from_encoded_key("").is_err());
     }
 }
