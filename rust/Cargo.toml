@@ -18,5 +18,5 @@ members = [
     "adb-usb",
     "adb-mdns",
     "adb-daemon",
-    "rust-adb",
+    "rust-adb", "adb-pairing",
 ]

@@ -1,0 +1,18 @@
+[package]
+name = "adb-pairing"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+adb-protocol = { path = "../adb-protocol" }
+adb-transport = { path = "../adb-transport" }
+adb-types = { path = "../adb-types" }
+adb-utils = { path = "../adb-utils" }
+rust-adb-pairing-auth = { path = "../rust-adb-pairing-auth" }
+rust-adb-crypto = { path = "../crypto" }
+anyhow = "1.0"
+log = "0.4"
+thiserror = "1.0"
+bytes = "1.0"
+zerocopy = { version = "0.8.38", features = ["derive"] }
+prost = "0.13"

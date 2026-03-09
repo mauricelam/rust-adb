@@ -72,6 +72,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "adb-pairing"
+version = "0.1.0"
+dependencies = [
+ "adb-protocol",
+ "adb-transport",
+ "adb-types",
+ "adb-utils",
+ "anyhow",
+ "bytes",
+ "log",
+ "prost",
+ "rust-adb-crypto",
+ "rust-adb-pairing-auth",
+ "thiserror",
+ "zerocopy",
+]
+
+[[package]]
 name = "adb-protocol"
 version = "0.1.0"
 dependencies = [

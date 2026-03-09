@@ -1,4 +1,5 @@
 mod adb_client;
+mod bugreport;
 
 use clap::{Parser, Subcommand};
 use adb_protocol::TransportType;
@@ -64,6 +65,11 @@ enum Commands {
     Shell {
         /// COMMAND
         command: Vec<String>,
+    },
+    /// generate bugreport
+    Bugreport {
+        /// [PATH] | [--stream]
+        args: Vec<String>,
     },
 }
 
@@ -146,6 +152,10 @@ fn main() -> anyhow::Result<()> {
                     stdout.flush()?;
                 }
             }
+        }
+        Commands::Bugreport { args } => {
+            let mut br = bugreport::Bugreport::new();
+            br.do_it(&args)?;
         }
     }
 
