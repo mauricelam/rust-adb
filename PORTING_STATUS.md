@@ -22,10 +22,13 @@ The ADB Rust port has successfully implemented the core infrastructure, includin
 | `shell_service_protocol_test.cpp` | `rust/adb-protocol/src/shell_protocol.rs` | Ported (Unit) |
 | `pairing_auth_test.cpp` | `rust/rust-adb-pairing-auth/tests/` | Ported (Integration) |
 | `mdns_test.cpp` | `rust/adb-mdns/tests/` | Ported (Integration) |
+| `shell_service_test.cpp` | `rust/adb-services/src/shell_service.rs` | Ported (Unit) |
+| `restart_service_test.cpp` | `rust/adb-services/src/restart_service.rs` | Ported (Unit) |
+| `property_monitor_test.cpp` | `rust/adb-services/src/property_monitor.rs` | Ported (Unit) |
+| `tradeinmode_test.cpp` | `rust/adb-services/src/tradeinmode.rs` | Ported (Unit) |
 
 ### Remaining Gaps in Testing
 - **Missing Crypto/TLS Tests**: `key_test.cpp`, `rsa_2048_key_test.cpp`, `x509_generator_test.cpp`, `tls_connection_test.cpp`, and `adb_ca_list_test.cpp` have no direct Rust equivalents yet.
-- **Missing Daemon Service Tests**: `shell_service_test.cpp`, `restart_service_test.cpp`, `property_monitor_test.cpp`, and `tradeinmode_test.cpp`.
 - **Missing Client Feature Tests**: `bugreport_test.cpp`, `mdns_utils_test.cpp`, and `pairing_connection_test.cpp`.
 - **Windows-Specific Tests**: `sysdeps_win32_test.cpp` and `errno_test.cpp` are not fully ported.
 - **FastDeploy Tests**: All tests under `fastdeploy/` are missing.
@@ -49,7 +52,10 @@ The ADB Rust port has successfully implemented the core infrastructure, includin
 | `abb` / `abb_exec` | **Complete** | Support for Android Bundle Bridge. |
 | `bugreport` | **Missing** | Not implemented in `adb-services`. |
 | `framebuffer` | **Missing** | No implementation for screen capture. |
-| `remount` / `root` | **Missing** | Privilege management services are missing. |
+| `root` / `unroot` | **Complete** | Restart services implemented in `adb-services`. |
+| `tcpip` / `usb` | **Complete** | Restart services implemented in `adb-services`. |
+| `tradeinmode` | **Complete** | Trade-in mode logic and command validation. |
+| `remount` | **Missing** | Service to remount partitions. |
 | `sideload` | **Missing** | Recovery/sideloading support is missing. |
 
 ### Client CLI (`rust-adb`)
