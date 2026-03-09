@@ -18,7 +18,6 @@
 //! Ported from original/services.h and original/services.cpp.
 
 use adb_io::{send_fail, send_okay, send_protocol_string};
-use adb_protocol::shell_protocol::{ShellId, ShellProtocol};
 use adb_protocol::{ConnectionState, TransportType};
 use adb_socket_spec::{is_socket_spec, socket_spec_connect};
 use adb_sockets::{connect_to_remote, create_local_socket, LocalSocket, Socket, SocketRegistry};
@@ -29,13 +28,13 @@ use adb_transport::{
 use adb_utils::{parse_uint, unhex};
 use bytes::Bytes;
 use fdevent::fdevent::{Fdevent, FdeventHandle};
-use std::io::{Read, Write};
+use std::io::Write;
 use std::sync::{Arc, Mutex, OnceLock, Weak};
 use sysdeps::poll::{adb_poll, AdbPollFd, POLLIN};
 use sysdeps::AdbFd;
 
 #[cfg(unix)]
-use std::os::unix::io::{AsRawFd, FromRawFd, IntoRawFd};
+use std::os::unix::io::{AsRawFd, FromRawFd};
 #[cfg(windows)]
 use std::os::windows::io::{AsRawSocket, FromRawHandle, IntoRawHandle};
 
@@ -45,10 +44,6 @@ pub fn init_adb_services() {
         connect_to_smartsocket(socket, fdevent);
     }));
 }
-
-pub const K_SHELL_SERVICE_ARG_RAW: &str = "raw";
-pub const K_SHELL_SERVICE_ARG_PTY: &str = "pty";
-pub const K_SHELL_SERVICE_ARG_SHELL_PROTOCOL: &str = "v2";
 
 pub const K_MINADBD_SERVICES_EXIT_SUCCESS: &str = "DONEDONE";
 pub const K_MINADBD_SERVICES_EXIT_FAILURE: &str = "FAILFAIL";
@@ -65,6 +60,10 @@ pub mod file_sync_client;
 
 /// Module handling ABB services.
 pub mod abb_service;
+pub mod property_monitor;
+pub mod restart_service;
+pub mod shell_service;
+pub mod tradeinmode;
 
 /// Creates a socket pair, starts a new thread with the provided function,
 /// and returns one end of the socket pair as an `AdbFd`.
@@ -683,437 +682,28 @@ pub fn daemon_service_to_socket(
     None
 }
 
-#[cfg(unix)]
-fn open_pty() -> std::io::Result<(AdbFd, AdbFd)> {
-    unsafe {
-        let master_fd = libc::posix_openpt(libc::O_RDWR | libc::O_NOCTTY);
-        if master_fd < 0 {
-            return Err(std::io::Error::last_os_error());
-        }
-
-        if libc::grantpt(master_fd) < 0 || libc::unlockpt(master_fd) < 0 {
-            let err = std::io::Error::last_os_error();
-            libc::close(master_fd);
-            return Err(err);
-        }
-
-        let pts_ptr = libc::ptsname(master_fd);
-        if pts_ptr.is_null() {
-            let err = std::io::Error::last_os_error();
-            libc::close(master_fd);
-            return Err(err);
-        }
-        let pts_name = std::ffi::CStr::from_ptr(pts_ptr);
-        let slave_fd = libc::open(pts_name.as_ptr(), libc::O_RDWR | libc::O_NOCTTY);
-        if slave_fd < 0 {
-            let err = std::io::Error::last_os_error();
-            libc::close(master_fd);
-            return Err(err);
-        }
-
-        Ok((AdbFd::from_raw_fd(master_fd), AdbFd::from_raw_fd(slave_fd)))
-    }
-}
-
-/// Service that runs a shell command.
-/// Ported from `ShellService` in `original/daemon/shell_service.cpp`.
-pub fn shell_service(adb_fd: AdbFd, args: &str) {
-    let mut adb_fd_opt = Some(adb_fd);
-    let command_str;
-    let mut subprocess_type;
-    let mut protocol = "none";
-    let mut terminal_type = "dumb";
-
-    if let Some(colon_idx) = args.find(':') {
-        let service_args = &args[..colon_idx];
-        command_str = &args[colon_idx + 1..];
-
-        subprocess_type = if command_str.is_empty() { "pty" } else { "raw" };
-
-        for arg in service_args.split(',') {
-            match arg {
-                K_SHELL_SERVICE_ARG_RAW => subprocess_type = "raw",
-                K_SHELL_SERVICE_ARG_PTY => subprocess_type = "pty",
-                K_SHELL_SERVICE_ARG_SHELL_PROTOCOL => protocol = "v2",
-                _ if arg.starts_with("TERM=") => terminal_type = &arg[5..],
-                _ => {}
-            }
-        }
-    } else {
-        command_str = args;
-        subprocess_type = if command_str.is_empty() { "pty" } else { "raw" };
-    }
-
-    let mut make_pty_raw = false;
-    if protocol == "none" && subprocess_type == "raw" {
-        subprocess_type = "pty";
-        make_pty_raw = true;
-    }
-
-    let is_pty = subprocess_type == "pty";
-    let is_v2 = protocol == "v2";
-
-    let mut master_fd_opt: Option<AdbFd> = None;
-    let child_stdin: std::process::Stdio;
-    let child_stdout: std::process::Stdio;
-    let child_stderr: std::process::Stdio;
-
-    #[cfg(unix)]
-    if is_pty {
-        let (master, slave) = match open_pty() {
-            Ok(pair) => pair,
-            Err(e) => {
-                log::error!("failed to open pty: {}", e);
-                return;
-            }
-        };
-
-        if make_pty_raw {
-            unsafe {
-                let mut tattr: libc::termios = std::mem::zeroed();
-                libc::tcgetattr(slave.as_raw_fd(), &mut tattr);
-                libc::cfmakeraw(&mut tattr);
-                libc::tcsetattr(slave.as_raw_fd(), libc::TCSADRAIN, &mut tattr);
-            }
-        }
-
-        let slave_clone = slave.try_clone().expect("failed to clone slave fd");
-        let slave_clone2 = slave.try_clone().expect("failed to clone slave fd");
-
-        child_stdin = unsafe { std::process::Stdio::from_raw_fd(slave.into_raw_fd()) };
-        child_stdout = unsafe { std::process::Stdio::from_raw_fd(slave_clone.into_raw_fd()) };
-        child_stderr = unsafe { std::process::Stdio::from_raw_fd(slave_clone2.into_raw_fd()) };
-        master_fd_opt = Some(master);
-    } else if !is_v2 {
-        let adb_fd = adb_fd_opt.take().unwrap();
-        let adb_fd_clone = adb_fd.try_clone().expect("failed to clone adb fd");
-        let adb_fd_clone2 = adb_fd.try_clone().expect("failed to clone adb fd");
-
-        child_stdin = unsafe { std::process::Stdio::from_raw_fd(adb_fd.into_raw_fd()) };
-        child_stdout = unsafe { std::process::Stdio::from_raw_fd(adb_fd_clone.into_raw_fd()) };
-        child_stderr = unsafe { std::process::Stdio::from_raw_fd(adb_fd_clone2.into_raw_fd()) };
-    } else {
-        child_stdin = std::process::Stdio::piped();
-        child_stdout = std::process::Stdio::piped();
-        child_stderr = std::process::Stdio::piped();
-    }
-    #[cfg(windows)]
-    {
-        if is_pty {
-            log::error!("PTY not supported on Windows");
-            return;
-        }
-        child_stdin = std::process::Stdio::piped();
-        child_stdout = std::process::Stdio::piped();
-        child_stderr = std::process::Stdio::piped();
-    }
-
-    let mut cmd = if command_str.is_empty() {
-        #[cfg(unix)]
-        {
-            std::process::Command::new("/bin/sh")
-        }
-        #[cfg(windows)]
-        {
-            std::process::Command::new("cmd.exe")
-        }
-    } else {
-        #[cfg(unix)]
-        {
-            let mut c = std::process::Command::new("/bin/sh");
-            c.arg("-c").arg(command_str);
-            c
-        }
-        #[cfg(windows)]
-        {
-            let mut c = std::process::Command::new("cmd.exe");
-            c.arg("/c").arg(command_str);
-            c
-        }
-    };
-
-    if !terminal_type.is_empty() {
-        cmd.env("TERM", terminal_type);
-    }
-
-    let mut child = match cmd
-        .stdin(child_stdin)
-        .stdout(child_stdout)
-        .stderr(child_stderr)
-        .spawn()
-    {
-        Ok(c) => c,
-        Err(e) => {
-            log::error!("failed to spawn shell: {}", e);
-            return;
-        }
-    };
-
-    if !is_v2 && !is_pty {
-        let _ = child.wait();
-        return;
-    }
-
-    let mut adb_fd = adb_fd_opt.take().unwrap();
-
-    let mut sub_stdin_fd = if is_pty {
-        None
-    } else {
-        #[cfg(unix)]
-        {
-            child
-                .stdin
-                .take()
-                .map(|s| unsafe { AdbFd::from_raw_fd(s.into_raw_fd()) })
-        }
-        #[cfg(windows)]
-        {
-            child
-                .stdin
-                .take()
-                .map(|s| unsafe { AdbFd::from_raw_handle(s.into_raw_handle() as _) })
-        }
-    };
-    let mut sub_stdout_fd = if is_pty {
-        master_fd_opt.take()
-    } else {
-        #[cfg(unix)]
-        {
-            child
-                .stdout
-                .take()
-                .map(|s| unsafe { AdbFd::from_raw_fd(s.into_raw_fd()) })
-        }
-        #[cfg(windows)]
-        {
-            child
-                .stdout
-                .take()
-                .map(|s| unsafe { AdbFd::from_raw_handle(s.into_raw_handle() as _) })
-        }
-    };
-    let mut sub_stderr_fd = if is_pty {
-        None
-    } else {
-        #[cfg(unix)]
-        {
-            child
-                .stderr
-                .take()
-                .map(|s| unsafe { AdbFd::from_raw_fd(s.into_raw_fd()) })
-        }
-        #[cfg(windows)]
-        {
-            child
-                .stderr
-                .take()
-                .map(|s| unsafe { AdbFd::from_raw_handle(s.into_raw_handle() as _) })
-        }
-    };
-
-    let mut pfds = Vec::new();
-    pfds.push(AdbPollFd {
-        #[cfg(unix)]
-        fd: adb_fd.as_raw_fd(),
-        #[cfg(windows)]
-        fd: adb_fd.as_raw_socket() as usize,
-        events: POLLIN,
-        revents: 0,
-    });
-    if let Some(ref f) = sub_stdout_fd {
-        pfds.push(AdbPollFd {
-            #[cfg(unix)]
-            fd: f.as_raw_fd(),
-            #[cfg(windows)]
-            fd: f.as_raw_handle() as usize,
-            events: POLLIN,
-            revents: 0,
-        });
-    }
-    if let Some(ref f) = sub_stderr_fd {
-        pfds.push(AdbPollFd {
-            #[cfg(unix)]
-            fd: f.as_raw_fd(),
-            #[cfg(windows)]
-            fd: f.as_raw_handle() as usize,
-            events: POLLIN,
-            revents: 0,
-        });
-    }
-
-    let mut shell_read = ShellProtocol::new();
-
-    loop {
-        let n = adb_poll(&mut pfds, 100);
-
-        if n > 0 {
-            if pfds[0].revents & POLLIN != 0 {
-                if is_v2 {
-                    match shell_read.read(&mut adb_fd) {
-                        Ok(true) => match shell_read.id {
-                            ShellId::Stdin => {
-                                let write_fd = if is_pty {
-                                    sub_stdout_fd.as_mut()
-                                } else {
-                                    sub_stdin_fd.as_mut()
-                                };
-                                if let Some(f) = write_fd {
-                                    let _ = f.write_all(&shell_read.data);
-                                }
-                            }
-                            ShellId::WindowSizeChange => {
-                                if is_pty {
-                                    if let Some(ref f) = sub_stdout_fd {
-                                        let s = String::from_utf8_lossy(&shell_read.data);
-                                        if let Some((rows_cols, pixels)) = s.split_once(',') {
-                                            if let (Some((rows, cols)), Some((xpix, ypix))) =
-                                                (rows_cols.split_once('x'), pixels.split_once('x'))
-                                            {
-                                                if let (Ok(r), Ok(c), Ok(xp), Ok(yp)) = (
-                                                    rows.parse::<u16>(),
-                                                    cols.parse::<u16>(),
-                                                    xpix.parse::<u16>(),
-                                                    ypix.parse::<u16>(),
-                                                ) {
-                                                    let ws = libc::winsize {
-                                                        ws_row: r,
-                                                        ws_col: c,
-                                                        ws_xpixel: xp,
-                                                        ws_ypixel: yp,
-                                                    };
-                                                    unsafe {
-                                                        libc::ioctl(
-                                                            f.as_raw_fd(),
-                                                            libc::TIOCSWINSZ,
-                                                            &ws,
-                                                        );
-                                                    }
-                                                }
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                            ShellId::CloseStdin => {
-                                sub_stdin_fd.take();
-                            }
-                            _ => {}
-                        },
-                        _ => {
-                            let _ = child.kill();
-                            break;
-                        }
-                    }
-                } else {
-                    let mut buf = [0u8; 4096];
-                    match adb_fd.read(&mut buf) {
-                        Ok(n) if n > 0 => {
-                            let write_fd = if is_pty {
-                                sub_stdout_fd.as_mut()
-                            } else {
-                                sub_stdin_fd.as_mut()
-                            };
-                            if let Some(f) = write_fd {
-                                let _ = f.write_all(&buf[..n]);
-                            }
-                        }
-                        _ => {
-                            let _ = child.kill();
-                            break;
-                        }
-                    }
-                }
-            }
-
-            if pfds.len() > 1 && pfds[1].revents & POLLIN != 0 {
-                let mut buf = [0u8; 4096];
-                if let Some(ref mut f) = sub_stdout_fd {
-                    match f.read(&mut buf) {
-                        Ok(n) if n > 0 => {
-                            if is_v2 {
-                                ShellProtocol::write_packet(
-                                    &mut adb_fd,
-                                    ShellId::Stdout,
-                                    &buf[..n],
-                                )
-                                .unwrap();
-                            } else {
-                                adb_fd.write_all(&buf[..n]).unwrap();
-                            }
-                        }
-                        _ => {
-                            pfds[1].fd = -1;
-                            sub_stdout_fd.take();
-                        }
-                    }
-                }
-            }
-
-            if pfds.len() > 2 && pfds[2].revents & POLLIN != 0 {
-                let mut buf = [0u8; 4096];
-                if let Some(ref mut f) = sub_stderr_fd {
-                    match f.read(&mut buf) {
-                        Ok(n) if n > 0 => {
-                            if is_v2 {
-                                ShellProtocol::write_packet(
-                                    &mut adb_fd,
-                                    ShellId::Stderr,
-                                    &buf[..n],
-                                )
-                                .unwrap();
-                            } else {
-                                adb_fd.write_all(&buf[..n]).unwrap();
-                            }
-                        }
-                        _ => {
-                            pfds[2].fd = -1;
-                            sub_stderr_fd.take();
-                        }
-                    }
-                }
-            }
-        } else if n < 0 {
-            break;
-        }
-
-        match child.try_wait() {
-            Ok(Some(status)) => {
-                let exit_code = status
-                    .code()
-                    .unwrap_or(if status.success() { 0 } else { 1 })
-                    as u8;
-                if is_v2 {
-                    ShellProtocol::write_packet(&mut adb_fd, ShellId::Exit, &[exit_code]).unwrap();
-                }
-                break;
-            }
-            _ => {}
-        }
-
-        if sub_stdout_fd.is_none() && sub_stderr_fd.is_none() {
-            let _ = child.wait();
-            break;
-        }
-    }
-}
 
 /// Dispatches a service to a file descriptor on the daemon side.
 /// Ported from `daemon_service_to_fd` in `original/daemon/services.cpp`.
 pub fn daemon_service_to_fd(name: &str, transport: &Arc<ATransport>) -> Option<AdbFd> {
+    if tradeinmode::is_in_tradeinmode() && !tradeinmode::allow_tradeinmode_command(name) {
+        return None;
+    }
+
     if name.starts_with("abb:") || name.starts_with("abb_exec:") {
         return abb_service::execute_abb_command(name);
     }
     if let Some(args) = name.strip_prefix("shell") {
         let args = args.to_string();
         return create_service_thread("shell", move |fd| {
-            shell_service(fd, &args);
+            shell_service::shell_service(fd, &args);
         })
         .ok();
     }
     if let Some(cmd) = name.strip_prefix("exec:") {
         let cmd = cmd.to_string();
         return create_service_thread("exec", move |fd| {
-            shell_service(fd, &format!(":{}", cmd));
+            shell_service::shell_service(fd, &format!(":{}", cmd));
         })
         .ok();
     }
@@ -1143,6 +733,27 @@ pub fn daemon_service_to_fd(name: &str, transport: &Arc<ATransport>) -> Option<A
             reconnect_service(fd, t.upgrade().as_ref());
         })
         .ok();
+    }
+
+    if name.starts_with("root:") {
+        return create_service_thread("root", restart_service::restart_root_service).ok();
+    }
+
+    if name.starts_with("unroot:") {
+        return create_service_thread("unroot", restart_service::restart_unroot_service).ok();
+    }
+
+    if let Some(port_str) = name.strip_prefix("tcpip:") {
+        if let Ok(port) = port_str.parse::<i32>() {
+            return create_service_thread("tcp", move |fd| {
+                restart_service::restart_tcp_service(fd, port);
+            })
+            .ok();
+        }
+    }
+
+    if name.starts_with("usb:") {
+        return create_service_thread("usb", restart_service::restart_usb_service).ok();
     }
 
     None
@@ -1501,22 +1112,6 @@ mod integration_tests {
         assert_eq!(&buf, b"FAIL");
     }
 
-    #[test]
-    #[cfg(unix)]
-    fn test_shell_service() {
-        let (s1, s2) = sysdeps::net::adb_socketpair().unwrap();
-
-        let handle = std::thread::spawn(move || {
-            shell_service(s2, ":echo hello");
-        });
-
-        let mut s1 = s1;
-        let mut buf = [0u8; 64];
-        let n = s1.read(&mut buf).unwrap();
-        assert_eq!(String::from_utf8_lossy(&buf[..n]).trim(), "hello");
-
-        handle.join().unwrap();
-    }
 
     #[test]
     fn test_device_tracker() {

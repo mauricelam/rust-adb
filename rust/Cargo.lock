@@ -101,6 +101,7 @@ dependencies = [
  "mio 0.8.11",
  "nix",
  "prost",
+ "regex",
  "sysdeps",
  "tempfile",
  "zerocopy",
