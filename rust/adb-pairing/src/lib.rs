@@ -1,19 +1,3 @@
-/*
- * Copyright (C) 2020 The Android Open Source Project
- *
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at
- *
- *      http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
- */
-
 use adb_transport::tls_connection::{Role as TlsRole, TlsConnection};
 use anyhow::{anyhow, Result};
 use rust_adb_pairing_auth::{PairingAuthCtxBuilder, Role as AuthRole};
@@ -21,12 +5,12 @@ use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::sync::{Arc, Condvar, Mutex};
 use std::thread;
-use zerocopy::{AsBytes, FromBytes, FromZeroes};
+use zerocopy::{IntoBytes, FromBytes, Immutable, KnownLayout};
 
 pub const K_MAX_PEER_INFO_SIZE: usize = 8192;
 
 #[repr(C, packed)]
-#[derive(Clone, Copy, AsBytes, FromBytes, FromZeroes)]
+#[derive(Clone, Copy, IntoBytes, FromBytes, Immutable, KnownLayout)]
 pub struct PeerInfo {
     pub info_type: u8,
     pub data: [u8; K_MAX_PEER_INFO_SIZE - 1],
@@ -56,7 +40,7 @@ pub mod proto {
 }
 
 #[repr(C, packed)]
-#[derive(AsBytes, FromBytes, FromZeroes)]
+#[derive(IntoBytes, FromBytes, Immutable, KnownLayout)]
 struct PairingPacketHeader {
     version: u8,
     packet_type: u8,
@@ -170,8 +154,8 @@ impl PairingConnection {
             .decrypt(&encrypted_their_info)
             .map_err(|e| anyhow!("Decryption failed: {}", e))?;
 
-        let their_info = PeerInfo::read_from(&their_info_bytes[..])
-            .ok_or_else(|| anyhow!("Invalid peer info size or format"))?;
+        let their_info = PeerInfo::read_from_bytes(&their_info_bytes[..])
+            .map_err(|e| anyhow!("Invalid peer info size or format: {}", e))?;
 
         Ok(their_info)
     }
@@ -198,8 +182,8 @@ impl PairingConnection {
         if !tls.read_fully_buf(&mut header_bytes) {
             return Err(anyhow!("Read header failed"));
         }
-        let header = PairingPacketHeader::read_from(&header_bytes[..])
-            .ok_or_else(|| anyhow!("Invalid header"))?;
+        let header = PairingPacketHeader::read_from_bytes(&header_bytes[..])
+            .map_err(|e| anyhow!("Invalid header: {}", e))?;
 
         if header.version != K_CURRENT_KEY_HEADER_VERSION {
             return Err(anyhow!("Version mismatch"));

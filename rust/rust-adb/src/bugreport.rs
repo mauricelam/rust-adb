@@ -1,19 +1,3 @@
-/*
- * Copyright (C) 2016 The Android Open Source Project
- *
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at
- *
- *      http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
- */
-
 use crate::adb_client::{adb_connect, format_host_command};
 use adb_protocol::shell_protocol::{ShellId, ShellProtocol};
 use adb_services::file_sync_client::SyncConnection;
@@ -54,7 +38,7 @@ impl Bugreport {
                     "Failed to get bugreportz version, which is only available on devices \
                     running Android 7.0 or later.\nTrying a plain-text bug report instead."
                 );
-                return br.send_shell_command_to_stdout("bugreport", false);
+                return br.send_legacy_bugreport();
             }
 
             return Err(anyhow!(
@@ -177,6 +161,7 @@ pub trait BugreportInternal {
     fn open_shell_stream(&mut self, command: &str, disable_shell_protocol: bool) -> Result<Box<dyn Read + Send>>;
     fn do_sync_pull(&mut self, src: &str, dst: &str, name: &str) -> Result<bool>;
     fn update_progress(&mut self, message: &str, percentage: i32);
+    fn send_legacy_bugreport(&mut self) -> Result<()>;
 }
 
 struct BugreportReal;
@@ -236,18 +221,30 @@ impl BugreportInternal for BugreportReal {
             eprintln!();
         }
     }
+
+    fn send_legacy_bugreport(&mut self) -> Result<()> {
+        let service = format_host_command("shell:bugreport");
+        let (fd, _) = adb_connect(&service, false)?;
+        let mut stream = stream_from_fd(fd);
+        io::copy(&mut stream, &mut io::stdout())?;
+        Ok(())
+    }
 }
 
-#[cfg(unix)]
-fn stream_from_fd(fd: NativeOwnedHandle) -> std::fs::File {
-    use std::os::unix::io::FromRawFd;
-    unsafe { std::fs::File::from_raw_fd(fd.into_raw_fd()) }
-}
+trait ReadWriteSend: Read + Write + Send {}
+impl<T: Read + Write + Send> ReadWriteSend for T {}
 
-#[cfg(windows)]
-fn stream_from_fd(fd: NativeOwnedHandle) -> std::net::TcpStream {
-    use std::os::windows::io::FromRawSocket;
-    unsafe { std::net::TcpStream::from_raw_socket(fd.into_raw_socket() as _) }
+fn stream_from_fd(fd: NativeOwnedHandle) -> Box<dyn ReadWriteSend> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::io::FromRawFd;
+        Box::new(unsafe { std::fs::File::from_raw_fd(fd.into_raw_fd()) })
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::io::FromRawSocket;
+        Box::new(unsafe { std::net::TcpStream::from_raw_socket(fd.into_raw_socket() as _) })
+    }
 }
 
 #[cfg(unix)]
@@ -266,6 +263,7 @@ mod tests {
         sync_pulls: Vec<(String, String, String)>,
         progress_updates: Vec<(String, i32)>,
         stdout_capture: Arc<Mutex<Vec<u8>>>,
+        legacy_called: bool,
     }
 
     impl BugreportMock {
@@ -276,6 +274,7 @@ mod tests {
                 sync_pulls: Vec::new(),
                 progress_updates: Vec::new(),
                 stdout_capture: Arc::new(Mutex::new(Vec::new())),
+                legacy_called: false,
             }
         }
 
@@ -334,6 +333,12 @@ mod tests {
         fn update_progress(&mut self, message: &str, percentage: i32) {
             self.progress_updates.push((message.to_string(), percentage));
         }
+
+        fn send_legacy_bugreport(&mut self) -> Result<()> {
+            self.legacy_called = true;
+            self.stdout_capture.lock().unwrap().extend_from_slice(b"Reported the bug was.");
+            Ok(())
+        }
     }
 
     #[test]
@@ -350,9 +355,9 @@ mod tests {
         let mut mock = BugreportMock::new();
         mock.expect_shell_command("bugreportz -v", 0, "Dude, where is my bugreportz?", "");
         let bugreport = "Reported the bug was.";
-        mock.expect_shell_command("bugreport", 0, bugreport, "");
 
         assert!(br.do_it_internal(&mut mock, &[]).is_ok());
+        assert!(mock.legacy_called);
         assert_eq!(String::from_utf8(mock.stdout_capture.lock().unwrap().clone()).unwrap(), bugreport);
     }
 

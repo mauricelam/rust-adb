@@ -14,4 +14,5 @@ anyhow = "1.0"
 log = "0.4"
 thiserror = "1.0"
 bytes = "1.0"
-zerocopy = { version = "0.7", features = ["derive"] }
+zerocopy = { version = "0.8.38", features = ["derive"] }
+prost = "0.13"
