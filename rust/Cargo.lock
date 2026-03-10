@@ -94,6 +94,7 @@ name = "adb-protocol"
 version = "0.1.0"
 dependencies = [
  "adb-types",
+ "thiserror",
  "zerocopy",
 ]
 

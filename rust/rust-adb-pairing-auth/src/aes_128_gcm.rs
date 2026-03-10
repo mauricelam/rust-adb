@@ -7,14 +7,19 @@ use thiserror::Error;
 const HKDF_KEY_LENGTH: usize = 16;
 const INFO: &[u8] = b"adb pairing_auth aes-128-gcm key";
 
+/// Errors that can occur during AES-128-GCM operations.
 #[derive(Debug, Error)]
 pub enum Aes128GcmError {
+    /// The provided key material was empty.
     #[error("Key material cannot be empty.")]
     KeyMaterialEmpty,
+    /// HKDF expansion failed due to invalid length.
     #[error("Invalid length for HKDF")]
     HkdfInvalidLength,
+    /// Encryption failed.
     #[error("Encryption failed")]
     EncryptionFailed,
+    /// Decryption failed.
     #[error("Decryption failed")]
     DecryptionFailed,
 }

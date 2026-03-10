@@ -1,8 +1,10 @@
+//! Tests for sysdeps
+
 #![cfg(unix)]
-use std::fs;
-use tempfile::tempdir;
-use std::io::Write;
 use libc;
+use std::fs;
+use std::io::Write;
+use tempfile::tempdir;
 
 #[test]
 fn test_sysdeps_stat() {

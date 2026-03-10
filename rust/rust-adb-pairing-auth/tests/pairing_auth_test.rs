@@ -1,3 +1,5 @@
+//! Tests for pairing auth
+
 use rust_adb_pairing_auth::aes_128_gcm::Aes128GcmError;
 use rust_adb_pairing_auth::{PairingAuthCtxBuilder, PairingAuthError, Role};
 

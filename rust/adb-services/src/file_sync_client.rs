@@ -21,14 +21,20 @@ use std::io::{Read, Write};
 use std::os::unix::io::{FromRawFd, IntoRawFd, OwnedFd};
 use zerocopy::IntoBytes;
 
+/// Represents a connection to the ADB file sync service.
+/// Ported from `file_sync_client.cpp`.
 pub struct SyncConnection {
     file: File,
+    /// Whether the server supports STAT v2.
     pub have_stat_v2: bool,
+    /// Whether the server supports LS v2.
     pub have_ls_v2: bool,
+    /// Whether the server supports SEND/RECV v2.
     pub have_sendrecv_v2: bool,
 }
 
 impl SyncConnection {
+    /// Creates a new `SyncConnection`.
     pub fn new(fd: OwnedFd) -> Self {
         Self {
             file: unsafe { File::from_raw_fd(fd.into_raw_fd()) },
@@ -38,6 +44,7 @@ impl SyncConnection {
         }
     }
 
+    /// Sends a sync request to the server.
     pub fn send_request(&mut self, id: u32, path: &str) -> std::io::Result<()> {
         if path.len() > 1024 {
             return Err(std::io::Error::new(std::io::ErrorKind::InvalidInput, "path too long"));
@@ -50,12 +57,14 @@ impl SyncConnection {
         write_exactly(&mut self.file, path.as_bytes())
     }
 
+    /// Sends a STAT request to the server.
     pub fn send_stat(&mut self, path: &str) -> std::io::Result<SyncStatV2> {
         let id = if self.have_stat_v2 { ID_STAT_V2 } else { ID_LSTAT_V1 };
         self.send_request(id, path)?;
         self.finish_stat(id)
     }
 
+    /// Sends an LSTAT request to the server.
     pub fn send_lstat(&mut self, path: &str) -> std::io::Result<SyncStatV2> {
         let id = if self.have_stat_v2 { ID_LSTAT_V2 } else { ID_LSTAT_V1 };
         self.send_request(id, path)?;
@@ -93,6 +102,7 @@ impl SyncConnection {
         }
     }
 
+    /// Sends an LS request to the server and calls the callback for each entry.
     pub fn send_ls<F>(&mut self, path: &str, mut callback: F) -> std::io::Result<()>
     where F: FnMut(u32, u64, i64, &str)
     {
@@ -121,6 +131,7 @@ impl SyncConnection {
         Ok(())
     }
 
+    /// Pushes a file from the local machine to the device.
     pub fn push(&mut self, lpath: &str, rpath: &str, mtime: u32, mode: u32) -> std::io::Result<()> {
         let mut lfile = File::open(lpath)?;
 
@@ -160,6 +171,7 @@ impl SyncConnection {
         }
     }
 
+    /// Pulls a file from the device to the local machine.
     pub fn pull(&mut self, rpath: &str, lpath: &str) -> std::io::Result<()> {
         if self.have_sendrecv_v2 {
             let req = SyncRequest { id: ID_RECV_V2, path_length: rpath.len() as u32 };
@@ -189,6 +201,7 @@ impl SyncConnection {
         Ok(())
     }
 
+    /// Quits the sync service.
     pub fn quit(&mut self) -> std::io::Result<()> {
         self.send_request(ID_QUIT, "")
     }

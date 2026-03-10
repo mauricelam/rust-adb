@@ -1,16 +1,26 @@
+//! ADB protocol types and core data structures.
+//! Ported from \`adb.h\` and \`types.h\`.
+
 use bytes::{Buf, Bytes};
 use std::collections::VecDeque;
 use std::io::Cursor;
 
 /// A message header in the ADB protocol.
+/// Ported from \`amessage\` in \`adb.h\`.
 #[repr(C)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct Amessage {
+    /// The command identifier (e.g., \`A_CNXN\`, \`A_OKAY\`).
     pub command: u32,
+    /// First argument, meaning depends on the command.
     pub arg0: u32,
+    /// Second argument, meaning depends on the command.
     pub arg1: u32,
+    /// Length of the following payload.
     pub data_length: u32,
+    /// Checksum of the payload data.
     pub data_check: u32,
+    /// Magic value for command verification.
     pub magic: u32,
 }
 
@@ -115,9 +125,12 @@ impl Block {
 }
 
 /// An ADB packet, consisting of a message header and a payload.
+/// Ported from \`apacket\` in \`adb.h\`.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct Apacket {
+    /// The packet message header.
     pub msg: Amessage,
+    /// The packet payload data.
     pub payload: Block,
 }
 

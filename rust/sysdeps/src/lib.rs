@@ -1,6 +1,13 @@
+//! System-dependent abstractions for ADB.
+//! Ported from `sysdeps.h`.
+
+/// Environment variable utilities.
 pub mod env;
+/// System error code utilities.
 pub mod errno;
+/// Networking utilities.
 pub mod net;
+/// I/O polling utilities.
 pub mod poll;
 
 #[cfg(unix)]
@@ -14,6 +21,8 @@ use std::os::windows::io::{
 use std::io::{Read, Write};
 
 /// A unified file descriptor type for ADB.
+/// Ported from `adb_fd` in `sysdeps.h`.
+///
 /// Abstracts over Unix file descriptors and Windows handles/sockets.
 #[derive(Debug)]
 pub enum AdbFd {
@@ -28,6 +37,7 @@ pub enum AdbFd {
 
 #[cfg(unix)]
 impl From<OwnedFd> for AdbFd {
+    /// Converts an `OwnedFd` into an `AdbFd`.
     fn from(fd: OwnedFd) -> Self {
         Self::File(std::fs::File::from(fd))
     }
@@ -35,6 +45,7 @@ impl From<OwnedFd> for AdbFd {
 
 #[cfg(windows)]
 impl From<std::fs::File> for AdbFd {
+    /// Converts a `std::fs::File` into an `AdbFd`.
     fn from(f: std::fs::File) -> Self {
         Self::File(f)
     }
@@ -42,6 +53,7 @@ impl From<std::fs::File> for AdbFd {
 
 #[cfg(windows)]
 impl From<std::net::TcpStream> for AdbFd {
+    /// Converts a `std::net::TcpStream` into an `AdbFd`.
     fn from(s: std::net::TcpStream) -> Self {
         Self::Socket(s)
     }
@@ -64,18 +76,27 @@ impl AdbFd {
     }
 
     /// Creates an `AdbFd` from a raw file descriptor (Unix only).
+    ///
+    /// # Safety
+    /// The caller must ensure that the file descriptor is valid.
     #[cfg(unix)]
     pub unsafe fn from_raw_fd(fd: RawFd) -> Self {
         Self::File(std::fs::File::from_raw_fd(fd))
     }
 
     /// Creates an `AdbFd` from a raw handle (Windows only).
+    ///
+    /// # Safety
+    /// The caller must ensure that the handle is valid.
     #[cfg(windows)]
     pub unsafe fn from_raw_handle(h: RawHandle) -> Self {
         Self::File(std::fs::File::from_raw_handle(h))
     }
 
     /// Creates an `AdbFd` from a raw socket (Windows only).
+    ///
+    /// # Safety
+    /// The caller must ensure that the socket is valid.
     #[cfg(windows)]
     pub unsafe fn from_raw_socket(s: RawSocket) -> Self {
         Self::Socket(std::net::TcpStream::from_raw_socket(s as _))
@@ -93,6 +114,7 @@ impl AdbFd {
 
 #[cfg(unix)]
 impl AsRawFd for AdbFd {
+    /// Returns the raw file descriptor.
     fn as_raw_fd(&self) -> RawFd {
         match self {
             Self::File(f) => f.as_raw_fd(),
@@ -103,6 +125,7 @@ impl AsRawFd for AdbFd {
 
 #[cfg(unix)]
 impl IntoRawFd for AdbFd {
+    /// Consumes the `AdbFd` and returns the raw file descriptor.
     fn into_raw_fd(self) -> RawFd {
         match self {
             Self::File(f) => f.into_raw_fd(),
@@ -113,6 +136,7 @@ impl IntoRawFd for AdbFd {
 
 #[cfg(windows)]
 impl AsRawHandle for AdbFd {
+    /// Returns the raw handle.
     fn as_raw_handle(&self) -> RawHandle {
         match self {
             Self::File(f) => f.as_raw_handle(),
@@ -123,6 +147,7 @@ impl AsRawHandle for AdbFd {
 
 #[cfg(windows)]
 impl IntoRawHandle for AdbFd {
+    /// Consumes the `AdbFd` and returns the raw handle.
     fn into_raw_handle(self) -> RawHandle {
         match self {
             Self::File(f) => f.into_raw_handle(),
@@ -133,6 +158,7 @@ impl IntoRawHandle for AdbFd {
 
 #[cfg(windows)]
 impl AsRawSocket for AdbFd {
+    /// Returns the raw socket.
     fn as_raw_socket(&self) -> RawSocket {
         match self {
             Self::Socket(s) => s.as_raw_socket(),
@@ -143,6 +169,7 @@ impl AsRawSocket for AdbFd {
 
 #[cfg(windows)]
 impl IntoRawSocket for AdbFd {
+    /// Consumes the `AdbFd` and returns the raw socket.
     fn into_raw_socket(self) -> RawSocket {
         match self {
             Self::Socket(s) => s.into_raw_socket(),
@@ -152,6 +179,7 @@ impl IntoRawSocket for AdbFd {
 }
 
 impl Read for AdbFd {
+    /// Reads data from the file descriptor.
     fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
         match self {
             Self::File(f) => f.read(buf),
@@ -163,6 +191,7 @@ impl Read for AdbFd {
 }
 
 impl Write for AdbFd {
+    /// Writes data to the file descriptor.
     fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
         match self {
             Self::File(f) => f.write(buf),
@@ -172,6 +201,7 @@ impl Write for AdbFd {
         }
     }
 
+    /// Flushes the file descriptor.
     fn flush(&mut self) -> std::io::Result<()> {
         match self {
             Self::File(f) => f.flush(),

@@ -1,9 +1,11 @@
 //! A Rust port of the ADB pairing authentication library.
+//! Ported from `pairing_auth`.
 //!
 //! This crate provides a Rust implementation of the ADB pairing authentication
 //! protocol, which is based on SPAKE2. It is a port of the C++ implementation
 //! in `original/pairing_auth`.
 
+/// AES-128-GCM implementation for pairing authentication.
 pub mod aes_128_gcm;
 
 use self::aes_128_gcm::{Aes128GcmCipher, Aes128GcmError};
@@ -102,6 +104,7 @@ impl PairingAuthCtxBuilder {
 
 /// A pairing authentication context. This is used to encrypt and decrypt
 /// messages after the cipher has been initialized.
+/// Ported from `PairingAuthCtx` in `pairing_auth.h`.
 pub struct PairingAuthCtx {
     cipher: Aes128GcmCipher,
 }

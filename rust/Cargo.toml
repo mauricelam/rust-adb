@@ -20,3 +20,6 @@ members = [
     "adb-daemon",
     "rust-adb", "adb-pairing",
 ]
+
+[workspace.lints.rust]
+missing_docs = "deny"

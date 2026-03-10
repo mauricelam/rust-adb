@@ -1,10 +1,12 @@
+//! Tests for sysdeps
+
 #![cfg(unix)]
-use sysdeps::poll::{adb_poll, AdbPollFd};
-use std::os::unix::net::UnixStream;
-use std::io::{Read, Write};
-use std::os::unix::io::AsRawFd;
 use libc;
 use serial_test::serial;
+use std::io::{Read, Write};
+use std::os::unix::io::AsRawFd;
+use std::os::unix::net::UnixStream;
+use sysdeps::poll::{adb_poll, AdbPollFd};
 
 #[test]
 #[serial]
@@ -53,8 +55,16 @@ fn test_sysdeps_fd_exhaustion() {
 fn test_sysdeps_poll_smoke() {
     let (s1, s2) = UnixStream::pair().unwrap();
     let mut pfds = [
-        AdbPollFd { fd: s1.as_raw_fd(), events: libc::POLLIN, revents: 0 },
-        AdbPollFd { fd: s2.as_raw_fd(), events: libc::POLLOUT, revents: 0 },
+        AdbPollFd {
+            fd: s1.as_raw_fd(),
+            events: libc::POLLIN,
+            revents: 0,
+        },
+        AdbPollFd {
+            fd: s2.as_raw_fd(),
+            events: libc::POLLOUT,
+            revents: 0,
+        },
     ];
 
     // s2 is writable
@@ -74,7 +84,11 @@ fn test_sysdeps_poll_smoke() {
 #[serial]
 fn test_sysdeps_poll_timeout() {
     let (s1, _s2) = UnixStream::pair().unwrap();
-    let mut pfd = AdbPollFd { fd: s1.as_raw_fd(), events: libc::POLLIN, revents: 0 };
+    let mut pfd = AdbPollFd {
+        fd: s1.as_raw_fd(),
+        events: libc::POLLIN,
+        revents: 0,
+    };
     assert_eq!(adb_poll(std::slice::from_mut(&mut pfd), 100), 0);
 }
 
@@ -83,9 +97,21 @@ fn test_sysdeps_poll_timeout() {
 fn test_sysdeps_poll_invalid_fd() {
     let (s1, s2) = UnixStream::pair().unwrap();
     let mut pfds = [
-        AdbPollFd { fd: s1.as_raw_fd(), events: libc::POLLIN, revents: 0 },
-        AdbPollFd { fd: i32::MAX, events: libc::POLLIN, revents: 0 },
-        AdbPollFd { fd: s2.as_raw_fd(), events: libc::POLLOUT, revents: 0 },
+        AdbPollFd {
+            fd: s1.as_raw_fd(),
+            events: libc::POLLIN,
+            revents: 0,
+        },
+        AdbPollFd {
+            fd: i32::MAX,
+            events: libc::POLLIN,
+            revents: 0,
+        },
+        AdbPollFd {
+            fd: s2.as_raw_fd(),
+            events: libc::POLLOUT,
+            revents: 0,
+        },
     ];
 
     // s2 is writable, i32::MAX is invalid
@@ -130,7 +156,11 @@ fn test_sysdeps_poll_duplicate_fd() {
 #[serial]
 fn test_sysdeps_poll_disconnect() {
     let (s1, s2) = UnixStream::pair().unwrap();
-    let mut pfd = AdbPollFd { fd: s1.as_raw_fd(), events: libc::POLLIN, revents: 0 };
+    let mut pfd = AdbPollFd {
+        fd: s1.as_raw_fd(),
+        events: libc::POLLIN,
+        revents: 0,
+    };
 
     assert_eq!(adb_poll(std::slice::from_mut(&mut pfd), 0), 0);
 
@@ -150,7 +180,11 @@ fn test_sysdeps_poll_fd_count() {
     for i in 0..num_sockets {
         let (mut s1, s2) = UnixStream::pair().unwrap();
         s1.write_all(&(i as i32).to_ne_bytes()).unwrap();
-        pfds.push(AdbPollFd { fd: s2.as_raw_fd(), events: libc::POLLIN, revents: 0 });
+        pfds.push(AdbPollFd {
+            fd: s2.as_raw_fd(),
+            events: libc::POLLIN,
+            revents: 0,
+        });
         sockets.push((s1, s2));
     }
 
@@ -166,7 +200,7 @@ fn test_sysdeps_poll_fd_count() {
 #[test]
 #[serial]
 fn test_sysdeps_condition_variable_smoke() {
-    use std::sync::{Arc, Mutex, Condvar};
+    use std::sync::{Arc, Condvar, Mutex};
     use std::thread;
 
     let pair = Arc::new((Mutex::new(false), Condvar::new()));

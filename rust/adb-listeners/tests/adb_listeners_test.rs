@@ -1,3 +1,5 @@
+//! Tests for adb listeners
+
 /*
  * Copyright (C) 2023 The Android Open Source Project
  *

@@ -13,6 +13,7 @@ use windows_sys::Win32::Networking::WinSock::*;
 #[cfg(windows)]
 static WSA_STARTUP: Once = Once::new();
 
+/// Ensures that Winsock is initialized.
 #[cfg(windows)]
 pub fn ensure_wsa_startup() {
     WSA_STARTUP.call_once(|| {
@@ -22,6 +23,7 @@ pub fn ensure_wsa_startup() {
 }
 
 /// Sets TCP socket keepalive.
+/// Ported from `adb_tcp_keepalive` in `sysdeps.h`.
 #[cfg(unix)]
 pub fn set_tcp_keepalive<T: AsRawFd>(socket: &T, interval_sec: i32) -> bool {
     let fd = socket.as_raw_fd();
@@ -121,6 +123,7 @@ pub fn set_tcp_keepalive<T: AsRawSocket>(socket: &T, interval_sec: i32) -> bool 
 }
 
 /// Disables TCP Nagle algorithm.
+/// Ported from `disable_tcp_nagle` in `sysdeps.h`.
 #[cfg(unix)]
 pub fn disable_tcp_nagle<T: AsRawFd>(socket: &T) {
     let fd = socket.as_raw_fd();
@@ -153,6 +156,7 @@ pub fn disable_tcp_nagle<T: AsRawSocket>(socket: &T) {
 }
 
 /// Checks if the file descriptor is a terminal.
+/// Ported from `unix_isatty` in `sysdeps.h`.
 #[cfg(unix)]
 pub fn unix_isatty<T: AsRawFd>(fd: &T) -> bool {
     unsafe { libc::isatty(fd.as_raw_fd()) == 1 }
@@ -164,6 +168,7 @@ pub fn unix_isatty<T: AsRawSocket>(_fd: &T) -> bool {
 }
 
 /// Peeks at the next message size in a socket.
+/// Ported from `network_peek` in `sysdeps.h`.
 #[cfg(unix)]
 pub fn network_peek<T: AsRawFd>(socket: &T) -> Option<isize> {
     let fd = socket.as_raw_fd();
@@ -221,6 +226,8 @@ pub fn network_peek<T: AsRawSocket>(socket: &T) -> Option<isize> {
 
 use crate::AdbFd;
 
+/// Creates a pair of connected sockets.
+/// Ported from `adb_socketpair` in `sysdeps.h`.
 pub fn adb_socketpair() -> std::io::Result<(AdbFd, AdbFd)> {
     #[cfg(unix)]
     {

@@ -30,6 +30,7 @@ fn get_properties() -> &'static Mutex<HashMap<String, String>> {
     PROPERTIES.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
+/// Sets a system property.
 pub fn set_property(name: &str, value: &str) {
     #[cfg(target_os = "android")]
     {
@@ -43,6 +44,7 @@ pub fn set_property(name: &str, value: &str) {
     }
 }
 
+/// Returns the value of a system property.
 pub fn get_property(name: &str, default: &str) -> String {
     get_properties().lock().unwrap().get(name).cloned().unwrap_or_else(|| default.to_string())
 }
@@ -59,6 +61,8 @@ fn is_debuggable() -> bool {
     }
 }
 
+/// Restarts adbd as root.
+/// Ported from `restart_root_service` in `restart_service.cpp`.
 pub fn restart_root_service(mut fd: AdbFd) {
     #[cfg(unix)]
     {
@@ -77,6 +81,8 @@ pub fn restart_root_service(mut fd: AdbFd) {
     let _ = fd.write_all(b"restarting adbd as root\n");
 }
 
+/// Restarts adbd as non-root.
+/// Ported from `restart_unroot_service` in `restart_service.cpp`.
 pub fn restart_unroot_service(mut fd: AdbFd) {
     #[cfg(unix)]
     {
@@ -91,6 +97,8 @@ pub fn restart_unroot_service(mut fd: AdbFd) {
     let _ = fd.write_all(b"restarting adbd as non root\n");
 }
 
+/// Restarts adbd in TCP mode on the given port.
+/// Ported from `restart_tcp_service` in `restart_service.cpp`.
 pub fn restart_tcp_service(mut fd: AdbFd, port: i32) {
     if port <= 0 {
         let _ = fd.write_all(format!("invalid port {}\n", port).as_bytes());
@@ -102,6 +110,8 @@ pub fn restart_tcp_service(mut fd: AdbFd, port: i32) {
     let _ = fd.write_all(format!("restarting in TCP mode port: {}\n", port).as_bytes());
 }
 
+/// Restarts adbd in USB mode.
+/// Ported from `restart_usb_service` in `restart_service.cpp`.
 pub fn restart_usb_service(mut fd: AdbFd) {
     log::info!("adbd restarting in USB mode");
     set_property("service.adb.tcp.port", "0");

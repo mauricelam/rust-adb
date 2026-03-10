@@ -27,8 +27,11 @@ use std::os::unix::io::{AsRawFd, FromRawFd, IntoRawFd};
 #[cfg(windows)]
 use std::os::windows::io::{AsRawSocket, FromRawHandle, IntoRawHandle};
 
+/// Argument for raw shell mode.
 pub const K_SHELL_SERVICE_ARG_RAW: &str = "raw";
+/// Argument for PTY shell mode.
 pub const K_SHELL_SERVICE_ARG_PTY: &str = "pty";
+/// Argument for shell protocol v2.
 pub const K_SHELL_SERVICE_ARG_SHELL_PROTOCOL: &str = "v2";
 
 #[cfg(unix)]

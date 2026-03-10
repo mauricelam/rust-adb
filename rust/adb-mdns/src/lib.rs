@@ -15,8 +15,9 @@
  */
 
 //! ADB MDNS Support.
-//! Ported from original/adb_mdns.h and original/adb_mdns.cpp.
+//! Ported from `adb_mdns.h` and `adb_mdns.cpp`.
 
+/// Utilities for MDNS parsing and configuration.
 pub mod utils;
 
 use mdns_sd::{ServiceDaemon, ServiceEvent, ServiceInfo};
@@ -24,46 +25,55 @@ use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 use std::thread;
 
-/// Ported from original/adb_mdns.h: `ADB_MDNS_SERVICE_TYPE`
+/// ADB MDNS service type.
 pub const ADB_MDNS_SERVICE_TYPE: &str = "adb";
-/// Ported from original/adb_mdns.h: `ADB_MDNS_TLS_PAIRING_TYPE`
+/// ADB-TLS pairing service type.
 pub const ADB_MDNS_TLS_PAIRING_TYPE: &str = "adb-tls-pairing";
-/// Ported from original/adb_mdns.h: `ADB_MDNS_TLS_CONNECT_TYPE`
+/// ADB-TLS connect service type.
 pub const ADB_MDNS_TLS_CONNECT_TYPE: &str = "adb-tls-connect";
 
-/// Ported from original/adb_mdns.h: `ADB_SECURE_SERVICE_VERSION`
+/// Version of the secure ADB service.
 pub const ADB_SECURE_SERVICE_VERSION: i32 = 1;
 
-/// Ported from original/adb_mdns.h: `kADBTransportServiceRefIndex`
+/// Index for the basic ADB transport service.
 pub const K_ADB_TRANSPORT_SERVICE_REF_INDEX: usize = 0;
-/// Ported from original/adb_mdns.h: `kADBSecurePairingServiceRefIndex`
+/// Index for the secure pairing service.
 pub const K_ADB_SECURE_PAIRING_SERVICE_REF_INDEX: usize = 1;
-/// Ported from original/adb_mdns.h: `kADBSecureConnectServiceRefIndex`
+/// Index for the secure connect service.
 pub const K_ADB_SECURE_CONNECT_SERVICE_REF_INDEX: usize = 2;
-/// Ported from original/adb_mdns.h: `kNumADBDNSServices`
+/// Number of ADB DNS services.
 pub const K_NUM_ADB_DNS_SERVICES: usize = 3;
 
-/// Ported from original/adb_mdns.cpp: `kADBDNSServices`
+/// Array of ADB DNS service registration types.
 pub const ADB_DNS_SERVICES: [&str; K_NUM_ADB_DNS_SERVICES] = [
     "_adb._tcp.local.",
     "_adb-tls-pairing._tcp.local.",
     "_adb-tls-connect._tcp.local.",
 ];
 
-/// Ported from original/adb_mdns.h: `struct MdnsInfo`
+/// Information about an MDNS service.
+/// Ported from `MdnsInfo` in `adb_mdns.h`.
 #[derive(Debug, Clone)]
 pub struct MdnsServiceInfo {
+    /// Full instance name.
     pub instance_name: String,
+    /// Service type (e.g., "_adb._tcp.local.").
     pub service_type: String,
+    /// Hostname of the service.
     pub hostname: String,
+    /// IP addresses of the service.
     pub ip_addresses: Vec<std::net::IpAddr>,
+    /// Port number.
     pub port: u16,
+    /// TXT record properties.
     pub txt_record: HashMap<String, String>,
 }
 
+/// Callback for discovered MDNS services.
 pub type MdnsServiceCallback = Arc<dyn Fn(MdnsServiceInfo) + Send + Sync>;
 
 /// Manages MDNS discovery and registration.
+/// Ported from `AdbMdns` in `adb_mdns.h`.
 pub struct AdbMdns {
     daemon: ServiceDaemon,
     autoconn_allowedlist: Arc<Mutex<HashSet<usize>>>,
@@ -71,6 +81,7 @@ pub struct AdbMdns {
 }
 
 impl AdbMdns {
+    /// Creates a new `AdbMdns` instance.
     pub fn new() -> anyhow::Result<Self> {
         let daemon = ServiceDaemon::new()?;
         let mut autoconn_allowedlist = HashSet::new();
@@ -101,7 +112,8 @@ impl AdbMdns {
         })
     }
 
-    /// Ported from original/client/mdnsresponder_client.cpp: `init_mdns_transport_discovery_thread`
+    /// Starts browsing for ADB MDNS services.
+    /// Ported from `init_mdns_transport_discovery_thread` in `mdnsresponder_client.cpp`.
     pub fn browse(&self, callback: Option<MdnsServiceCallback>) -> anyhow::Result<()> {
         let autoconn_allowedlist = self.autoconn_allowedlist.clone();
         let discovered_services = self.discovered_services.clone();
@@ -157,20 +169,23 @@ impl AdbMdns {
         Ok(())
     }
 
-    /// Ported from original/daemon/mdns.cpp: `register_mdns_service`
+    /// Registers an ADB service via MDNS.
+    /// Ported from `register_mdns_service` in `daemon/mdns.cpp`.
     pub fn register(&self, name: &str, service_type: &str, address: &str, port: u16, properties: HashMap<String, String>) -> anyhow::Result<()> {
         let info = ServiceInfo::new(service_type, name, &format!("{}.local.", name), address, port, Some(properties))?;
         self.daemon.register(info)?;
         Ok(())
     }
 
-    /// Ported from original/adb_mdns.h: `mdns_check`
+    /// Checks the status of the MDNS daemon.
+    /// Ported from `mdns_check` in `adb_mdns.h`.
     pub fn mdns_check(&self) -> String {
         // Since we are using a pure-rust daemon, we can just say it's running.
         "mdns daemon version [pure-rust]".to_string()
     }
 
-    /// Ported from original/adb_mdns.h: `mdns_list_discovered_services`
+    /// Lists all discovered MDNS services.
+    /// Ported from `mdns_list_discovered_services` in `adb_mdns.h`.
     pub fn mdns_list_discovered_services(&self) -> String {
         let mut result = String::new();
         let services = self.discovered_services.lock().unwrap();
@@ -183,6 +198,7 @@ impl AdbMdns {
         result
     }
 
+    /// Returns information about a specific service.
     pub fn get_service_info(&self, name: &str, reg_type_filter: Option<&str>) -> Option<MdnsServiceInfo> {
         let services = self.discovered_services.lock().unwrap();
 
@@ -211,7 +227,8 @@ impl AdbMdns {
     }
 }
 
-/// Ported from original/adb_mdns.cpp: `adb_DNSServiceIndexByName`
+/// Returns the index of an ADB DNS service by its registration type.
+/// Ported from `adb_DNSServiceIndexByName` in `adb_mdns.cpp`.
 pub fn adb_dns_service_index_by_name(reg_type: &str) -> Option<usize> {
     for (i, &service) in ADB_DNS_SERVICES.iter().enumerate() {
         if reg_type.starts_with(service) {

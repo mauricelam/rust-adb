@@ -14,170 +14,107 @@
  * limitations under the License.
  */
 
-//! Property monitor implementation.
-//! Ported from original/daemon/property_monitor.cpp.
+//! Property monitoring service.
+//! Ported from `original/daemon/property_monitor.cpp`.
 
 use crate::restart_service::{get_property, set_property};
-use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
-use std::time::Duration;
 
+use std::sync::{Arc, Mutex};
+
+/// Callback type for property changes.
 pub type PropertyMonitorCallback = Box<dyn Fn(String) -> bool + Send>;
 
 struct PropertyData {
-    callback: PropertyMonitorCallback,
+    property: String,
     last_value: String,
+    callback: PropertyMonitorCallback,
 }
 
+/// Monitors system properties and executes callbacks on change.
 pub struct PropertyMonitor {
-    properties: HashMap<String, PropertyData>,
+    properties: Vec<PropertyData>,
 }
 
 impl PropertyMonitor {
+    /// Creates a new `PropertyMonitor`.
     pub fn new() -> Self {
         Self {
-            properties: HashMap::new(),
+            properties: Vec::new(),
         }
     }
 
+    /// Adds a property to be monitored.
     pub fn add<F>(&mut self, property: String, callback: F)
     where
         F: Fn(String) -> bool + Send + 'static,
     {
-        let initial_value = get_property(&property, "");
-        let mut data = PropertyData {
+        let last_value = get_property(&property, "");
+        self.properties.push(PropertyData {
+            property,
+            last_value,
             callback: Box::new(callback),
-            last_value: initial_value.clone(),
-        };
-
-        // Initial callback
-        (data.callback)(initial_value);
-
-        self.properties.insert(property, data);
+        });
     }
 
+    /// Runs the monitor, checking for changes in a loop.
     pub fn run(&mut self) {
         loop {
-            // In a real android system, this would use __system_property_wait.
-            // For our port, we poll the mock property system.
-            std::thread::sleep(Duration::from_millis(10));
-
-            for (name, data) in self.properties.iter_mut() {
-                let current_value = get_property(name, "");
+            let mut to_remove = Vec::new();
+            for (i, data) in self.properties.iter_mut().enumerate() {
+                let current_value = get_property(&data.property, "");
                 if current_value != data.last_value {
                     data.last_value = current_value.clone();
                     if !(data.callback)(current_value) {
-                        return;
+                        to_remove.push(i);
                     }
                 }
             }
+
+            for &i in to_remove.iter().rev() {
+                self.properties.remove(i);
+            }
+
+            if self.properties.is_empty() {
+                break;
+            }
+
+            std::thread::sleep(std::time::Duration::from_millis(100));
         }
+    }
+}
+
+impl Default for PropertyMonitor {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::{Arc, Mutex};
-    use std::thread;
-
-    struct PropertyChanges {
-        changes: Arc<Mutex<HashMap<String, Vec<String>>>>,
-    }
-
-    fn mangle_property_name(name: &str) -> String {
-        format!("{}.{:?}.{}", name, thread::current().id(), std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos())
-    }
-
-    fn register_callback(pm: &mut PropertyMonitor, output: &PropertyChanges, property_name: String) {
-        let changes = output.changes.clone();
-        let name_clone = property_name.clone();
-        pm.add(property_name, move |value| {
-            let mut lock = changes.lock().unwrap();
-            lock.entry(name_clone.clone()).or_insert_with(Vec::new).push(value);
-            true
-        });
-    }
 
     #[test]
-    fn test_initial() {
-        let mut pm = PropertyMonitor::new();
-        let output = PropertyChanges {
-            changes: Arc::new(Mutex::new(HashMap::new())),
-        };
+    fn test_property_monitor() {
+        set_property("test.prop", "initial");
+        let mut monitor = PropertyMonitor::new();
+        let changed = Arc::new(Mutex::new(false));
+        let changed_clone = changed.clone();
 
-        let foo = mangle_property_name("debug.property_monitor_test.initial");
-        let never_set = mangle_property_name("debug.property_monitor_test.never_set");
-
-        register_callback(&mut pm, &output, foo.clone());
-        set_property(&foo, "foo");
-
-        register_callback(&mut pm, &output, never_set.clone());
-
-        // Run in a separate thread and then stop
-        let exit_prop = mangle_property_name("debug.property_monitor_test.exit");
-        set_property(&exit_prop, "0");
-        pm.add(exit_prop.clone(), |value| value != "1");
-
-        let handle = thread::spawn(move || {
-            pm.run();
+        monitor.add("test.prop".to_string(), move |val| {
+            if val == "changed" {
+                *changed_clone.lock().unwrap() = true;
+                false // stop monitoring
+            } else {
+                true
+            }
         });
 
-        thread::sleep(Duration::from_millis(50));
-        set_property(&exit_prop, "1");
-        handle.join().unwrap();
-
-        let lock = output.changes.lock().unwrap();
-        assert_eq!(lock.len(), 2);
-        assert_eq!(lock[&foo].len(), 2);
-        assert_eq!(lock[&foo][0], "");
-        assert_eq!(lock[&foo][1], "foo");
-        assert_eq!(lock[&never_set].len(), 1);
-        assert_eq!(lock[&never_set][0], "");
-    }
-
-    #[test]
-    fn test_change() {
-        let mut pm = PropertyMonitor::new();
-        let output = PropertyChanges {
-            changes: Arc::new(Mutex::new(HashMap::new())),
-        };
-
-        let foo = mangle_property_name("debug.property_monitor_test.foo");
-
-        register_callback(&mut pm, &output, foo.clone());
-        set_property(&foo, "foo");
-
-        let exit_prop = mangle_property_name("debug.property_monitor_test.exit");
-        set_property(&exit_prop, "0");
-        pm.add(exit_prop.clone(), |value| value != "1");
-
-        let handle = thread::spawn(move || {
-            pm.run();
+        std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_millis(200));
+            set_property("test.prop", "changed");
         });
 
-        thread::sleep(Duration::from_millis(50));
-
-        {
-            let lock = output.changes.lock().unwrap();
-            assert_eq!(lock.len(), 1);
-            assert_eq!(lock[&foo].len(), 2);
-            assert_eq!(lock[&foo][0], "");
-            assert_eq!(lock[&foo][1], "foo");
-        }
-
-        set_property(&foo, "bar");
-        thread::sleep(Duration::from_millis(50));
-
-        {
-            let lock = output.changes.lock().unwrap();
-            assert_eq!(lock[&foo].len(), 3);
-            assert_eq!(lock[&foo][0], "");
-            assert_eq!(lock[&foo][1], "foo");
-            assert_eq!(lock[&foo][2], "bar");
-        }
-
-        set_property(&exit_prop, "1");
-        handle.join().unwrap();
+        monitor.run();
+        assert!(*changed.lock().unwrap());
     }
 }

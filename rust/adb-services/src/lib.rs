@@ -1,21 +1,5 @@
-/*
- * Copyright (C) 2023 The Android Open Source Project
- *
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at
- *
- *      http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
- */
-
 //! ADB Services implementation.
-//! Ported from original/services.h and original/services.cpp.
+//! Ported from `services.h` and `services.cpp`.
 
 use adb_io::{send_fail, send_okay, send_protocol_string};
 use adb_protocol::{ConnectionState, TransportType};
@@ -45,7 +29,9 @@ pub fn init_adb_services() {
     }));
 }
 
+/// Exit string for successful minadbd services.
 pub const K_MINADBD_SERVICES_EXIT_SUCCESS: &str = "DONEDONE";
+/// Exit string for failed minadbd services.
 pub const K_MINADBD_SERVICES_EXIT_FAILURE: &str = "FAILFAIL";
 
 /// Module handling reverse forwarding services.
@@ -56,18 +42,27 @@ pub mod jdwp_service;
 
 /// Module handling file sync services.
 pub mod file_sync_service;
+/// Module handling file sync client logic.
 pub mod file_sync_client;
 
 /// Module handling ABB services.
 pub mod abb_service;
+/// Module handling property monitoring services.
 pub mod property_monitor;
+/// Module handling device restart services.
 pub mod restart_service;
+/// Module handling shell services.
 pub mod shell_service;
+/// Module handling trade-in mode services.
 pub mod tradeinmode;
 
 /// Creates a socket pair, starts a new thread with the provided function,
 /// and returns one end of the socket pair as an `AdbFd`.
 /// Ported from `create_service_thread` in `original/services.cpp`.
+///
+/// # Arguments
+/// * `service_name` - The name of the service.
+/// * `func` - The function to run in the new thread.
 pub fn create_service_thread<F>(service_name: &str, func: F) -> std::io::Result<AdbFd>
 where
     F: FnOnce(AdbFd) + Send + 'static,
@@ -86,6 +81,12 @@ where
 
 /// Service that waits for a transport to reach a certain state.
 /// Ported from `wait_service` in `original/services.cpp`.
+///
+/// # Arguments
+/// * `fd` - The socket connected to the client.
+/// * `serial` - The device serial number.
+/// * `transport_id` - The transport ID.
+/// * `spec` - The wait-for- specification.
 pub fn wait_service(mut fd: AdbFd, serial: String, transport_id: TransportId, spec: String) {
     let components: Vec<&str> = spec.split('-').collect();
     if components.len() < 2 {
@@ -181,6 +182,10 @@ pub fn wait_service(mut fd: AdbFd, serial: String, transport_id: TransportId, sp
 
 /// Service that handles device connection.
 /// Ported from `connect_service` in `original/services.cpp`.
+///
+/// # Arguments
+/// * `fd` - The socket connected to the client.
+/// * `host` - The host address to connect to.
 pub fn connect_service(mut fd: AdbFd, host: String) {
     let mut response = String::new();
     if host.starts_with("emu:") {
@@ -193,6 +198,10 @@ pub fn connect_service(mut fd: AdbFd, host: String) {
 
 /// Connects to an emulator.
 /// Ported from `connect_emulator` in `original/services.cpp`.
+///
+/// # Arguments
+/// * `port_spec` - The console and ADB port numbers.
+/// * `response` - String to store the response message.
 pub fn connect_emulator(port_spec: &str, response: &mut String) {
     let pieces: Vec<&str> = port_spec.split(',').collect();
     if pieces.len() != 2 {
@@ -223,6 +232,10 @@ pub fn connect_emulator(port_spec: &str, response: &mut String) {
 
 /// Connects to a device via its address.
 /// Ported from `connect_device` in `original/client/transport_emulator.cpp`.
+///
+/// # Arguments
+/// * `address` - The device address.
+/// * `response` - String to store the response message.
 pub fn connect_device(address: String, response: &mut String) {
     if address.is_empty() {
         *response = "empty address".to_string();
@@ -264,14 +277,20 @@ pub fn connect_device(address: String, response: &mut String) {
 
 /// Service that handles device pairing.
 /// Ported from `pair_service` in `original/services.cpp`.
+///
+/// # Arguments
+/// * `fd` - The socket connected to the client.
+/// * `_host` - The host to pair with.
+/// * `_password` - The pairing password.
 pub fn pair_service(mut fd: AdbFd, _host: String, _password: String) {
     // TODO: implement adb_wifi_pair_device
     let _ = send_fail(&mut fd, "pairing not implemented in Rust yet");
 }
 
 /// A "smart" socket that handles initial host-side service dispatching.
-/// Ported from `asocket` with smart socket logic in `original/sockets.cpp`.
+/// Ported from `asocket` with smart socket logic in `sockets.cpp`.
 pub struct SmartSocket {
+    /// Unique ID of the socket.
     id: u32,
     inner: Mutex<SmartSocketInner>,
 }
@@ -285,6 +304,12 @@ struct SmartSocketInner {
 }
 
 impl SmartSocket {
+    /// Creates a new `SmartSocket`.
+    ///
+    /// # Arguments
+    /// * `id` - The socket ID.
+    /// * `registry` - The socket registry.
+    /// * `fdevent` - The fdevent handle.
     pub fn new(id: u32, registry: Arc<SocketRegistry>, fdevent: FdeventHandle) -> Self {
         Self {
             id,
@@ -298,10 +323,18 @@ impl SmartSocket {
         }
     }
 
+    /// Sets the peer socket.
+    ///
+    /// # Arguments
+    /// * `peer` - The peer socket.
     pub fn set_peer(&self, peer: Arc<dyn Socket>) {
         self.inner.lock().unwrap().peer = Some(Arc::downgrade(&peer));
     }
 
+    /// Sets the transport.
+    ///
+    /// # Arguments
+    /// * `transport` - The associated transport.
     pub fn set_transport(&self, transport: Arc<ATransport>) {
         self.inner.lock().unwrap().transport = Some(transport);
     }
@@ -502,6 +535,10 @@ impl Socket for SmartSocket {
 
 /// Connects a local socket to a smart socket for service dispatching.
 /// Ported from `connect_to_smartsocket` in `original/sockets.cpp`.
+///
+/// # Arguments
+/// * `socket` - The local socket to connect.
+/// * `fdevent` - The fdevent context.
 pub fn connect_to_smartsocket(socket: Arc<LocalSocket>, fdevent: &mut Fdevent) {
     let registry = socket.get_registry().expect("socket must have a registry");
     let id = registry.alloc_id();
@@ -514,6 +551,11 @@ pub fn connect_to_smartsocket(socket: Arc<LocalSocket>, fdevent: &mut Fdevent) {
     socket.ready();
 }
 
+/// Creates a new device tracker socket.
+///
+/// # Arguments
+/// * `output_type` - The format of the device list.
+/// * `registry` - The socket registry.
 pub fn create_device_tracker(
     output_type: TrackerOutputType,
     registry: Arc<SocketRegistry>,
@@ -524,6 +566,15 @@ pub fn create_device_tracker(
     tracker
 }
 
+/// Dispatches a host-side service request to a socket.
+/// Ported from `host_service_to_socket` in `services.cpp`.
+///
+/// # Arguments
+/// * `name` - The service name.
+/// * `serial` - The device serial number.
+/// * `transport_id` - The transport ID.
+/// * `registry` - The socket registry.
+/// * `fdevent` - The fdevent context.
 pub fn host_service_to_socket(
     name: &str,
     serial: &str,
@@ -592,6 +643,10 @@ pub fn host_service_to_socket(
 
 /// Dispatches a service to a file descriptor.
 /// Ported from `service_to_fd` in `original/services.cpp`.
+///
+/// # Arguments
+/// * `name` - The service name.
+/// * `_transport` - The associated transport.
 pub fn service_to_fd(name: &str, _transport: Option<&Arc<ATransport>>) -> std::io::Result<AdbFd> {
     if is_socket_spec(name) {
         match socket_spec_connect(name, None, None) {
@@ -615,6 +670,10 @@ use crate::jdwp_service::{register_jdwp_observer, JdwpTracker, TrackerKind};
 
 /// Dispatches a daemon-side service request to a socket.
 /// Ported from `daemon_service_to_socket` in `original/daemon/services.cpp`.
+///
+/// # Arguments
+/// * `name` - The service name.
+/// * `transport` - The associated transport.
 pub fn daemon_service_to_socket(
     name: &str,
     transport: &Arc<ATransport>,
@@ -685,6 +744,10 @@ pub fn daemon_service_to_socket(
 
 /// Dispatches a service to a file descriptor on the daemon side.
 /// Ported from `daemon_service_to_fd` in `original/daemon/services.cpp`.
+///
+/// # Arguments
+/// * `name` - The service name.
+/// * `transport` - The associated transport.
 pub fn daemon_service_to_fd(name: &str, transport: &Arc<ATransport>) -> Option<AdbFd> {
     if tradeinmode::is_in_tradeinmode() && !tradeinmode::allow_tradeinmode_command(name) {
         return None;
@@ -836,6 +899,12 @@ impl Socket for DeviceTracker {
     }
 }
 
+/// Service that handles device reconnection.
+/// Ported from `reconnect_service` in `services.cpp`.
+///
+/// # Arguments
+/// * `fd` - The socket connected to the client.
+/// * `transport` - The transport to reconnect.
 pub fn reconnect_service(mut fd: AdbFd, transport: Option<&Arc<ATransport>>) {
     let _ = send_protocol_string(&mut fd, "done");
     if let Some(t) = transport {

@@ -15,7 +15,7 @@
  */
 
 //! Listener management logic for ADB.
-//! Ported from original/adb_listeners.h and original/adb_listeners.cpp.
+//! Ported from `adb_listeners.h` and `adb_listeners.cpp`.
 
 use adb_socket_spec::socket_spec_listen;
 use adb_sockets::{connect_to_remote, create_local_socket, LocalSocket, Socket, SocketRegistry};
@@ -25,39 +25,60 @@ use mio::{Interest, Token};
 use std::os::unix::io::{AsRawFd, FromRawFd, OwnedFd, RawFd};
 use std::sync::{Arc, Mutex, OnceLock, Weak};
 
+/// Special destination string for smart sockets.
 pub const K_SMART_SOCKET_CONNECT_TO: &str = "*smartsocket*";
 
+/// Status code for listener installation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum InstallStatus {
+    /// Installation succeeded.
     Ok = 0,
+    /// An internal error occurred.
     InternalError = -1,
+    /// Failed to bind to the local socket.
     CannotBind = -2,
+    /// Failed to rebind to an existing socket.
     CannotRebind = -3,
+    /// The specified listener was not found.
     ListenerNotFound = -4,
 }
 
+/// Flag to prevent rebinding an existing listener.
 pub const INSTALL_LISTENER_NO_REBIND: i32 = 1 << 0;
+/// Flag to create a listener in a disabled state.
 pub const INSTALL_LISTENER_DISABLED: i32 = 1 << 1;
 
+/// Callback type for smart socket connections.
 pub type SmartSocketCallback = Arc<dyn Fn(Arc<LocalSocket>, &mut Fdevent) + Send + Sync>;
 
 static SMART_SOCKET_CALLBACK: OnceLock<SmartSocketCallback> = OnceLock::new();
 
+/// Sets the callback function for smart socket connections.
 pub fn set_smart_socket_callback(cb: SmartSocketCallback) {
     let _ = SMART_SOCKET_CALLBACK.set(cb);
 }
 
+/// Represents an ADB listener.
+/// Ported from `alistener` in `adb_listeners.h`.
 pub struct Listener {
+    /// The local socket specification.
     pub local_name: Mutex<String>,
+    /// The destination service string.
     pub connect_to: String,
+    /// The associated transport, if any.
     pub transport: Option<Arc<ATransport>>,
+    /// The listening file descriptor.
     pub fd: Arc<OwnedFd>,
+    /// The fdevent token for this listener.
     pub token: Token,
+    /// The ID of the disconnect handler, if registered.
     pub disconnect_id: Option<u64>,
+    /// The fdevent handle for this listener.
     pub fdevent: FdeventHandle,
 }
 
 impl Listener {
+    /// Returns true if this listener is a smart socket.
     pub fn is_smart_socket(&self) -> bool {
         self.connect_to == K_SMART_SOCKET_CONNECT_TO
     }
@@ -120,6 +141,8 @@ impl DisconnectHandler for ListenerDisconnectHandler {
     }
 }
 
+/// Installs a new listener.
+/// Ported from `install_listener` in `adb_listeners.cpp`.
 pub fn install_listener(
     local_name: &str,
     connect_to: &str,
@@ -234,6 +257,8 @@ pub fn install_listener(
     })
 }
 
+/// Removes a listener by its local name.
+/// Ported from `remove_listener` in `adb_listeners.cpp`.
 pub fn remove_listener(local_name: &str, _transport: Option<&ATransport>) -> Result<(), InstallStatus> {
     let mut listeners = get_listeners().lock().unwrap();
     let mut index = None;
@@ -261,6 +286,8 @@ pub fn remove_listener(local_name: &str, _transport: Option<&ATransport>) -> Res
     }
 }
 
+/// Removes all listeners, except smart sockets.
+/// Ported from `remove_all_listeners` in `adb_listeners.cpp`.
 pub fn remove_all_listeners() {
     let mut listeners = get_listeners().lock().unwrap();
     let mut to_keep = Vec::new();
@@ -283,6 +310,8 @@ pub fn remove_all_listeners() {
     *listeners = to_keep;
 }
 
+/// Returns a string listing all listeners.
+/// Ported from `format_listeners` in `adb_listeners.cpp`.
 pub fn format_listeners() -> String {
     let listeners = get_listeners().lock().unwrap();
     let mut result = String::new();
@@ -307,6 +336,8 @@ pub fn format_listeners() -> String {
     result
 }
 
+/// Enables all server sockets (smart sockets).
+/// Ported from `enable_server_sockets` in `adb_listeners.cpp`.
 pub fn enable_server_sockets() {
     let listeners = get_listeners().lock().unwrap();
     for l in listeners.iter() {
@@ -319,6 +350,8 @@ pub fn enable_server_sockets() {
     }
 }
 
+/// Closes all smart sockets.
+/// Ported from `close_smartsockets` in `adb_listeners.cpp`.
 pub fn close_smartsockets() {
     let mut listeners = get_listeners().lock().unwrap();
     listeners.retain(|l| {

@@ -11,3 +11,6 @@ rust-adb-crypto = { path = "../crypto" }
 rusb = { version = "0.9", features = ["vendored"] }
 log = "0.4"
 thiserror = "1.0"
+
+[lints]
+workspace = true

@@ -1,5 +1,5 @@
-//! adb-socket-spec crate
-//! Ported from original/socket_spec.cpp, original/socket_spec.h, and original/sysdeps/posix/network.cpp.
+//! ADB socket specification parsing and connection utilities.
+//! Ported from `socket_spec.cpp`, `socket_spec.h`, and `sysdeps/posix/network.cpp`.
 
 #[cfg(unix)]
 use std::os::unix::io::{FromRawFd, OwnedFd, RawFd};
@@ -16,8 +16,10 @@ pub const DEFAULT_ADB_LOCAL_TRANSPORT_PORT: i32 = 5555;
 /// Ported from original/socket_spec.cpp: bool gListenAll = false;
 pub static G_LISTEN_ALL: AtomicBool = AtomicBool::new(false);
 
+/// Errors that can occur during socket specification parsing or connection.
 #[derive(Error, Debug)]
 pub enum SocketSpecError {
+    /// Generic error with a message.
     #[error("{0}")]
     Error(String),
 }
@@ -264,7 +266,8 @@ fn parse_net_address(addr: &str, default_port: i32) -> Result<(String, i32, Stri
     Ok((host, port, serial))
 }
 
-/// Ported from original/socket_spec.cpp: bool parse_tcp_socket_spec(...)
+/// Parses a TCP socket specification string.
+/// Ported from `parse_tcp_socket_spec` in `socket_spec.cpp`.
 pub fn parse_tcp_socket_spec(spec: &str) -> Result<(String, i32, String), String> {
     if !spec.starts_with("tcp:") {
         return Err(format!("specification is not tcp: {}", spec));
@@ -290,7 +293,8 @@ pub fn parse_tcp_socket_spec(spec: &str) -> Result<(String, i32, String), String
     Ok((host, port, serial))
 }
 
-/// Ported from original/socket_spec.cpp: int get_host_socket_spec_port(...)
+/// Returns the port number from a host socket specification string.
+/// Ported from `get_host_socket_spec_port` in `socket_spec.cpp`.
 pub fn get_host_socket_spec_port(spec: &str) -> Result<i32, String> {
     if spec.starts_with("tcp:") {
         let (_, port, _) = parse_tcp_socket_spec(spec)?;
@@ -312,7 +316,8 @@ pub fn get_host_socket_spec_port(spec: &str) -> Result<i32, String> {
     }
 }
 
-/// Ported from original/socket_spec.cpp: bool is_socket_spec(std::string_view spec)
+/// Checks if a string is a valid socket specification.
+/// Ported from `is_socket_spec` in `socket_spec.cpp`.
 pub fn is_socket_spec(spec: &str) -> bool {
     let local_socket_types = get_local_socket_types();
     for (name, _, _) in local_socket_types {
@@ -333,7 +338,8 @@ fn tcp_host_is_local(hostname: &str) -> bool {
         || hostname == "::ffff:127.0.0.1"
 }
 
-/// Ported from original/socket_spec.cpp: bool is_local_socket_spec(std::string_view spec)
+/// Checks if a socket specification refers to a local socket.
+/// Ported from `is_local_socket_spec` in `socket_spec.cpp`.
 pub fn is_local_socket_spec(spec: &str) -> bool {
     let local_socket_types = get_local_socket_types();
     for (name, _, _) in local_socket_types {
@@ -385,7 +391,8 @@ pub type NativeOwnedHandle = OwnedFd;
 #[cfg(windows)]
 pub type NativeOwnedHandle = OwnedSocket;
 
-/// Ported from original/socket_spec.cpp: bool socket_spec_connect(...)
+/// Connects to a socket described by a specification string.
+/// Ported from `socket_spec_connect` in `socket_spec.cpp`.
 pub fn socket_spec_connect(
     address: &str,
     port: Option<&mut i32>,
@@ -470,6 +477,8 @@ pub fn socket_spec_connect(
     Err(format!("unknown socket specification: {}", address))
 }
 
+/// Listens on a socket described by a specification string.
+/// Ported from `socket_spec_listen` in `socket_spec.cpp`.
 pub fn socket_spec_listen(spec: &str, resolved_port: Option<&mut i32>) -> Result<NativeOwnedHandle, String> {
     if spec.starts_with("tcp:") {
         let (hostname, port, _) = parse_tcp_socket_spec(spec)?;

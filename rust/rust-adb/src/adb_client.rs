@@ -1,3 +1,6 @@
+//! ADB client connection and command execution.
+//! Ported from `adb_client.cpp`.
+
 use adb_io::{read_protocol_string, send_protocol_string, read_orderly_shutdown};
 use adb_protocol::TransportType;
 use adb_socket_spec::{socket_spec_connect, NativeOwnedHandle};
@@ -10,14 +13,19 @@ use std::os::unix::io::{AsRawFd, FromRawFd, IntoRawFd};
 #[cfg(windows)]
 use std::os::windows::io::{AsRawSocket, FromRawSocket, IntoRawSocket};
 
+/// Errors that can occur during ADB client operations.
 #[derive(Error, Debug)]
 pub enum AdbClientError {
+    /// A protocol fault occurred.
     #[error("Protocol fault: {0}")]
     ProtocolFault(String),
+    /// An IO error occurred.
     #[error("IO error: {0}")]
     Io(#[from] std::io::Error),
+    /// A socket specification error occurred.
     #[error("Socket spec error: {0}")]
     SocketSpec(String),
+    /// The requested service failed.
     #[error("Service failed: {0}")]
     ServiceFailed(String),
 }
@@ -29,12 +37,16 @@ static G_ADB_SERIAL: Mutex<Option<String>> = Mutex::new(None);
 static G_ADB_TRANSPORT_ID: Mutex<u64> = Mutex::new(0);
 static G_ADB_SERVER_SOCKET_SPEC: OnceLock<String> = OnceLock::new();
 
+/// Sets the transport to be used for subsequent ADB commands.
+/// Ported from `adb_set_transport` in `adb_client.cpp`.
 pub fn adb_set_transport(transport_type: TransportType, serial: Option<String>, transport_id: u64) {
     *G_ADB_TRANSPORT.lock().unwrap() = transport_type;
     *G_ADB_SERIAL.lock().unwrap() = serial;
     *G_ADB_TRANSPORT_ID.lock().unwrap() = transport_id;
 }
 
+/// Returns the currently configured transport.
+/// Ported from `adb_get_transport` in `adb_client.cpp`.
 pub fn adb_get_transport() -> (TransportType, Option<String>, u64) {
     (
         *G_ADB_TRANSPORT.lock().unwrap(),
@@ -43,10 +55,13 @@ pub fn adb_get_transport() -> (TransportType, Option<String>, u64) {
     )
 }
 
+/// Sets the socket specification for the ADB server.
 pub fn adb_set_socket_spec(spec: String) {
     let _ = G_ADB_SERVER_SOCKET_SPEC.set(spec);
 }
 
+/// Reads and verifies the ADB status response (OKAY or FAIL).
+/// Ported from `adb_status` in `adb_client.cpp`.
 pub fn adb_status<R: Read>(mut reader: R) -> Result<()> {
     let mut buf = [0u8; 4];
     reader.read_exact(&mut buf)?;
@@ -101,6 +116,8 @@ fn switch_socket_transport<RW: Read + Write>(mut rw: RW) -> Result<u64> {
     Ok(result)
 }
 
+/// Connects to the ADB server and executes a service.
+/// Ported from `adb_connect` in `adb_client.cpp`.
 pub fn adb_connect(service: &str, force_switch: bool) -> Result<(NativeOwnedHandle, u64)> {
     let spec = G_ADB_SERVER_SOCKET_SPEC
         .get()
@@ -133,6 +150,8 @@ pub fn adb_connect(service: &str, force_switch: bool) -> Result<(NativeOwnedHand
     Ok((fd, transport_id))
 }
 
+/// Connects to the ADB server, executes a query, and returns the response string.
+/// Ported from `adb_query` in `adb_client.cpp`.
 pub fn adb_query(service: &str) -> Result<String> {
     let (fd, _) = adb_connect(service, false)?;
 
@@ -148,6 +167,7 @@ pub fn adb_query(service: &str) -> Result<String> {
     Ok(result)
 }
 
+/// Formats a host-prefixed command based on the current transport.
 pub fn format_host_command(command: &str) -> String {
     let transport_id = *G_ADB_TRANSPORT_ID.lock().unwrap();
     let serial = G_ADB_SERIAL.lock().unwrap().clone();

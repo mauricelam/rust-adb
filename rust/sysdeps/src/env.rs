@@ -6,11 +6,13 @@ use users;
 use libc;
 
 /// Returns the value of the environment variable `var`.
+/// Ported from `getenv` in `sysdeps.h`.
 pub fn get_environment_variable(var: &str) -> Option<String> {
     env::var(var).ok()
 }
 
 /// Returns the host name in UTF-8.
+/// Ported from `get_host_name_utf8` in `sysdeps.h`.
 pub fn get_host_name_utf8() -> Result<String> {
     if let Ok(host) = env::var("HOSTNAME") {
         if !host.is_empty() {
@@ -24,6 +26,7 @@ pub fn get_host_name_utf8() -> Result<String> {
 }
 
 /// Returns the login name in UTF-8.
+/// Ported from `get_login_name_utf8` in `sysdeps.h`.
 pub fn get_login_name_utf8() -> Result<String> {
     if let Ok(user) = env::var("LOGNAME") {
         if !user.is_empty() {
@@ -37,6 +40,7 @@ pub fn get_login_name_utf8() -> Result<String> {
 }
 
 /// Returns a human-readable OS version string.
+/// Ported from `get_os_version` in `sysdeps.h`.
 pub fn get_os_version() -> String {
     // SAFETY: utsname is a plain-old-data struct from libc. Zero-initializing it
     // is safe before passing it to uname.
@@ -58,6 +62,7 @@ pub fn get_os_version() -> String {
 
 /// Given a sequence of UTF-8 bytes, return the number of bytes that are complete
 /// UTF-8 sequences and the remaining bytes that are incomplete.
+/// Ported from `parse_complete_utf8` in `sysdeps.h`.
 pub fn parse_complete_utf8(data: &[u8]) -> (usize, Vec<u8>) {
     for i in (0..data.len()).rev() {
         let ch = data[i];
