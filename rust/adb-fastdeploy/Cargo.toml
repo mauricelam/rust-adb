@@ -1,0 +1,19 @@
+[package]
+name = "adb-fastdeploy"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+adb-protocol = { path = "../adb-protocol" }
+adb-utils = { path = "../adb-utils" }
+sysdeps = { path = "../sysdeps" }
+anyhow = "1.0"
+bytes = "1.0"
+md5 = "0.7"
+memmap2 = "0.9"
+prost = "0.13"
+tempfile = "3.10"
+walkdir = "2.5"
+
+[dev-dependencies]
+adb_io = { path = "../adb_io" }
