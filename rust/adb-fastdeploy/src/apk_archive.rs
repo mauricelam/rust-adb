@@ -1,19 +1,3 @@
-/*
- * Copyright (C) 2023 The Android Open Source Project
- *
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at
- *
- *      http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
- */
-
 //! APK archive manipulation.
 //! Ported from `original/fastdeploy/deploypatchgenerator/apk_archive.cpp`.
 
@@ -34,13 +18,19 @@ const CD_FILE_HEADER_MAGIC: u32 = 0x02014b50;
 const LOCAL_FILE_HEADER_MAGIC: u32 = 0x04034b50;
 const OPTIONAL_DATA_DESCRIPTOR_MAGIC: u32 = 0x08074b50;
 
+/// A convenience struct to store the result of search operation when
+/// locating the EoCDr, CDr, and Signature Block.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct Location {
+    /// Offset of the record.
     pub offset: u64,
+    /// Size of the record.
     pub size: u64,
+    /// Whether the record is valid.
     pub valid: bool,
 }
 
+/// Manipulates an APK archive.
 pub struct ApkArchive {
     path: String,
     file: File,
@@ -48,6 +38,7 @@ pub struct ApkArchive {
 }
 
 impl ApkArchive {
+    /// Opens an APK archive.
     pub fn open<P: AsRef<Path>>(path: P) -> Result<Self> {
         let path_str = path.as_ref().to_string_lossy().into_owned();
         let file = File::open(&path)?;
@@ -60,6 +51,7 @@ impl ApkArchive {
         })
     }
 
+    /// Extracts metadata from the APK.
     pub fn extract_metadata(&mut self) -> Result<ApkDump> {
         let cd_loc = self.get_cd_location()?;
         if !cd_loc.valid {
@@ -102,6 +94,7 @@ impl ApkArchive {
         Ok(-1)
     }
 
+    /// Retrieve the location of the Central Directory Record.
     pub fn get_cd_location(&mut self) -> Result<Location> {
         let eocd_offset = self.find_end_of_cd_record()?;
         if eocd_offset < 0 {
@@ -112,15 +105,6 @@ impl ApkArchive {
         self.file.seek(SeekFrom::Start(eocd_offset as u64))?;
         self.file.read_exact(&mut buf)?;
 
-        // ECDR structure:
-        // signature: 4 bytes
-        // diskNumber: 2 bytes
-        // numDisk: 2 bytes
-        // diskEntries: 2 bytes
-        // numEntries: 2 bytes
-        // crSize: 4 bytes
-        // offsetToCdHeader: 4 bytes
-        // commentSize: 2 bytes
         let cr_size = u32::from_le_bytes(buf[12..16].try_into().unwrap());
         let offset_to_cd_header = u32::from_le_bytes(buf[16..20].try_into().unwrap());
 
@@ -131,6 +115,7 @@ impl ApkArchive {
         })
     }
 
+    /// Retrieve the location of the signature block starting from Central Directory Record.
     pub fn get_signature_location(&mut self, cd_record_offset: u64) -> Result<Location> {
         if cd_record_offset < 24 {
             return Ok(Location::default());
@@ -155,6 +140,7 @@ impl ApkArchive {
         })
     }
 
+    /// Parses a Central Directory Record.
     pub fn parse_central_directory_record(
         input: &[u8],
     ) -> Option<(usize, Vec<u8>, i64, i64)> {
@@ -198,6 +184,7 @@ impl ApkArchive {
         ))
     }
 
+    /// Calculates the size of a Local File Entry.
     pub fn calculate_local_file_entry_size(
         &mut self,
         local_file_header_offset: i64,

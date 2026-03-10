@@ -1,19 +1,3 @@
-/*
- * Copyright (C) 2023 The Android Open Source Project
- *
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at
- *
- *      http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
- */
-
 //! Patch generation logic.
 //! Ported from `original/fastdeploy/deploypatchgenerator/deploy_patch_generator.cpp`.
 
@@ -25,12 +9,17 @@ use std::fs::File;
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::Path;
 
+/// Mapping between local metadata and device metadata.
 pub struct SimpleEntry<'a> {
+    /// Local APK entry.
     pub local_entry: &'a ApkEntry,
+    /// Device APK entry.
     pub device_entry: &'a ApkEntry,
 }
 
+/// Patch generator for FastDeploy.
 pub struct DeployPatchGenerator {
+    /// Whether to log verbose timing/info.
     pub is_verbose: bool,
 }
 
@@ -42,10 +31,12 @@ struct PatchEntry {
 }
 
 impl DeployPatchGenerator {
+    /// Creates a new DeployPatchGenerator.
     pub fn new(is_verbose: bool) -> Self {
         Self { is_verbose }
     }
 
+    /// Creates a patch for the given local APK.
     pub fn create_patch<P: AsRef<Path>, W: Write>(
         &self,
         local_apk_path: P,
@@ -56,6 +47,7 @@ impl DeployPatchGenerator {
         self.create_patch_from_metadata(local_apk_metadata, device_apk_metadata, output)
     }
 
+    /// Creates a patch from local and device metadata.
     pub fn create_patch_from_metadata<W: Write>(
         &self,
         local_apk_metadata: ApkMetaData,
@@ -194,6 +186,7 @@ impl DeployPatchGenerator {
         Ok(())
     }
 
+    /// Builds the list of identical entries between host and device APKs.
     pub fn build_identical_entries<'a>(
         &self,
         out_identical_entries: &mut Vec<SimpleEntry<'a>>,

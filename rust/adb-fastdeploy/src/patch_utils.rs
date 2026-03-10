@@ -1,19 +1,3 @@
-/*
- * Copyright (C) 2023 The Android Open Source Project
- *
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at
- *
- *      http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
- */
-
 //! Helper functions for fastdeploy.
 //! Ported from `original/fastdeploy/deploypatchgenerator/patch_utils.cpp`.
 
@@ -23,11 +7,14 @@ use anyhow::{anyhow, Result};
 use std::io::{Read, Write};
 use std::path::Path;
 
+/// Signature for the patch format.
 pub const K_SIGNATURE: &[u8] = b"FASTDEPLOY";
 
+/// Helper class that mirrors the PatchUtils from deploy agent.
 pub struct PatchUtils;
 
 impl PatchUtils {
+    /// Builds the APKMetaData from the APK dump.
     pub fn get_device_apk_metadata(apk_dump: &ApkDump) -> ApkMetaData {
         let mut apk_metadata = ApkMetaData::default();
         apk_metadata.absolute_path = apk_dump.absolute_path.clone();
@@ -47,6 +34,7 @@ impl PatchUtils {
         apk_metadata
     }
 
+    /// Builds the APKMetaData for a local APK file.
     pub fn get_host_apk_metadata<P: AsRef<Path>>(path: P) -> Result<ApkMetaData> {
         let mut archive = ApkArchive::open(&path)?;
         let dump = archive.extract_metadata()?;
@@ -67,22 +55,26 @@ impl PatchUtils {
         Ok(apk_metadata)
     }
 
+    /// Writes the signature to the output.
     pub fn write_signature<W: Write>(mut output: W) -> Result<()> {
         output.write_all(K_SIGNATURE)?;
         Ok(())
     }
 
+    /// Writes a long value to the output.
     pub fn write_long<W: Write>(value: i64, mut output: W) -> Result<()> {
         output.write_all(&value.to_le_bytes())?;
         Ok(())
     }
 
+    /// Writes a string value to the output.
     pub fn write_string<W: Write>(value: &str, mut output: W) -> Result<()> {
         Self::write_long(value.len() as i64, &mut output)?;
         output.write_all(value.as_bytes())?;
         Ok(())
     }
 
+    /// Copies data from input to output.
     pub fn pipe<R: Read, W: Write>(mut input: R, mut output: W, amount: u64) -> Result<()> {
         const BUFFER_SIZE: usize = 128 * 1024;
         let mut buffer = [0u8; BUFFER_SIZE];
