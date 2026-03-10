@@ -3,5 +3,7 @@
 
 /// ADB client connection and command execution.
 pub mod adb_client;
+/// Installation and uninstallation logic.
+pub mod adb_install;
 /// Bugreport command implementation.
 pub mod bugreport;

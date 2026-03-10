@@ -2,6 +2,7 @@
 //! Ported from `client/main.cpp` and `commandline.cpp`.
 
 mod adb_client;
+mod adb_install;
 mod bugreport;
 
 use clap::{Parser, Subcommand};
@@ -72,6 +73,16 @@ enum Commands {
     /// generate bugreport
     Bugreport {
         /// [PATH] | [--stream]
+        args: Vec<String>,
+    },
+    /// push a single package to the device and install it
+    Install {
+        /// [ARGS] APK
+        args: Vec<String>,
+    },
+    /// remove a client package from the device
+    Uninstall {
+        /// [ARGS] PACKAGE
         args: Vec<String>,
     },
 }
@@ -159,6 +170,12 @@ fn main() -> anyhow::Result<()> {
         Commands::Bugreport { args } => {
             let mut br = bugreport::Bugreport::new();
             br.do_it(&args)?;
+        }
+        Commands::Install { args } => {
+            adb_install::install_app_streamed(&args)?;
+        }
+        Commands::Uninstall { args } => {
+            adb_install::uninstall_app(&args)?;
         }
     }
 
