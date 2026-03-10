@@ -3,6 +3,7 @@
 
 mod adb_client;
 mod bugreport;
+mod sideload;
 
 use clap::{Parser, Subcommand};
 use adb_protocol::TransportType;
@@ -74,6 +75,35 @@ enum Commands {
         /// [PATH] | [--stream]
         args: Vec<String>,
     },
+    /// sideload the given full OTA package
+    Sideload {
+        /// OTAPACKAGE
+        filename: String,
+    },
+    /// rescue commands
+    Rescue {
+        #[command(subcommand)]
+        command: RescueCommands,
+    },
+}
+
+#[derive(Subcommand)]
+enum RescueCommands {
+    /// getprop [prop]
+    Getprop {
+        /// property name
+        prop: Option<String>,
+    },
+    /// install <filename>
+    Install {
+        /// OTA package filename
+        filename: String,
+    },
+    /// wipe userdata
+    Wipe {
+        /// wipe target (must be userdata)
+        target: String,
+    },
 }
 
 fn main() -> anyhow::Result<()> {
@@ -131,7 +161,7 @@ fn main() -> anyhow::Result<()> {
 
             #[cfg(unix)]
             {
-                use std::os::unix::io::FromRawFd;
+                use std::os::fd::FromRawFd;
                 let mut stream = unsafe { std::fs::File::from_raw_fd(fd.into_raw_fd()) };
                 let mut stdout = io::stdout();
                 let mut buf = [0u8; 4096];
@@ -159,6 +189,25 @@ fn main() -> anyhow::Result<()> {
         Commands::Bugreport { args } => {
             let mut br = bugreport::Bugreport::new();
             br.do_it(&args)?;
+        }
+        Commands::Sideload { filename } => {
+            sideload::adb_sideload_install(&filename, false)?;
+        }
+        Commands::Rescue { command } => {
+            match command {
+                RescueCommands::Getprop { prop } => {
+                    sideload::adb_rescue_getprop(prop.as_deref())?;
+                }
+                RescueCommands::Install { filename } => {
+                    sideload::adb_sideload_install(&filename, true)?;
+                }
+                RescueCommands::Wipe { target } => {
+                    if target != "userdata" {
+                        anyhow::bail!("invalid rescue wipe argument: {}", target);
+                    }
+                    sideload::adb_wipe_devices()?;
+                }
+            }
         }
     }
 
