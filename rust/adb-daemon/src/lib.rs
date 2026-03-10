@@ -14,10 +14,8 @@
  * limitations under the License.
  */
 
-//! This crate ports the ADB daemon-side authentication logic from the C++ implementation.
-//!
-//! Ported from:
-//! - `original/daemon/auth.cpp`
+//! ADB daemon-side authentication logic.
+//! Ported from `daemon/auth.cpp`.
 
 use std::fs;
 use std::path::PathBuf;
@@ -41,8 +39,8 @@ fn get_authorized_keys() -> &'static Mutex<Vec<String>> {
     })
 }
 
-/// Ported from `original/daemon/auth.cpp`: `get_adb_keys_path` equivalent.
 /// Returns the path to the file containing authorized public keys.
+/// Ported from `get_adb_keys_path` in `daemon/auth.cpp`.
 pub fn get_adb_keys_path() -> Option<PathBuf> {
     if let Ok(path) = std::env::var("ADB_VENDOR_KEYS") {
         return Some(PathBuf::from(path));
@@ -72,8 +70,8 @@ fn load_authorized_keys_into(keys: &mut Vec<String>) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Ported from `original/daemon/auth.cpp`: `load_authorized_keys` equivalent.
 /// Loads authorized public keys from the system's `adb_keys` file into the cache.
+/// Ported from `load_authorized_keys` in `daemon/auth.cpp`.
 pub fn load_authorized_keys() -> anyhow::Result<()> {
     let mut keys = get_authorized_keys().lock().unwrap();
     load_authorized_keys_into(&mut keys)
@@ -84,8 +82,8 @@ pub fn ensure_authorized_keys_loaded() {
     let _ = get_authorized_keys();
 }
 
-/// Ported from `original/daemon/auth.cpp`: `save_authorized_key` equivalent.
 /// Saves a new authorized public key to the system's `adb_keys` file and adds it to the cache.
+/// Ported from `save_authorized_key` in `daemon/auth.cpp`.
 pub fn save_authorized_key(key: &str) -> anyhow::Result<()> {
     ensure_authorized_keys_loaded();
 
@@ -111,8 +109,8 @@ pub fn save_authorized_key(key: &str) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Ported from `original/daemon/auth.cpp`: `adbd_auth_verify`.
 /// Verifies an ADB authentication signature against a single public key line.
+/// Ported from `adbd_auth_verify` in `daemon/auth.cpp`.
 pub fn adbd_auth_verify(token: &[u8], sig: &[u8], public_key_line: &str) -> bool {
     let public_key_b64 = public_key_line.split_whitespace().next().unwrap_or("");
     let pubkey_encoded = match general_purpose::STANDARD.decode(public_key_b64) {
@@ -145,8 +143,8 @@ pub fn adbd_auth_verify(token: &[u8], sig: &[u8], public_key_line: &str) -> bool
     verifying_key.verify(token, &signature).is_ok()
 }
 
-/// Ported from `original/daemon/auth.cpp`: `adbd_auth_verify` (looping variant).
 /// Verifies an ADB authentication signature against all authorized keys in the cache.
+/// Ported from `adbd_auth_verify` in `daemon/auth.cpp`.
 pub fn adbd_auth_verify_all(token: &[u8], sig: &[u8]) -> bool {
     let keys = get_authorized_keys().lock().unwrap();
     for key in keys.iter() {
@@ -157,8 +155,8 @@ pub fn adbd_auth_verify_all(token: &[u8], sig: &[u8]) -> bool {
     false
 }
 
-/// Ported from `original/daemon/auth.cpp`: `send_auth_request`.
 /// Generates a new authentication token and wraps it in an `A_AUTH` packet.
+/// Ported from `send_auth_request` in `daemon/auth.cpp`.
 pub fn send_auth_request() -> (Apacket, [u8; TOKEN_SIZE]) {
     let mut token = [0u8; TOKEN_SIZE];
     use rand::RngCore;

@@ -82,10 +82,12 @@ impl FdeventHandle {
     }
 }
 
-/// A wrapper around platform-specific `mio` sources.
+/// A wrapper around platform-specific \`mio\` sources.
 pub enum MioSource {
+    /// A raw file descriptor.
     #[cfg(unix)]
     Fd(i32),
+    /// A TCP stream.
     #[cfg(windows)]
     TcpStream(Option<mio::net::TcpStream>),
 }
@@ -159,6 +161,7 @@ impl mio::event::Source for MioSource {
 }
 
 /// The main event loop context.
+/// Ported from `fdevent` in `fdevent.h`.
 ///
 /// This struct manages the polling of file descriptors and the execution of handlers.
 pub struct Fdevent {

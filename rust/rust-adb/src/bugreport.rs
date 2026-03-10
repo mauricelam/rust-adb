@@ -7,22 +7,28 @@ use std::io::{self, Read, Write};
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 
+/// Represents the bugreport command.
+/// Ported from `bugreport.cpp`.
 pub struct Bugreport {
+    /// Whether to show progress updates.
     pub show_progress: bool,
 }
 
 impl Bugreport {
+    /// Creates a new `Bugreport` instance.
     pub fn new() -> Self {
         Self {
             show_progress: true,
         }
     }
 
+    /// Executes the bugreport command.
     pub fn do_it(&mut self, args: &[String]) -> Result<()> {
         let mut br_real = BugreportReal {};
         self.do_it_internal(&mut br_real, args)
     }
 
+    /// Internal implementation of the bugreport command.
     pub fn do_it_internal<T: BugreportInternal>(&mut self, br: &mut T, args: &[String]) -> Result<()> {
         if args.len() > 1 {
             return Err(anyhow!("usage: adb bugreport [[PATH] | [--stream]]"));
@@ -35,16 +41,13 @@ impl Bugreport {
         if bugz_version.is_empty() {
             if args.is_empty() {
                 eprintln!(
-                    "Failed to get bugreportz version, which is only available on devices \
-                    running Android 7.0 or later.\nTrying a plain-text bug report instead."
+                    "Failed to get bugreportz version, which is only available on devices                     running Android 7.0 or later.\nTrying a plain-text bug report instead."
                 );
                 return br.send_legacy_bugreport();
             }
 
             return Err(anyhow!(
-                "Failed to get bugreportz version: 'bugreportz -v' returned '{}'.\n\
-                If the device does not run Android 7.0 or above, try this instead:\n\
-                \tadb bugreport > bugreport.txt",
+                "Failed to get bugreportz version: 'bugreportz -v' returned '{}'.\n                If the device does not run Android 7.0 or above, try this instead:\n                \tadb bugreport > bugreport.txt",
                 bugz_output
             ));
         }
@@ -83,9 +86,7 @@ impl Bugreport {
         let mut bugz_command = "bugreportz -p".to_string();
         if bugz_version == "1.0" {
             eprintln!(
-                "Bugreport is in progress and it could take minutes to complete.\n\
-                Please be patient and do not cancel or disconnect your device \
-                until it completes."
+                "Bugreport is in progress and it could take minutes to complete.\n                Please be patient and do not cancel or disconnect your device                 until it completes."
             );
             show_progress = false;
             bugz_command = "bugreportz".to_string();
@@ -155,12 +156,19 @@ impl Bugreport {
     }
 }
 
+/// Internal trait for bugreport operations, allowing for mocking in tests.
 pub trait BugreportInternal {
+    /// Sends a shell command and returns the output (stdout, stderr).
     fn send_shell_command(&mut self, command: &str, disable_shell_protocol: bool) -> Result<(String, String)>;
+    /// Sends a shell command directly to stdout.
     fn send_shell_command_to_stdout(&mut self, command: &str, disable_shell_protocol: bool) -> Result<()>;
+    /// Opens a shell stream for reading.
     fn open_shell_stream(&mut self, command: &str, disable_shell_protocol: bool) -> Result<Box<dyn Read + Send>>;
+    /// Pulls a file from the device using the sync protocol.
     fn do_sync_pull(&mut self, src: &str, dst: &str, name: &str) -> Result<bool>;
+    /// Updates the progress of the bugreport.
     fn update_progress(&mut self, message: &str, percentage: i32);
+    /// Sends a legacy plain-text bugreport.
     fn send_legacy_bugreport(&mut self) -> Result<()>;
 }
 

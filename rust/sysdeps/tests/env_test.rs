@@ -1,3 +1,5 @@
+!! Test suite documentation.
+
 #![cfg(unix)]
 use sysdeps::env::{parse_complete_utf8, get_environment_variable, get_host_name_utf8, get_login_name_utf8};
 use std::env;

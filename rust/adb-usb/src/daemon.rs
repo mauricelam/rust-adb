@@ -6,9 +6,13 @@ use adb_transport::{ATransport, BlockingConnection};
 use adb_types::{Amessage, Apacket, Block};
 use rust_adb_crypto::Key;
 
+/// Path to the ADB FunctionFS directory.
 pub const USB_FFS_ADB_PATH: &str = "/dev/usb-ffs/adb/";
+/// Path to the ADB FunctionFS endpoint 0 (control).
 pub const USB_FFS_ADB_EP0: &str = "/dev/usb-ffs/adb/ep0";
+/// Path to the ADB FunctionFS bulk OUT endpoint.
 pub const USB_FFS_ADB_OUT: &str = "/dev/usb-ffs/adb/ep1";
+/// Path to the ADB FunctionFS bulk IN endpoint.
 pub const USB_FFS_ADB_IN: &str = "/dev/usb-ffs/adb/ep2";
 
 const ADB_CLASS: u8 = 0xff;
@@ -208,6 +212,7 @@ fn create_fs_hs_desc(max_packet_size: u16) -> FuncDesc {
     }
 }
 
+/// Initializes FunctionFS for ADB and returns the endpoint files.
 pub fn init_functionfs() -> std::io::Result<(File, File, File)> {
     let mut ep0 = OpenOptions::new().read(true).write(true).open(USB_FFS_ADB_EP0)?;
 
@@ -323,6 +328,7 @@ pub fn init_functionfs() -> std::io::Result<(File, File, File)> {
     Ok((ep0, bulk_out, bulk_in))
 }
 
+/// A daemon-side USB connection using FunctionFS.
 pub struct DaemonUsbConnection {
     #[allow(dead_code)]
     ep0: Mutex<File>,
@@ -332,6 +338,7 @@ pub struct DaemonUsbConnection {
 }
 
 impl DaemonUsbConnection {
+    /// Creates a new \`DaemonUsbConnection\`.
     pub fn new() -> std::io::Result<Self> {
         let (ep0, bulk_out, bulk_in) = init_functionfs()?;
         Ok(Self {

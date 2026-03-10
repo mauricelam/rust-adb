@@ -7,6 +7,7 @@ use windows_sys::Win32::Networking::WinSock::*;
 use windows_sys::Win32::Foundation::*;
 
 /// Maps a host errno value to the ADB wire protocol value.
+/// Ported from `errno_to_wire` in `sysdeps.h`.
 pub fn errno_to_wire(errno: i32) -> i32 {
     #[cfg(unix)]
     {
@@ -53,6 +54,7 @@ pub fn errno_to_wire(errno: i32) -> i32 {
 }
 
 /// Maps an ADB wire protocol errno value to the host errno value.
+/// Ported from `errno_from_wire` in `sysdeps.h`.
 pub fn errno_from_wire(wire_errno: i32) -> i32 {
     #[cfg(unix)]
     {

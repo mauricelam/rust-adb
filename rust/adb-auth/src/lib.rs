@@ -14,11 +14,8 @@
  * limitations under the License.
  */
 
-//! This crate ports the ADB authentication logic from the C++ implementation.
-//!
-//! Ported from:
-//! - `original/adb_auth.h`
-//! - `original/client/auth.cpp`
+//! ADB authentication logic.
+//! Ported from `adb_auth.h` and `auth.cpp`.
 
 use std::collections::HashMap;
 use std::fs;
@@ -33,10 +30,14 @@ use rsa::signature::{SignatureEncoding, Signer};
 use rust_adb_crypto::{new_rsa_2048, Key};
 use sha1::Sha1;
 
+/// AUTH token type.
 pub const ADB_AUTH_TOKEN: u32 = 1;
+/// AUTH signature type.
 pub const ADB_AUTH_SIGNATURE: u32 = 2;
+/// AUTH RSA public key type.
 pub const ADB_AUTH_RSAPUBLICKEY: u32 = 3;
 
+/// Size of the authentication token.
 pub const TOKEN_SIZE: usize = 20;
 
 lazy_static::lazy_static! {
@@ -54,7 +55,8 @@ fn get_user_key_path() -> anyhow::Result<PathBuf> {
     ))
 }
 
-/// Ported from `original/client/auth.cpp`: `generate_key` equivalent.
+/// Generates a new ADB RSA key pair.
+/// Ported from `generate_key` in `auth.cpp`.
 pub fn adb_auth_keygen(filename: &Path) -> anyhow::Result<()> {
     let key = new_rsa_2048()?;
     let pem = key.to_pem_string()?;
@@ -84,7 +86,8 @@ pub fn adb_auth_keygen(filename: &Path) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Ported from `original/client/auth.cpp`: `load_key` equivalent.
+/// Loads an ADB RSA private key from a file.
+/// Ported from `load_key` in `auth.cpp`.
 pub fn load_key(path: &Path) -> anyhow::Result<()> {
     let content = fs::read_to_string(path)?;
     let key = Key::from_pem(&content)?;
@@ -94,7 +97,8 @@ pub fn load_key(path: &Path) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Ported from `original/client/auth.cpp`: `adb_auth_init` equivalent.
+/// Initializes ADB authentication.
+/// Ported from `adb_auth_init` in `auth.cpp`.
 pub fn adb_auth_init() -> anyhow::Result<()> {
     let path = get_user_key_path()?;
     if !path.exists() {
@@ -107,7 +111,8 @@ pub fn adb_auth_init() -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Ported from `original/client/auth.cpp`: `adb_auth_sign` equivalent.
+/// Signs an authentication token using a private key.
+/// Ported from `adb_auth_sign` in `auth.cpp`.
 pub fn adb_auth_sign(key: &Key, token: &[u8]) -> anyhow::Result<Vec<u8>> {
     let signing_key = SigningKey::<Sha1>::new_unprefixed(key.privkey().clone());
     let signature = signing_key
@@ -116,7 +121,8 @@ pub fn adb_auth_sign(key: &Key, token: &[u8]) -> anyhow::Result<Vec<u8>> {
     Ok(signature.to_vec())
 }
 
-/// Ported from `original/client/auth.cpp`: `send_auth_response` equivalent.
+/// Creates an authentication response packet.
+/// Ported from `send_auth_response` in `auth.cpp`.
 pub fn send_auth_response(token: &[u8], key: &Key) -> anyhow::Result<Apacket> {
     let signature = adb_auth_sign(key, token)?;
 

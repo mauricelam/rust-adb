@@ -1,24 +1,35 @@
+//! TLS connection support for ADB.
+
 use std::io::{Read, Write};
 use std::net::TcpStream;
 use std::sync::{Arc, Mutex};
 use std::time::SystemTime;
 
-/// Ported from original/tls/include/adb/tls/tls_connection.h: `enum class Role`
+/// Role of the TLS participant.
+/// Ported from `Role` in `tls_connection.h`.
 pub enum Role {
+    /// Server role (usually the daemon).
     Server,
+    /// Client role (usually the host).
     Client,
 }
 
-/// Ported from original/tls/include/adb/tls/tls_connection.h: `enum class TlsError`
+/// Result of a TLS handshake.
+/// Ported from `TlsError` in `tls_connection.h`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TlsError {
+    /// Handshake succeeded.
     Success,
+    /// Handshake failed because the certificate was rejected.
     CertificateRejected,
+    /// Handshake failed because the peer rejected our certificate.
     PeerRejectedCertificate,
+    /// Handshake failed for an unknown reason.
     UnknownFailure,
 }
 
-/// Ported from original/tls/include/adb/tls/tls_connection.h: `class TlsConnection`
+/// A TLS connection wrapper.
+/// Ported from `TlsConnection` in `tls_connection.h`.
 /// This struct wraps rustls to provide an ADB-compatible TLS connection API.
 pub struct TlsConnection {
     role: Role,
@@ -38,8 +49,8 @@ struct TlsConfig {
 }
 
 impl TlsConnection {
-    /// Ported from original/tls/include/adb/tls/tls_connection.h:
-    /// `static std::unique_ptr<TlsConnection> Create(Role role, std::string_view cert, std::string_view priv_key, android::base::borrowed_fd fd);`
+    /// Creates a new `TlsConnection`.
+    /// Ported from `TlsConnection::Create` in `tls_connection.h`.
     pub fn create(role: Role, cert: &str, priv_key: &str, stream: TcpStream) -> anyhow::Result<Self> {
         if cert.is_empty() || priv_key.is_empty() {
             return Err(anyhow::anyhow!("Empty cert or key"));
@@ -70,7 +81,8 @@ impl TlsConnection {
         })
     }
 
-    /// Ported from original/tls/include/adb/tls/tls_connection.h: `virtual bool AddTrustedCertificate(std::string_view cert) = 0;`
+    /// Adds a trusted certificate for verification.
+    /// Ported from `TlsConnection::AddTrustedCertificate` in `tls_connection.h`.
     pub fn add_trusted_certificate(&mut self, cert: &str) -> bool {
         if let Ok(certs) = rustls_pemfile::certs(&mut cert.as_bytes()) {
             let mut config = self.config.lock().unwrap();
@@ -83,7 +95,8 @@ impl TlsConnection {
         }
     }
 
-    /// Ported from original/tls/include/adb/tls/tls_connection.h: `virtual void SetCertVerifyCallback(CertVerifyCb cb) = 0;`
+    /// Sets a callback to verify the peer's certificate.
+    /// Ported from `TlsConnection::SetCertVerifyCallback` in `tls_connection.h`.
     pub fn set_cert_verify_callback<F>(&mut self, cb: F)
     where
         F: Fn() -> bool + Send + Sync + 'static,
@@ -91,12 +104,14 @@ impl TlsConnection {
         self.config.lock().unwrap().cert_verify_callback = Some(Box::new(cb));
     }
 
-    /// Ported from original/tls/include/adb/tls/tls_connection.h: `virtual void SetClientCAList(STACK_OF(X509_NAME) * ca_list) = 0;`
+    /// Sets the list of client CAs.
+    /// Ported from `TlsConnection::SetClientCAList` in `tls_connection.h`.
     pub fn set_client_ca_list(&mut self, ca_list: Vec<Vec<u8>>) {
         self.config.lock().unwrap().ca_list = ca_list.into_iter().map(rustls::DistinguishedName::from).collect();
     }
 
-    /// Ported from original/tls/include/adb/tls/tls_connection.h: `virtual void SetCertificateCallback(SetCertCb cb) = 0;`
+    /// Sets a callback to be called when a certificate is needed.
+    /// Ported from `TlsConnection::SetCertificateCallback` in `tls_connection.h`.
     pub fn set_certificate_callback<F>(&mut self, cb: F)
     where
         F: Fn(&[Vec<u8>]) -> Option<(Vec<rustls::Certificate>, rustls::PrivateKey)> + Send + Sync + 'static,
@@ -104,7 +119,8 @@ impl TlsConnection {
         self.config.lock().unwrap().cert_callback = Some(Box::new(cb));
     }
 
-    /// Ported from original/tls/include/adb/tls/tls_connection.h: `virtual std::vector<uint8_t> ExportKeyingMaterial(size_t length) = 0;`
+    /// Exports keying material from the TLS session.
+    /// Ported from `TlsConnection::ExportKeyingMaterial` in `tls_connection.h`.
     pub fn export_keying_material(&self, length: usize) -> Vec<u8> {
         let mut out = vec![0u8; length];
         if let Some(conn) = &self.connection {
@@ -118,12 +134,14 @@ impl TlsConnection {
         Vec::new()
     }
 
-    /// Ported from original/tls/include/adb/tls/tls_connection.h: `virtual void EnableClientPostHandshakeCheck(bool enable) = 0;`
+    /// Enables or disables post-handshake checking.
+    /// Ported from `TlsConnection::EnableClientPostHandshakeCheck` in `tls_connection.h`.
     pub fn enable_client_post_handshake_check(&mut self, enable: bool) {
         self.post_handshake_check = enable;
     }
 
-    /// Ported from original/tls/include/adb/tls/tls_connection.h: `virtual TlsError DoHandshake() = 0;`
+    /// Performs the TLS handshake.
+    /// Ported from `TlsConnection::DoHandshake` in `tls_connection.h`.
     pub fn do_handshake(&mut self) -> TlsError {
         let config_lock = self.config.lock().unwrap();
 
@@ -187,7 +205,8 @@ impl TlsConnection {
         TlsError::Success
     }
 
-    /// Ported from original/tls/include/adb/tls/tls_connection.h: `virtual std::vector<uint8_t> ReadFully(size_t size) = 0;`
+    /// Reads exactly `size` bytes from the TLS connection.
+    /// Ported from `TlsConnection::ReadFully` in `tls_connection.h`.
     pub fn read_fully(&mut self, size: usize) -> Vec<u8> {
         let mut buf = vec![0u8; size];
         if self.read_fully_buf(&mut buf) {
@@ -197,7 +216,8 @@ impl TlsConnection {
         }
     }
 
-    /// Ported from original/tls/include/adb/tls/tls_connection.h: `virtual bool ReadFully(void* buf, size_t size) = 0;`
+    /// Reads data into the provided buffer from the TLS connection.
+    /// Ported from `TlsConnection::ReadFully` in `tls_connection.h`.
     pub fn read_fully_buf(&mut self, buf: &mut [u8]) -> bool {
         let conn = match &mut self.connection {
             Some(c) => c,
@@ -228,7 +248,8 @@ impl TlsConnection {
         true
     }
 
-    /// Ported from original/tls/include/adb/tls/tls_connection.h: `virtual bool WriteFully(std::string_view data) = 0;`
+    /// Writes data to the TLS connection.
+    /// Ported from `TlsConnection::WriteFully` in `tls_connection.h`.
     pub fn write_fully(&mut self, data: &[u8]) -> bool {
         let conn = match &mut self.connection {
             Some(c) => c,
@@ -253,7 +274,8 @@ impl TlsConnection {
         true
     }
 
-    /// Ported from original/tls/include/adb/tls/tls_connection.h: `static bool SetCertAndKey(SSL* ssl, std::string_view cert_chain, std::string_view priv_key);`
+    /// Sets the certificate and key for an existing connection.
+    /// Ported from `TlsConnection::SetCertAndKey` in `tls_connection.h`.
     pub fn set_cert_and_key(_conn: &mut rustls::Connection, _cert: &str, _priv_key: &str) -> bool {
         true
     }

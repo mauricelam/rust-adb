@@ -30,6 +30,7 @@ const TIM_FOYER: i32 = 1;
 const TIM_EVALUATION_MODE: i32 = 2;
 
 /// Returns whether adbd should enter trade-in mode.
+/// Ported from `should_enter_tradeinmode` in `tradeinmode.cpp`.
 pub fn should_enter_tradeinmode() -> bool {
     #[cfg(target_os = "android")]
     {
@@ -44,6 +45,7 @@ pub fn should_enter_tradeinmode() -> bool {
 }
 
 /// Enters trade-in mode.
+/// Ported from `enter_tradeinmode` in `tradeinmode.cpp`.
 pub fn enter_tradeinmode(_seclabel: &str) {
     #[cfg(target_os = "android")]
     {
@@ -59,16 +61,19 @@ pub fn enter_tradeinmode(_seclabel: &str) {
 }
 
 /// Returns whether the device is in trade-in mode.
+/// Ported from `is_in_tradeinmode` in `tradeinmode.cpp`.
 pub fn is_in_tradeinmode() -> bool {
     IN_TRADEINMODE.load(Ordering::SeqCst)
 }
 
 /// Returns whether the device is in trade-in evaluation mode.
+/// Ported from `is_in_tradein_evaluation_mode` in `tradeinmode.cpp`.
 pub fn is_in_tradein_evaluation_mode() -> bool {
     get_int_property(K_TRADEIN_MODE_PROP, TIM_UNSET) == TIM_EVALUATION_MODE
 }
 
 /// Validates if a command is allowed in trade-in mode.
+/// Ported from `allow_tradeinmode_command` in `tradeinmode.cpp`.
 pub fn allow_tradeinmode_command(name: &str) -> bool {
     #[cfg(target_os = "android")]
     {

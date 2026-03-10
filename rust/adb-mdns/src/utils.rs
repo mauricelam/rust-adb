@@ -14,15 +14,20 @@
  * limitations under the License.
  */
 
-/// Ported from original/client/mdns_utils.h: `struct MdnsInstance`
+/// Represents an MDNS instance.
+/// Ported from `MdnsInstance` in `client/mdns_utils.h`.
 #[derive(Debug, PartialEq, Eq)]
 pub struct MdnsInstance {
+    /// The name of the instance.
     pub instance_name: String,
+    /// The name of the service.
     pub service_name: String,
+    /// The transport type (e.g., "tcp", "udp").
     pub transport_type: String,
 }
 
 impl MdnsInstance {
+    /// Creates a new `MdnsInstance`.
     pub fn new(instance_name: &str, service_name: &str, transport_type: &str) -> Self {
         Self {
             instance_name: instance_name.to_string(),
@@ -32,7 +37,8 @@ impl MdnsInstance {
     }
 }
 
-/// Ported from original/client/mdns_utils.cpp: `mdns_parse_instance_name`
+/// Parses an MDNS instance name into its components.
+/// Ported from `mdns_parse_instance_name` in `client/mdns_utils.cpp`.
 pub fn mdns_parse_instance_name(mut name: &str) -> Option<MdnsInstance> {
     if name.is_empty() {
         return None;
@@ -96,7 +102,8 @@ pub fn mdns_parse_instance_name(mut name: &str) -> Option<MdnsInstance> {
     }
 }
 
-/// Ported from original/client/mdns_utils.cpp: `is_enabled`
+/// Returns true if MDNS is enabled.
+/// Ported from `is_enabled` in `client/mdns_utils.cpp`.
 pub fn is_mdns_enabled() -> bool {
     std::env::var("ADB_MDNS").map(|v| v != "0").unwrap_or(true)
 }

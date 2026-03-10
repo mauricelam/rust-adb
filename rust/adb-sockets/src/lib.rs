@@ -15,7 +15,7 @@
  */
 
 //! This crate provides a Rust implementation of ADB's socket management logic.
-//! It is ported from `original/socket.h` and `original/sockets.cpp`.
+//! Ported from `socket.h` and `sockets.cpp`.
 
 use adb_protocol::{A_CLSE, A_OKAY, A_OPEN, A_WRTE, INITIAL_DELAYED_ACK_BYTES, MAX_PAYLOAD};
 use adb_types::{Apacket, Block, IoVector};
@@ -184,19 +184,33 @@ pub struct LocalSocket {
 
 /// Inner state of a [`LocalSocket`].
 struct LocalSocketInner {
+    /// Unique ID of the socket.
     id: u32,
+    /// The file descriptor being monitored.
     fd: Option<Arc<OwnedFd>>,
+    /// Queue of data to be written to the file descriptor.
     packet_queue: IoVector,
+    /// Peer socket in the connection.
     peer: Option<Weak<dyn Socket>>,
+    /// Associated transport.
     transport: Option<Arc<dyn Transport>>,
+    /// Whether the socket is in the process of closing.
     closing: bool,
+    /// Whether a write error has occurred.
     has_write_error: bool,
+    /// Registry managing this socket.
     registry: Weak<SocketRegistry>,
+    /// MIO registry for event loop registration.
     mio_registry: mio::Registry,
+    /// Handle to the fdevent loop.
     fdevent_handle: FdeventHandle,
+    /// MIO token for this socket.
     token: Token,
+    /// Currently registered interests.
     current_interests: Option<Interest>,
+    /// Bytes available to send for delayed-ACK.
     available_send_bytes: Option<i64>,
+    /// Buffer for reading data from the file descriptor.
     read_buffer: Vec<u8>,
 }
 
@@ -587,7 +601,7 @@ impl FdeventHandler for LocalSocket {
 }
 
 /// A remote socket bound to a transport.
-/// Ported from `asocket` with remote socket fields in `original/socket.h`.
+/// Ported from `asocket` with remote socket fields in `socket.h`.
 pub struct RemoteSocket {
     id: u32,
     inner: Mutex<RemoteSocketInner>,

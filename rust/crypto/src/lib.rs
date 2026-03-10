@@ -1,3 +1,6 @@
+//! ADB cryptography utilities.
+//! Ported from `crypto`.
+
 use anyhow::anyhow;
 use base64::Engine;
 use num_bigint_dig::BigUint;
@@ -5,25 +8,34 @@ use rsa::pkcs8::{DecodePrivateKey, EncodePrivateKey};
 use rsa::{traits::PublicKeyParts, RsaPrivateKey};
 
 /// Represents a cryptographic key, wrapping an RSA private key.
-/// Ported from original/crypto/include/adb/crypto/key.h
+/// Ported from `crypto/include/adb/crypto/key.h`.
 pub struct Key(RsaPrivateKey);
 
+/// Public key in Android's custom format.
+/// Ported from `AndroidPubkey` in `crypto/include/adb/crypto/key.h`.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct AndroidPubkey {
+    /// Size of the modulus in 32-bit words.
     pub modulus_size_words: u32,
+    /// -1 / n[0] mod 2^32.
     pub n0inv: u32,
+    /// The modulus as a little-endian byte array.
     pub modulus: [u8; 256],
+    /// R^2 mod N.
     pub rr: [u8; 256],
+    /// The public exponent.
     pub exponent: u32,
 }
 
 impl Key {
+    /// Creates a `Key` from a PKCS#8 PEM-encoded string.
     pub fn from_pem(pem: &str) -> anyhow::Result<Self> {
         let key = RsaPrivateKey::from_pkcs8_pem(pem)?;
         Ok(Key(key))
     }
 
+    /// Returns a reference to the underlying RSA private key.
     pub fn privkey(&self) -> &RsaPrivateKey {
         &self.0
     }
@@ -111,10 +123,11 @@ fn calculate_n0inv(n0: u32) -> u32 {
     inv
 }
 
+/// Length of a SHA256 digest in bytes.
 pub const SHA256_DIGEST_LENGTH: usize = 32;
 
 /// Converts SHA256 bits to a hex string representation.
-/// Ported from original/tls/adb_ca_list.cpp: `std::string SHA256BitsToHexString(std::string_view sha256)`
+/// Ported from `SHA256BitsToHexString` in `tls/adb_ca_list.cpp`.
 pub fn sha256_bits_to_hex_string(sha256: &[u8]) -> String {
     assert_eq!(sha256.len(), SHA256_DIGEST_LENGTH);
     let mut s = String::with_capacity(SHA256_DIGEST_LENGTH * 2);
@@ -125,7 +138,7 @@ pub fn sha256_bits_to_hex_string(sha256: &[u8]) -> String {
 }
 
 /// Converts a SHA256 hex string back to bits.
-/// Ported from original/tls/adb_ca_list.cpp: `std::optional<std::string> SHA256HexStringToBits(std::string_view sha256_str)`
+/// Ported from `SHA256HexStringToBits` in `tls/adb_ca_list.cpp`.
 pub fn sha256_hex_string_to_bits(sha256_str: &str) -> Option<Vec<u8>> {
     if sha256_str.len() != SHA256_DIGEST_LENGTH * 2 {
         return None;
@@ -142,7 +155,7 @@ pub fn sha256_hex_string_to_bits(sha256_str: &str) -> Option<Vec<u8>> {
 use rcgen::{Certificate, DistinguishedName};
 
 /// Generates a new 2048-bit RSA key.
-/// Ported from original/crypto/rsa_2048_key.cpp: `std::optional<Key> CreateRSA2048Key()`
+/// Ported from `CreateRSA2048Key` in `crypto/rsa_2048_key.cpp`.
 pub fn new_rsa_2048() -> anyhow::Result<Key> {
     let mut rng = rand::thread_rng();
     let key = RsaPrivateKey::new(&mut rng, 2048)?;
@@ -150,7 +163,7 @@ pub fn new_rsa_2048() -> anyhow::Result<Key> {
 }
 
 /// Generates a self-signed X.509 certificate for the given key.
-/// Ported from original/crypto/x509_generator.cpp: `bssl::UniquePtr<X509> GenerateX509Certificate(EVP_PKEY* pkey)`
+/// Ported from `GenerateX509Certificate` in `crypto/x509_generator.cpp`.
 pub fn generate_x509_certificate(key: &Key) -> anyhow::Result<Certificate> {
     let mut params = rcgen::CertificateParams::default();
     let mut distinguished_name = DistinguishedName::new();
@@ -174,13 +187,13 @@ pub fn generate_x509_certificate(key: &Key) -> anyhow::Result<Certificate> {
 }
 
 /// Returns the X.509 certificate as a PEM encoded string.
-/// Ported from original/crypto/x509_generator.cpp: `std::string X509ToPEMString(X509* x509)`
+/// Ported from `X509ToPEMString` in `crypto/x509_generator.cpp`.
 pub fn x509_to_pem_string(cert: &Certificate) -> anyhow::Result<String> {
     Ok(cert.serialize_pem()?)
 }
 
 /// Creates a CA issuer Distinguished Name from an encoded public key.
-/// Ported from original/tls/adb_ca_list.cpp: `bssl::UniquePtr<X509_NAME> CreateCAIssuerFromEncodedKey(std::string_view key)`
+/// Ported from `CreateCAIssuerFromEncodedKey` in `tls/adb_ca_list.cpp`.
 pub fn create_ca_issuer_from_encoded_key(key: &str) -> anyhow::Result<Vec<u8>> {
     if key.is_empty() {
         return Err(anyhow!("Key cannot be empty"));
@@ -203,7 +216,7 @@ pub fn create_ca_issuer_from_encoded_key(key: &str) -> anyhow::Result<Vec<u8>> {
 use x509_parser::prelude::FromDer;
 
 /// Parses an encoded public key from a CA issuer Distinguished Name.
-/// Ported from original/tls/adb_ca_list.cpp: `std::optional<std::string> ParseEncodedKeyFromCAIssuer(X509_NAME* issuer)`
+/// Ported from `ParseEncodedKeyFromCAIssuer` in `tls/adb_ca_list.cpp`.
 pub fn parse_encoded_key_from_ca_issuer(der: &[u8]) -> anyhow::Result<Option<String>> {
     let (_, subject) = x509_parser::x509::X509Name::from_der(der)
         .map_err(|e| anyhow!("Failed to parse Name: {}", e))?;

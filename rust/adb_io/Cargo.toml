@@ -8,3 +8,6 @@ edition = "2021"
 [dev-dependencies]
 libc = "0.2"
 tempfile = "3"
+
+[lints]
+workspace = true

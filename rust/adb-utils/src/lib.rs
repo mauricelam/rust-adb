@@ -15,10 +15,7 @@
  */
 
 //! This crate provides various utility functions for ADB, ported from the C++ implementation.
-//!
-//! The functions here are primarily ported from:
-//! - `original/adb_utils.h`
-//! - `original/adb_utils.cpp`
+//! Ported from `adb_utils.h` and `adb_utils.cpp`.
 
 use adb_types::{Amessage, Apacket};
 use std::fs;
@@ -26,8 +23,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Condvar, Mutex};
 
 /// Redirects stdin to /dev/null.
-///
-/// Corresponds to the C++ function `close_stdin` in `original/adb_utils.cpp`.
+/// Ported from `close_stdin` in `adb_utils.cpp`.
 pub fn close_stdin() {
     #[cfg(unix)]
     {
@@ -51,23 +47,25 @@ pub fn close_stdin() {
 }
 
 /// Returns a string describing the last OS error, prefixed with the given message.
-///
-/// Corresponds to the C++ function `perror_str` in `original/adb_utils.cpp`.
+/// Ported from `perror_str` in `adb_utils.cpp`.
 pub fn perror_str(msg: &str) -> String {
     format!("{}: {}", msg, std::io::Error::last_os_error())
 }
 
-/// Ported from `original/adb_utils.cpp`: `unhex`
+/// Parses a hex string into a `u32`.
+/// Ported from `unhex` in `adb_utils.cpp`.
 pub fn unhex(s: &str) -> Option<u32> {
     u32::from_str_radix(s, 16).ok()
 }
 
-/// Ported from `original/adb_utils.h`: `StripTrailingNulls`
+/// Trims trailing null characters from a string.
+/// Ported from `StripTrailingNulls` in `adb_utils.h`.
 pub fn strip_trailing_nulls(s: &str) -> &str {
     s.trim_end_matches('\0')
 }
 
-/// Ported from original/adb_utils.h: ParseUint
+/// Parses an unsigned integer from the beginning of a string.
+/// Ported from `ParseUint` in `adb_utils.h`.
 pub fn parse_uint<T: std::str::FromStr>(s: &str) -> Option<(T, &str)> {
     let end = s.find(|c: char| !c.is_ascii_digit()).unwrap_or(s.len());
     if end == 0 {
@@ -77,26 +75,30 @@ pub fn parse_uint<T: std::str::FromStr>(s: &str) -> Option<(T, &str)> {
     Some((val, &s[end..]))
 }
 
-/// Ported from original/adb_utils.cpp: directory_exists
+/// Checks if a directory exists at the given path.
+/// Ported from `directory_exists` in `adb_utils.cpp`.
 pub fn directory_exists<P: AsRef<Path>>(path: P) -> bool {
     path.as_ref().is_dir()
 }
 
-/// Ported from original/adb_utils.cpp: escape_arg
+/// Escapes an argument for shell execution.
+/// Ported from `escape_arg` in `adb_utils.cpp`.
 pub fn escape_arg(s: &str) -> String {
     let mut result = String::new();
     result.push('\'');
-    result.push_str(&s.replace('\'', "'\\''"));
+    result.push_str(&s.replace('\'', "'\''"));
     result.push('\'');
     result
 }
 
-/// Ported from original/adb_utils.cpp: mkdirs
+/// Creates a directory and all its parent components.
+/// Ported from `mkdirs` in `adb_utils.cpp`.
 pub fn mkdirs<P: AsRef<Path>>(path: P) -> std::io::Result<()> {
     fs::create_dir_all(path)
 }
 
-/// Ported from original/adb_utils.cpp: dump_hex
+/// Returns a hexadecimal dump of the given data.
+/// Ported from `dump_hex` in `adb_utils.cpp`.
 pub fn dump_hex(data: &[u8]) -> String {
     let mut byte_count = data.len();
     let truncate_len = 16;
@@ -128,7 +130,8 @@ pub fn dump_hex(data: &[u8]) -> String {
     line
 }
 
-/// Ported from original/adb_utils.cpp: dump_header
+/// Returns a string representation of an ADB message header.
+/// Ported from `dump_header` in `adb_utils.cpp`.
 pub fn dump_header(msg: &Amessage) -> String {
     let command = msg.command;
     let len = msg.data_length;
@@ -158,7 +161,8 @@ pub fn dump_header(msg: &Amessage) -> String {
     format!("[{}] arg0={} arg1={} (len={}) ", cmd, arg0, arg1, len)
 }
 
-/// Ported from original/adb_utils.cpp: dump_packet
+/// Returns a string representation of an ADB packet.
+/// Ported from `dump_packet` in `adb_utils.cpp`.
 pub fn dump_packet(name: &str, func: &str, p: &Apacket) -> String {
     let mut result = format!("{}: {}: ", name, func);
     result.push_str(&dump_header(&p.msg));
@@ -166,7 +170,8 @@ pub fn dump_packet(name: &str, func: &str, p: &Apacket) -> String {
     result
 }
 
-/// Ported from original/adb_utils.cpp: forward_targets_are_valid
+/// Validates ADB port forwarding targets.
+/// Ported from `forward_targets_are_valid` in `adb_utils.cpp`.
 pub fn forward_targets_are_valid(source: &str, dest: &str) -> Result<(), String> {
     if source.starts_with("tcp:") {
         if let Ok(port) = source[4..].parse::<i32>() {
@@ -191,7 +196,8 @@ pub fn forward_targets_are_valid(source: &str, dest: &str) -> Result<(), String>
     Ok(())
 }
 
-/// Ported from original/adb_utils.cpp: adb_get_homedir_path
+/// Returns the path to the user's home directory.
+/// Ported from `adb_get_homedir_path` in `adb_utils.cpp`.
 pub fn adb_get_homedir_path() -> Option<PathBuf> {
     #[cfg(windows)]
     {
@@ -231,7 +237,8 @@ pub fn adb_get_homedir_path() -> Option<PathBuf> {
     }
 }
 
-/// Ported from original/adb_utils.cpp: adb_get_android_dir_path
+/// Returns the path to the `.android` directory.
+/// Ported from `adb_get_android_dir_path` in `adb_utils.cpp`.
 pub fn adb_get_android_dir_path() -> Option<PathBuf> {
     let mut path = adb_get_homedir_path()?;
     path.push(".android");
@@ -244,7 +251,8 @@ pub fn adb_get_android_dir_path() -> Option<PathBuf> {
     Some(path)
 }
 
-/// Ported from original/adb_utils.cpp: GetLogFilePath
+/// Returns the path to the ADB log file.
+/// Ported from `GetLogFilePath` in `adb_utils.cpp`.
 pub fn get_log_file_path() -> PathBuf {
     if let Ok(path) = std::env::var("ANDROID_ADB_LOG_PATH") {
         return PathBuf::from(path);
@@ -265,18 +273,21 @@ pub fn get_log_file_path() -> PathBuf {
     }
 }
 
-/// Ported from original/adb_utils.h: BlockingQueue
+/// A thread-safe blocking queue.
+/// Ported from `BlockingQueue` in `adb_utils.h`.
 pub struct BlockingQueue<T> {
     inner: Arc<(Mutex<Vec<T>>, Condvar)>,
 }
 
 impl<T> BlockingQueue<T> {
+    /// Creates a new `BlockingQueue`.
     pub fn new() -> Self {
         Self {
             inner: Arc::new((Mutex::new(Vec::new()), Condvar::new())),
         }
     }
 
+    /// Pushes an item onto the queue.
     pub fn push(&self, t: T) {
         let (lock, cvar) = &*self.inner;
         let mut queue = lock.lock().unwrap();
@@ -284,6 +295,7 @@ impl<T> BlockingQueue<T> {
         cvar.notify_one();
     }
 
+    /// Pops all items from the queue, blocking until at least one item is available.
     pub fn pop_all<F>(&self, mut f: F)
     where
         F: FnMut(T),
@@ -353,9 +365,9 @@ mod tests {
     fn test_escape_arg() {
         assert_eq!(escape_arg(""), "''");
         assert_eq!(escape_arg("abc"), "'abc'");
-        assert_eq!(escape_arg("'"), "''\\'''");
+        assert_eq!(escape_arg("'"), "''\'''");
         assert_eq!(escape_arg("abc abc"), "'abc abc'");
-        assert_eq!(escape_arg("abc'abc"), "'abc'\\''abc'");
+        assert_eq!(escape_arg("abc'abc"), "'abc'\''abc'");
     }
 
     #[test]

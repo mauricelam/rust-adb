@@ -24,16 +24,26 @@ use std::sync::{Arc, Mutex, OnceLock, Weak};
 static JDWP_OBSERVERS: OnceLock<Mutex<Vec<Box<dyn Fn() + Send + Sync>>>> = OnceLock::new();
 
 /// Represents a process that can be tracked by JDWP services.
+/// Ported from `ProcessInfo` in `jdwp_service.cpp`.
 #[derive(Clone, Debug, Default)]
 pub struct ProcessInfo {
+    /// The process ID.
     pub pid: u64,
+    /// Whether the process is debuggable.
     pub debuggable: bool,
+    /// Whether the process is profileable.
     pub profileable: bool,
+    /// The process architecture.
     pub architecture: String,
+    /// The user ID.
     pub user_id: Option<u64>,
+    /// The process name.
     pub process_name: Option<String>,
+    /// The package names associated with the process.
     pub package_names: Vec<String>,
+    /// Whether the process is waiting for a debugger.
     pub waiting_for_debugger: Option<bool>,
+    /// The Unix user ID.
     pub uid: Option<u64>,
 }
 
@@ -48,30 +58,43 @@ pub enum TrackerKind {
 
 // Protobuf messages for "track-app" service.
 // Manually defined to match original/proto/app_processes.proto.
+
+/// A process entry in the "track-app" protobuf output.
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct ProcessEntry {
+    /// The process ID.
     #[prost(int64, tag = "1")]
     pub pid: i64,
+    /// Whether the process is debuggable.
     #[prost(bool, tag = "2")]
     pub debuggable: bool,
+    /// Whether the process is profileable.
     #[prost(bool, tag = "3")]
     pub profileable: bool,
+    /// The process architecture.
     #[prost(string, tag = "4")]
     pub architecture: ::prost::alloc::string::String,
+    /// The user ID.
     #[prost(int64, optional, tag = "5")]
     pub user_id: ::core::option::Option<i64>,
+    /// The process name.
     #[prost(string, optional, tag = "6")]
     pub process_name: ::core::option::Option<::prost::alloc::string::String>,
+    /// The package names associated with the process.
     #[prost(string, repeated, tag = "7")]
     pub package_names: ::prost::alloc::vec::Vec<::prost::alloc::string::String>,
+    /// Whether the process is waiting for a debugger.
     #[prost(bool, optional, tag = "8")]
     pub waiting_for_debugger: ::core::option::Option<bool>,
+    /// The Unix user ID.
     #[prost(int64, optional, tag = "9")]
     pub uid: ::core::option::Option<i64>,
 }
 
+/// A list of app processes in the "track-app" protobuf output.
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct AppProcesses {
+    /// The list of process entries.
     #[prost(message, repeated, tag = "1")]
     pub process: ::prost::alloc::vec::Vec<ProcessEntry>,
 }
@@ -142,7 +165,7 @@ pub fn get_app_process_list() -> Vec<u8> {
 }
 
 /// A service that tracks JDWP processes on the device.
-/// Ported from `jdwp_tracker` in `original/daemon/jdwp_service.cpp`.
+/// Ported from `jdwp_tracker` in `jdwp_service.cpp`.
 pub struct JdwpTracker {
     id: u32,
     inner: Mutex<JdwpTrackerInner>,
@@ -156,6 +179,7 @@ struct JdwpTrackerInner {
 }
 
 impl JdwpTracker {
+    /// Creates a new `JdwpTracker`.
     pub fn new(id: u32, registry: Arc<SocketRegistry>, kind: TrackerKind, track: bool) -> Self {
         Self {
             id,

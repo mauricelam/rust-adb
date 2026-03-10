@@ -1,3 +1,6 @@
+//! Android Debug Bridge (Rust implementation)
+//! Ported from `client/main.cpp` and `commandline.cpp`.
+
 mod adb_client;
 mod bugreport;
 

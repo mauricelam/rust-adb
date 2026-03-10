@@ -35,27 +35,46 @@
 use log::LevelFilter;
 use std::env;
 
+/// Represents the various trace tags available in ADB.
+/// Ported from \`AdbTrace\` enum in \`adb_trace.h\`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AdbTrace {
+    /// ADB general trace.
     Adb,
+    /// Sockets trace.
     Sockets,
+    /// Packets trace.
     Packets,
+    /// Transport trace.
     Transport,
+    /// Read/Write/Execute trace.
     Rwx,
+    /// USB trace.
     Usb,
+    /// File sync trace.
     Sync,
+    /// System-dependent abstractions trace.
     Sysdeps,
+    /// JDWP trace.
     Jdwp,
+    /// Services trace.
     Services,
+    /// Authentication trace.
     Auth,
+    /// fdevent looper trace.
     Fdevent,
+    /// Shell trace.
     Shell,
+    /// Incremental installation trace.
     Incremental,
+    /// MDNS discovery trace.
     Mdns,
+    /// MDNS stack trace.
     MdnsStack,
 }
 
 impl AdbTrace {
+    /// Returns the string representation of the trace tag.
     pub fn as_str(&self) -> &'static str {
         match self {
             AdbTrace::Adb => "adb",
@@ -77,6 +96,7 @@ impl AdbTrace {
         }
     }
 
+    /// Parses a string into an \`AdbTrace\` variant.
     pub fn from_str(s: &str) -> Option<Self> {
         match s {
             "adb" => Some(AdbTrace::Adb),
@@ -99,6 +119,7 @@ impl AdbTrace {
         }
     }
 
+    /// Returns all available trace tags.
     pub fn all_tags() -> Vec<Self> {
         vec![
             AdbTrace::Adb,

@@ -1,3 +1,5 @@
+!! Test suite documentation.
+
 use adb_mdns::{AdbMdns};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};

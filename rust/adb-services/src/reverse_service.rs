@@ -36,6 +36,8 @@ fn reverse_forwards() -> &'static Mutex<HashMap<u64, HashMap<String, ReverseForw
     REVERSE_FORWARDS.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
+/// Handles reverse forwarding service requests.
+/// Ported from `reverse_service.cpp`.
 pub fn reverse_service(fd: OwnedFd, command: &str, transport: Arc<ATransport>) {
     let mut file = std::fs::File::from(fd);
     let tid = transport.id;

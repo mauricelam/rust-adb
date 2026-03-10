@@ -14,12 +14,8 @@
  * limitations under the License.
  */
 
-//! ADB Transport Layer
-//!
-//! Ported from:
-//! - original/transport.h
-//! - original/transport.cpp
-//! - original/adb.cpp (parse_banner)
+//! ADB Transport Layer.
+//! Ported from `transport.h`, `transport.cpp`, and `adb.cpp`.
 
 use std::collections::VecDeque;
 
@@ -35,55 +31,89 @@ use adb_sockets::{Socket, Transport};
 use adb_types::{calculate_apacket_checksum, Amessage, Apacket, Block};
 use rust_adb_crypto::Key;
 
+/// TLS connection implementation for ADB.
 pub mod tls_connection;
 
-/// Ported from original/adb.h: `using TransportId = uint64_t;`
+/// Transport identifier.
+/// Ported from `TransportId` in `adb.h`.
 pub type TransportId = u64;
 
 static NEXT_TRANSPORT_ID: AtomicU64 = AtomicU64::new(1);
 
+/// Returns a new unique transport identifier.
 /// Ported from original/transport.cpp: `TransportId NextTransportId()`
 pub fn next_transport_id() -> TransportId {
     NEXT_TRANSPORT_ID.fetch_add(1, Ordering::Relaxed)
 }
 
+/// A set of features supported by a transport.
 /// Ported from original/transport.h: `using FeatureSet = std::vector<std::string>;`
 pub type FeatureSet = Vec<String>;
 
+/// Output format for the tracker service.
 /// Ported from original/transport.h: `enum TrackerOutputType`
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TrackerOutputType {
+    /// Short text format.
     ShortText,
+    /// Long text format.
     LongText,
+    /// Protobuf format.
     Protobuf,
+    /// Text-based Protobuf format.
     TextProtobuf,
 }
 
+/// Feature: shell v2.
 pub const FEATURE_SHELL2: &str = "shell_v2";
+/// Feature: cmd.
 pub const FEATURE_CMD: &str = "cmd";
+/// Feature: stat v2.
 pub const FEATURE_STAT2: &str = "stat_v2";
+/// Feature: ls v2.
 pub const FEATURE_LS2: &str = "ls_v2";
+/// Feature: libusb.
 pub const FEATURE_LIBUSB: &str = "libusb";
+/// Feature: push sync.
 pub const FEATURE_PUSH_SYNC: &str = "push_sync";
+/// Feature: apex.
 pub const FEATURE_APEX: &str = "apex";
+/// Feature: fixed push mkdir.
 pub const FEATURE_FIXED_PUSH_MKDIR: &str = "fixed_push_mkdir";
+/// Feature: abb.
 pub const FEATURE_ABB: &str = "abb";
+/// Feature: fixed push symlink timestamp.
 pub const FEATURE_FIXED_PUSH_SYMLINK_TIMESTAMP: &str = "fixed_push_symlink_timestamp";
+/// Feature: abb_exec.
 pub const FEATURE_ABB_EXEC: &str = "abb_exec";
+/// Feature: remount_shell.
 pub const FEATURE_REMOUNT_SHELL: &str = "remount_shell";
+/// Feature: track_app.
 pub const FEATURE_TRACK_APP: &str = "track_app";
+/// Feature: sendrecv_v2.
 pub const FEATURE_SENDRECV_V2: &str = "sendrecv_v2";
+/// Feature: sendrecv_v2_brotli.
 pub const FEATURE_SENDRECV_V2_BROTLI: &str = "sendrecv_v2_brotli";
+/// Feature: sendrecv_v2_lz4.
 pub const FEATURE_SENDRECV_V2_LZ4: &str = "sendrecv_v2_lz4";
+/// Feature: sendrecv_v2_zstd.
 pub const FEATURE_SENDRECV_V2_ZSTD: &str = "sendrecv_v2_zstd";
+/// Feature: sendrecv_v2_dry_run_send.
 pub const FEATURE_SENDRECV_V2_DRY_RUN_SEND: &str = "sendrecv_v2_dry_run_send";
+/// Feature: delayed_ack.
 pub const FEATURE_DELAYED_ACK: &str = "delayed_ack";
+/// Feature: openscreen_mdns.
 pub const FEATURE_OPENSCREEN_MDNS: &str = "openscreen_mdns";
+/// Feature: devicetracker_proto_format.
 pub const FEATURE_DEVICE_TRACKER_PROTO_FORMAT: &str = "devicetracker_proto_format";
+/// Feature: devraw.
 pub const FEATURE_DEVRAW: &str = "devraw";
+/// Feature: app_info.
 pub const FEATURE_APP_INFO: &str = "app_info";
+/// Feature: server_status.
 pub const FEATURE_SERVER_STATUS: &str = "server_status";
 
+/// Returns the set of features supported by this implementation.
 /// Ported from original/transport.cpp: `const FeatureSet& supported_features()`
 pub fn supported_features() -> &'static FeatureSet {
     static FEATURES: OnceLock<FeatureSet> = OnceLock::new();
@@ -119,11 +149,13 @@ pub fn supported_features() -> &'static FeatureSet {
     })
 }
 
+/// Converts a set of features to a comma-separated string.
 /// Ported from original/transport.cpp: `std::string FeatureSetToString(const FeatureSet& features)`
 pub fn feature_set_to_string(features: &FeatureSet) -> String {
     features.join(",")
 }
 
+/// Converts a comma-separated feature string back to a set of features.
 /// Ported from original/transport.cpp: `FeatureSet StringToFeatureSet(const std::string& features_string)`
 pub fn string_to_feature_set(features_string: &str) -> FeatureSet {
     if features_string.is_empty() {
@@ -132,36 +164,52 @@ pub fn string_to_feature_set(features_string: &str) -> FeatureSet {
     features_string.split(',').map(|s| s.to_string()).collect()
 }
 
+/// Checks if a feature can be used by both sides.
 /// Ported from original/transport.cpp: `bool CanUseFeature(const FeatureSet& feature_set, const std::string& feature)`
 pub fn can_use_feature(feature_set: &FeatureSet, feature: &str) -> bool {
     feature_set.iter().any(|f| f == feature) && supported_features().iter().any(|f| f == feature)
 }
 
+/// Result of a reconnection attempt.
 /// Ported from original/transport.h: `enum class ReconnectResult`
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ReconnectResult {
+    /// Retry the connection later.
     Retry,
+    /// Reconnection succeeded.
     Success,
+    /// Give up on the connection.
     Abort,
 }
 
+/// Callback type for reconnection logic.
 pub type ReconnectCallback = Box<dyn Fn(&ATransport) -> ReconnectResult + Send + Sync>;
 
 /// Callback for when a new public key needs authorization.
 pub type AuthPromptCallback = Arc<dyn Fn(&Arc<ATransport>, &str) + Send + Sync>;
 
+/// Trait for handling transport disconnection.
 pub trait DisconnectHandler: Send + Sync {
+    /// Called when the transport is disconnected.
     fn on_disconnect(&self, transport: &ATransport);
 }
 
-/// Ported from original/transport.h: `class atransport`
+/// Represents an ADB transport.
+/// Ported from `atransport` in `transport.h`.
 pub struct ATransport {
+    /// Unique identifier for this transport.
     pub id: TransportId,
+    /// Device serial number.
     pub serial: Mutex<String>,
+    /// Product name.
     pub product: Mutex<String>,
+    /// Model name.
     pub model: Mutex<String>,
+    /// Device name.
     pub device: Mutex<String>,
+    /// Device path.
     pub devpath: Mutex<String>,
+    /// Type of transport.
     pub transport_type: TransportType,
 
     kicked: AtomicBool,
@@ -176,22 +224,35 @@ pub struct ATransport {
     disconnects: Mutex<Vec<(u64, Box<dyn DisconnectHandler>)>>,
     next_disconnect_id: AtomicU64,
 
+    /// Whether this transport uses TLS.
     pub use_tls: AtomicBool,
+    /// TLS protocol version.
     pub tls_version: AtomicI32,
+    /// Queue of RSA keys for authentication.
     pub keys: Mutex<VecDeque<Arc<Key>>>,
 
+    /// Socket registry for this transport.
     pub registry: Mutex<Option<Arc<adb_sockets::SocketRegistry>>>,
+    /// fdevent looper for this transport.
     pub fdevent: Mutex<Option<Arc<Mutex<fdevent::fdevent::Fdevent>>>>,
+    /// Service socket creator for this transport.
     pub service_creator: Mutex<Option<Box<dyn ServiceSocketCreator>>>,
 
+    /// Authentication keys.
     pub auth_keys: Mutex<VecDeque<rust_adb_crypto::Key>>,
+    /// Number of failed authentication attempts.
     pub failed_auth_attempts: AtomicUsize,
+    /// Authorized key for the current session.
     pub auth_key: Mutex<String>,
+    /// Authentication token for the current session.
     pub auth_token: Mutex<[u8; adb_auth::TOKEN_SIZE]>,
+    /// Callback for manual authorization prompt.
     pub auth_prompt: Mutex<Option<AuthPromptCallback>>,
 }
 
+/// Trait for creating local service sockets.
 pub trait ServiceSocketCreator: Send + Sync {
+    /// Creates a local service socket for the given service name.
     fn create_local_service_socket(
         &self,
         name: &str,
@@ -200,6 +261,7 @@ pub trait ServiceSocketCreator: Send + Sync {
 }
 
 impl ATransport {
+    /// Creates a new `ATransport`.
     pub fn new(
         transport_type: TransportType,
         reconnect: ReconnectCallback,
@@ -236,6 +298,7 @@ impl ATransport {
         }
     }
 
+    /// Creates a new `ATransport` in the offline state.
     pub fn new_offline(transport_type: TransportType) -> Self {
         Self::new(
             transport_type,
@@ -244,6 +307,7 @@ impl ATransport {
         )
     }
 
+    /// Starts the transport connection.
     pub fn start(self: &Arc<Self>) -> bool {
         let conn = self.connection.lock().unwrap().clone();
         if let Some(conn) = conn {
@@ -253,6 +317,7 @@ impl ATransport {
         }
     }
 
+    /// Writes an ADB packet to the transport.
     pub fn write(&self, mut packet: Apacket) -> bool {
         packet.msg.magic = packet.msg.command ^ 0xffffffff;
         if self.get_protocol_version() >= adb_protocol::A_VERSION_SKIP_CHECKSUM as i32 {
@@ -268,6 +333,7 @@ impl ATransport {
         }
     }
 
+    /// Terminate the transport connection.
     pub fn kick(&self) {
         if !self.kicked.swap(true, Ordering::SeqCst) {
             if let Some(conn) = self.connection.lock().unwrap().as_ref() {
@@ -281,30 +347,36 @@ impl ATransport {
         }
     }
 
+    /// Returns true if the transport has been terminated.
     pub fn is_kicked(&self) -> bool {
         self.kicked.load(Ordering::SeqCst)
     }
 
+    /// Returns the current connection state.
     pub fn get_connection_state(&self) -> ConnectionState {
         ConnectionState::try_from(self.connection_state.load(Ordering::SeqCst))
             .unwrap_or(ConnectionState::Offline)
     }
 
+    /// Sets the connection state.
     pub fn set_connection_state(&self, state: ConnectionState) {
         self.connection_state.store(state as i32, Ordering::SeqCst);
         update_transports();
     }
 
+    /// Sets the underlying connection for the transport.
     pub fn set_connection(self: &Arc<Self>, connection: Arc<dyn Connection>) {
         connection.set_transport(Arc::downgrade(self));
         let mut conn_lock = self.connection.lock().unwrap();
         *conn_lock = Some(connection);
     }
 
+    /// Returns the first RSA key available for this transport.
     pub fn get_key(&self) -> Option<Arc<Key>> {
         self.keys.lock().unwrap().front().cloned()
     }
 
+    /// Handles a packet read from the connection.
     /// Ported from original/transport.cpp: `bool atransport::HandleRead(std::unique_ptr<apacket> p)`
     pub fn handle_read(self: &Arc<Self>, packet: Apacket) -> bool {
         println!("Handle read: cmd={:?}", packet.msg.command);
@@ -321,6 +393,7 @@ impl ATransport {
         true
     }
 
+    /// Handles a connection error.
     pub fn handle_error(&self, error: &str) {
         log::info!(
             "{}: connection terminated: {}",
@@ -330,15 +403,18 @@ impl ATransport {
         self.kick();
     }
 
+    /// Checks if the transport supports the given feature.
     pub fn has_feature(&self, feature: &str) -> bool {
         self.features.lock().unwrap().contains(&feature.to_string())
     }
 
+    /// Sets the set of features supported by the remote side.
     pub fn set_features(&self, features_string: &str) {
         let mut features = self.features.lock().unwrap();
         *features = string_to_feature_set(features_string);
     }
 
+    /// Adds a handler to be called when the transport is disconnected.
     pub fn add_disconnect(&self, handler: Box<dyn DisconnectHandler>) -> u64 {
         let mut disconnects = self.disconnects.lock().unwrap();
         let id = self.next_disconnect_id.fetch_add(1, Ordering::SeqCst);
@@ -346,11 +422,13 @@ impl ATransport {
         id
     }
 
+    /// Removes a disconnect handler.
     pub fn remove_disconnect(&self, id: u64) {
         let mut disconnects = self.disconnects.lock().unwrap();
         disconnects.retain(|(hid, _)| *hid != id);
     }
 
+    /// Runs all registered disconnect handlers.
     pub fn run_disconnects(&self) {
         let handlers: Vec<(u64, Box<dyn DisconnectHandler>)> =
             self.disconnects.lock().unwrap().drain(..).collect();
@@ -359,10 +437,12 @@ impl ATransport {
         }
     }
 
+    /// Returns the negotiated protocol version.
     pub fn get_protocol_version(&self) -> i32 {
         self.protocol_version.load(Ordering::SeqCst)
     }
 
+    /// Returns the negotiated maximum payload size.
     pub fn get_max_payload(&self) -> usize {
         *self.max_payload.lock().unwrap()
     }
@@ -416,10 +496,12 @@ impl ATransport {
         false
     }
 
+    /// Attempts to reconnect the transport.
     pub fn reconnect(&self) -> ReconnectResult {
         (self.reconnect)(self)
     }
 
+    /// Updates the protocol version and maximum payload based on peer's response.
     pub fn update_version(&self, version: u32, max_payload: u32) {
         let version = std::cmp::min(version, adb_protocol::A_VERSION);
         self.protocol_version
@@ -461,15 +543,18 @@ impl adb_sockets::Transport for ATransport {
     }
 }
 
+/// Returns the global list of registered transports.
 pub fn transport_list() -> &'static Mutex<Vec<Arc<ATransport>>> {
     static LIST: OnceLock<Mutex<Vec<Arc<ATransport>>>> = OnceLock::new();
     LIST.get_or_init(|| Mutex::new(Vec::new()))
 }
 
+/// Registers a new transport.
 pub fn register_transport(transport: Arc<ATransport>) {
     transport_list().lock().unwrap().push(transport);
 }
 
+/// Terminates all registered transports.
 pub fn kick_all_transports() {
     let list = transport_list().lock().unwrap();
     for t in list.iter() {
@@ -477,6 +562,7 @@ pub fn kick_all_transports() {
     }
 }
 
+/// Finds a transport based on type, serial, or transport ID.
 pub fn acquire_one_transport(
     transport_type: TransportType,
     serial: Option<&str>,
@@ -571,6 +657,7 @@ pub fn parse_banner(banner: &str, t: &ATransport) {
     }
 }
 
+/// Sends a CNXN packet to the remote side.
 pub fn send_connect(t: &Arc<ATransport>) {
     let mut p = Apacket::default();
     p.msg.command = adb_protocol::A_CNXN;
@@ -585,6 +672,7 @@ pub fn send_connect(t: &Arc<ATransport>) {
     t.write(p);
 }
 
+/// Dispatches an incoming ADB packet to the appropriate handler.
 pub fn handle_packet(packet: Apacket, t: &Arc<ATransport>) {
     match packet.msg.command {
         adb_protocol::A_CNXN => {
@@ -902,9 +990,11 @@ fn send_close(local: u32, remote: u32, t: &Arc<ATransport>) {
     t.write(p);
 }
 
-type TransportObserver = Box<dyn Fn() + Send + Sync>;
+/// Callback type for transport observers.
+pub type TransportObserver = Box<dyn Fn() + Send + Sync>;
 static TRANSPORT_OBSERVERS: OnceLock<Mutex<Vec<TransportObserver>>> = OnceLock::new();
 
+/// Registers a new transport observer.
 pub fn register_transport_observer(observer: TransportObserver) {
     TRANSPORT_OBSERVERS
         .get_or_init(|| Mutex::new(Vec::new()))
@@ -913,6 +1003,7 @@ pub fn register_transport_observer(observer: TransportObserver) {
         .push(observer);
 }
 
+/// Notifies all registered transport observers of an update.
 pub fn update_transports() {
     if let Some(observers) = TRANSPORT_OBSERVERS.get() {
         for observer in observers.lock().unwrap().iter() {
@@ -1685,42 +1776,60 @@ mod tests {
     }
 }
 
-/// Ported from original/transport.h: `struct Connection`
+/// Defines the interface for a transport connection.
+/// Ported from `Connection` in `transport.h`.
 pub trait Connection: Send + Sync {
+    /// Sets the transport associated with this connection.
     fn set_transport(&self, transport: Weak<ATransport>);
+    /// Writes an ADB packet to the connection.
     fn write(&self, packet: Apacket) -> bool;
+    /// Starts the background read/write threads for the connection.
     fn start(&self, transport: Weak<ATransport>) -> bool;
+    /// Stops the connection and its threads.
     fn stop(&self);
     /// Performs the TLS handshake for secure ADB connections.
     fn do_tls_handshake(&self, key: &Key, auth_key: Option<&mut String>) -> bool;
+    /// Resets the connection.
     fn reset(&self);
+    /// Returns true if the connection supports detaching.
     fn supports_detach(&self) -> bool {
         false
     }
+    /// Attaches the connection.
     fn attach(&self) -> Result<(), String> {
         Err("transport type doesn't support attach".to_string())
     }
+    /// Detaches the connection.
     fn detach(&self) -> Result<(), String> {
         Err("transport type doesn't support detach".to_string())
     }
+    /// Returns the negotiated speed in Mbps.
     fn negotiated_speed_mbps(&self) -> u64 {
         0
     }
+    /// Returns the maximum speed in Mbps.
     fn max_speed_mbps(&self) -> u64 {
         0
     }
 }
 
-/// Ported from original/transport.h: `struct BlockingConnection`
+/// Defines the interface for a blocking transport connection.
+/// Ported from `BlockingConnection` in `transport.h`.
 pub trait BlockingConnection: Send + Sync {
+    /// Reads a packet from the connection.
     fn read(&self) -> std::io::Result<Apacket>;
+    /// Writes a packet to the connection.
     fn write(&self, packet: &Apacket) -> std::io::Result<()>;
+    /// Performs the TLS handshake.
     fn do_tls_handshake(&self, key: &Key, auth_key: Option<&mut String>) -> bool;
+    /// Closes the connection.
     fn close(&self);
+    /// Resets the connection.
     fn reset(&self);
 }
 
-/// Ported from original/transport.h: `struct BlockingConnectionAdapter`
+/// Adapts a [`BlockingConnection`] to the asynchronous [`Connection`] interface.
+/// Ported from `BlockingConnectionAdapter` in `transport.h`.
 pub struct BlockingConnectionAdapter {
     underlying: Arc<dyn BlockingConnection>,
     transport: Mutex<Option<Weak<ATransport>>>,
@@ -1731,6 +1840,7 @@ pub struct BlockingConnectionAdapter {
 }
 
 impl BlockingConnectionAdapter {
+    /// Creates a new `BlockingConnectionAdapter`.
     pub fn new(underlying: Arc<dyn BlockingConnection>) -> Self {
         Self {
             underlying,
@@ -1883,10 +1993,12 @@ impl Connection for BlockingConnectionAdapter {
 /// Ported from original/transport.h: `struct FdConnection`
 pub struct FdConnection {
     file: TcpStream,
-    tls: Mutex<Option<rustls::Connection>>,
+    /// TLS connection state.
+    pub tls: Mutex<Option<rustls::Connection>>,
 }
 
 impl FdConnection {
+    /// Creates a new `FdConnection`.
     pub fn new(fd: OwnedFd) -> Self {
         let file = TcpStream::from(fd);
         let _ = file.set_nonblocking(true);
@@ -2267,12 +2379,14 @@ impl rustls::server::ClientCertVerifier for AdbClientCertVerifier {
     }
 }
 
-/// Ported from original/client/usb.h: `struct UsbConnection`
+/// A connection based on USB.
+/// Ported from `UsbConnection` in `usb.h`.
 pub struct UsbConnection {
     underlying: Box<dyn BlockingConnection>,
 }
 
 impl UsbConnection {
+    /// Creates a new `UsbConnection`.
     pub fn new(underlying: Box<dyn BlockingConnection>) -> Self {
         Self { underlying }
     }

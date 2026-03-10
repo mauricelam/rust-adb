@@ -23,6 +23,8 @@ use std::os::unix::io::OwnedFd;
 use std::path::Path;
 use zerocopy::IntoBytes;
 
+/// Handles the daemon-side of the ADB file sync protocol.
+/// Ported from `file_sync_service.cpp`.
 pub fn file_sync_service(fd: OwnedFd) {
     let mut file = File::from(fd);
     let mut buffer = vec![0u8; SYNC_DATA_MAX];

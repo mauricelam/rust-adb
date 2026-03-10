@@ -1,3 +1,6 @@
+//! ADB Wi-Fi pairing protocol implementation.
+//! Ported from `pairing_connection`.
+
 use adb_transport::tls_connection::{Role as TlsRole, TlsConnection};
 use anyhow::{anyhow, Result};
 use rust_adb_pairing_auth::{PairingAuthCtxBuilder, Role as AuthRole};
@@ -7,16 +10,22 @@ use std::sync::{Arc, Condvar, Mutex};
 use std::thread;
 use zerocopy::{IntoBytes, FromBytes, Immutable, KnownLayout};
 
+/// Maximum size of peer information.
 pub const K_MAX_PEER_INFO_SIZE: usize = 8192;
 
+/// Information about a pairing peer.
+/// Ported from `PeerInfo` in `pairing_connection.h`.
 #[repr(C, packed)]
 #[derive(Clone, Copy, IntoBytes, FromBytes, Immutable, KnownLayout)]
 pub struct PeerInfo {
+    /// Type of peer information.
     pub info_type: u8,
+    /// Peer information data.
     pub data: [u8; K_MAX_PEER_INFO_SIZE - 1],
 }
 
 impl PeerInfo {
+    /// Creates a new `PeerInfo` structure.
     pub fn new(info_type: u8, data_bytes: &[u8]) -> Self {
         let mut info = Self {
             info_type,
@@ -28,12 +37,17 @@ impl PeerInfo {
     }
 }
 
+/// Protocol definitions for pairing packets.
 pub mod proto {
+    /// Pairing packet types.
     pub mod pairing_packet {
+        /// Type of pairing packet.
         #[derive(Clone, Copy, Debug, PartialEq, Eq)]
         #[repr(i32)]
         pub enum Type {
+            /// SPAKE2 message packet.
             Spake2Msg = 0,
+            /// Peer information packet.
             PeerInfo = 1,
         }
     }
@@ -49,11 +63,16 @@ struct PairingPacketHeader {
 
 const K_CURRENT_KEY_HEADER_VERSION: u8 = 1;
 
+/// Role of the pairing participant.
 pub enum Role {
+    /// The client role.
     Client,
+    /// The server role.
     Server,
 }
 
+/// Represents a pairing connection.
+/// Ported from `PairingConnection` in `pairing_connection.h`.
 pub struct PairingConnection {
     role: Role,
     pswd: Vec<u8>,
@@ -63,6 +82,7 @@ pub struct PairingConnection {
 }
 
 impl PairingConnection {
+    /// Creates a new `PairingConnection`.
     pub fn new(
         role: Role,
         pswd: Vec<u8>,
@@ -79,6 +99,7 @@ impl PairingConnection {
         }
     }
 
+    /// Starts the pairing process in a background thread.
     pub fn start<F>(self, stream: TcpStream, cb: F) -> Result<()>
     where
         F: FnOnce(Option<PeerInfo>) + Send + 'static,
@@ -197,6 +218,8 @@ impl PairingConnection {
     }
 }
 
+/// A server that listens for pairing requests.
+/// Ported from `PairingServer` in `pairing_connection.h`.
 pub struct PairingServer {
     pswd: Vec<u8>,
     peer_info: PeerInfo,
@@ -206,6 +229,7 @@ pub struct PairingServer {
 }
 
 impl PairingServer {
+    /// Creates a new `PairingServer`.
     pub fn new(
         pswd: Vec<u8>,
         peer_info: PeerInfo,
@@ -222,6 +246,7 @@ impl PairingServer {
         }
     }
 
+    /// Starts the pairing server.
     pub fn start<F>(self, cb: F) -> Result<u16>
     where
         F: Fn(Option<PeerInfo>) + Send + Sync + 'static,

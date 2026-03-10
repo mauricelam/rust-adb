@@ -1,4 +1,5 @@
 //! A Rust port of the `fdevent` library from the Android Open Source Project.
+//! Ported from `fdevent.h` and `fdevent.cpp`.
 //!
 //! This crate provides an event-driven I/O multiplexing library that is compatible
 //! with the original C++ `fdevent` library's concepts. It uses the `mio` crate

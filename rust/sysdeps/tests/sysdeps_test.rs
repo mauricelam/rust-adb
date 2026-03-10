@@ -1,3 +1,5 @@
+!! Test suite documentation.
+
 #![cfg(unix)]
 use sysdeps::poll::{adb_poll, AdbPollFd};
 use std::os::unix::net::UnixStream;

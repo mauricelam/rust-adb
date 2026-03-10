@@ -1,3 +1,5 @@
+!! Test suite documentation.
+
 #![cfg(unix)]
 use std::fs;
 use tempfile::tempdir;

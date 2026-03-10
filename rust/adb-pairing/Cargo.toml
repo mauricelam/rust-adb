@@ -16,3 +16,6 @@ thiserror = "1.0"
 bytes = "1.0"
 zerocopy = { version = "0.8.38", features = ["derive"] }
 prost = "0.13"
+
+[lints]
+workspace = true

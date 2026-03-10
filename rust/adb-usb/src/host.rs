@@ -6,27 +6,41 @@ use adb_transport::{ATransport, BlockingConnection};
 use adb_types::{Amessage, Apacket, Block};
 use rust_adb_crypto::Key;
 
+/// ADB device class.
 pub const ADB_CLASS: u8 = 0xff;
+/// ADB device subclass.
 pub const ADB_SUBCLASS: u8 = 0x42;
+/// ADB device protocol.
 pub const ADB_PROTOCOL: u8 = 0x01;
 
+/// ADB DbC device class.
 pub const ADB_DBC_CLASS: u8 = 0xdc;
+/// ADB DbC device subclass.
 pub const ADB_DBC_SUBCLASS: u8 = 0x02;
 
+/// Returns true if the given USB interface is an ADB interface.
 pub fn is_adb_interface(class: u8, subclass: u8, protocol: u8) -> bool {
     (protocol == ADB_PROTOCOL && class == ADB_CLASS && subclass == ADB_SUBCLASS) ||
     (protocol == ADB_PROTOCOL && class == ADB_DBC_CLASS && subclass == ADB_DBC_SUBCLASS)
 }
 
+/// Information about an ADB USB device.
 pub struct AdbDeviceInfo {
+    /// The USB device.
     pub device: Device<GlobalContext>,
+    /// The device descriptor.
     pub desc: DeviceDescriptor,
+    /// The interface number.
     pub interface_num: u8,
+    /// The read endpoint address.
     pub read_endpoint: u8,
+    /// The write endpoint address.
     pub write_endpoint: u8,
+    /// The maximum packet size.
     pub max_packet_size: u16,
 }
 
+/// Finds all ADB USB devices currently connected.
 pub fn find_adb_devices() -> rusb::Result<Vec<AdbDeviceInfo>> {
     let mut devices = Vec::new();
     for device in rusb::devices()?.iter() {
@@ -83,6 +97,7 @@ pub fn find_adb_devices() -> rusb::Result<Vec<AdbDeviceInfo>> {
     Ok(devices)
 }
 
+/// A host-side USB connection.
 pub struct HostUsbConnection {
     handle: Arc<Mutex<DeviceHandle<GlobalContext>>>,
     info: AdbDeviceInfo,
@@ -90,6 +105,7 @@ pub struct HostUsbConnection {
 }
 
 impl HostUsbConnection {
+    /// Creates a new \`HostUsbConnection\`.
     pub fn new(info: AdbDeviceInfo) -> rusb::Result<Self> {
         let handle = info.device.open()?;
         handle.claim_interface(info.interface_num)?;
