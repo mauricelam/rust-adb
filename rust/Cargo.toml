@@ -18,7 +18,7 @@ members = [
     "adb-usb",
     "adb-mdns",
     "adb-daemon",
-    "rust-adb", "adb-pairing",
+    "rust-adb", "adb-pairing", "adb-fastdeploy",
 ]
 
 [workspace.lints.rust]
