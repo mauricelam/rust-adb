@@ -1,4 +1,4 @@
-!! Test suite documentation.
+//! Tests for file sync
 
 /*
  * Copyright (C) 2023 The Android Open Source Project

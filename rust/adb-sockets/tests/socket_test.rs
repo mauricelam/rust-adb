@@ -1,4 +1,4 @@
-!! Test suite documentation.
+//! Tests for adb sockets
 
 use adb_sockets::{create_local_socket, internal, Socket, SocketRegistry};
 use fdevent::fdevent::Fdevent;

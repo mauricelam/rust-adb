@@ -1,4 +1,4 @@
-!! Test suite documentation.
+//! Tests for rust-adb-pairing-auth
 
 use rust_adb_pairing_auth::aes_128_gcm::{Aes128GcmCipher, Aes128GcmError};
 
