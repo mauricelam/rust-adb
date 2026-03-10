@@ -5,3 +5,5 @@
 pub mod adb_client;
 /// Bugreport command implementation.
 pub mod bugreport;
+/// Sideload and rescue command implementation.
+pub mod sideload;
