@@ -414,6 +414,11 @@ impl ATransport {
         *features = string_to_feature_set(features_string);
     }
 
+    /// Returns the set of features supported by the remote side.
+    pub fn get_features(&self) -> FeatureSet {
+        self.features.lock().unwrap().clone()
+    }
+
     /// Adds a handler to be called when the transport is disconnected.
     pub fn add_disconnect(&self, handler: Box<dyn DisconnectHandler>) -> u64 {
         let mut disconnects = self.disconnects.lock().unwrap();

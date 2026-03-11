@@ -37,27 +37,33 @@ fn handle_connection(client_stream: TcpStream, tx: Sender<String>) -> std::io::R
 
     let t1 = thread::spawn(move || {
         let mut x = || -> std::io::Result<()> {
-            let mut len_buf = [0u8; 4];
-            client_reader.read_exact(&mut len_buf)?;
+            loop {
+                let mut len_buf = [0u8; 4];
+                if let Err(e) = client_reader.read_exact(&mut len_buf) {
+                    if e.kind() == io::ErrorKind::UnexpectedEof {
+                        break;
+                    }
+                    return Err(e);
+                }
 
-            let len_str = std::str::from_utf8(&len_buf)
-                .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
-            let len = u32::from_str_radix(len_str, 16)
-                .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+                let len_str = std::str::from_utf8(&len_buf)
+                    .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+                let len = u32::from_str_radix(len_str, 16)
+                    .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
 
-            let mut msg_buf = vec![0u8; len as usize];
-            client_reader.read_exact(&mut msg_buf)?;
+                let mut msg_buf = vec![0u8; len as usize];
+                client_reader.read_exact(&mut msg_buf)?;
 
-            let msg = String::from_utf8_lossy(&msg_buf).to_string();
-            let _ = tx.send(msg);
+                let msg = String::from_utf8_lossy(&msg_buf).to_string();
+                let _ = tx.send(msg);
 
-            // Forward the initial command
-            server_writer.write_all(&len_buf)?;
-            server_writer.write_all(&msg_buf)?;
-
+                // Forward the command
+                server_writer.write_all(&len_buf)?;
+                server_writer.write_all(&msg_buf)?;
+            }
             Ok(())
         };
-        x().unwrap();
+        let _ = x();
     });
 
     let t2 = thread::spawn(move || {

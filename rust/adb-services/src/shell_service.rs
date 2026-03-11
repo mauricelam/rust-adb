@@ -21,7 +21,6 @@ use adb_protocol::shell_protocol::{ShellId, ShellProtocol};
 use sysdeps::poll::{adb_poll, AdbPollFd, POLLIN};
 use sysdeps::AdbFd;
 use std::io::{Read, Write};
-use std::sync::{Arc, Mutex};
 
 #[cfg(unix)]
 use std::os::unix::io::{AsRawFd, FromRawFd, IntoRawFd};
@@ -67,100 +66,6 @@ fn open_pty() -> std::io::Result<(AdbFd, AdbFd)> {
     }
 }
 
-#[cfg(windows)]
-struct ConPty {
-    hpcon: windows_sys::Win32::System::Console::HPCON,
-    h_stdin_write: AdbFd,
-    h_stdout_read: AdbFd,
-    h_process: windows_sys::Win32::Foundation::HANDLE,
-}
-
-#[cfg(windows)]
-fn open_conpty(command_str: &str) -> std::io::Result<ConPty> {
-    use windows_sys::Win32::System::Console::*;
-    use windows_sys::Win32::System::Pipes::CreatePipe;
-    use windows_sys::Win32::System::Threading::*;
-    use windows_sys::Win32::Foundation::*;
-
-    unsafe {
-        let mut h_stdin_read = 0;
-        let mut h_stdin_write = 0;
-        let mut h_stdout_read = 0;
-        let mut h_stdout_write = 0;
-
-        if CreatePipe(&mut h_stdin_read, &mut h_stdin_write, std::ptr::null(), 0) == 0 {
-            return Err(std::io::Error::last_os_error());
-        }
-        if CreatePipe(&mut h_stdout_read, &mut h_stdout_write, std::ptr::null(), 0) == 0 {
-            return Err(std::io::Error::last_os_error());
-        }
-
-        let size = COORD { X: 80, Y: 24 };
-        let mut hpcon = 0;
-        let res = CreatePseudoConsole(size, h_stdin_read, h_stdout_write, 0, &mut hpcon);
-
-        CloseHandle(h_stdin_read);
-        CloseHandle(h_stdout_write);
-
-        if res != 0 {
-            return Err(std::io::Error::last_os_error());
-        }
-
-        let mut size_attr = 0;
-        InitializeProcThreadAttributeList(std::ptr::null_mut(), 1, 0, &mut size_attr);
-        let mut buffer = vec![0u8; size_attr];
-        let lp_attribute_list = buffer.as_mut_ptr() as LPPROC_THREAD_ATTRIBUTE_LIST;
-        InitializeProcThreadAttributeList(lp_attribute_list, 1, 0, &mut size_attr);
-
-        UpdateProcThreadAttribute(
-            lp_attribute_list,
-            0,
-            PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE as _,
-            &hpcon as *const _ as *const _,
-            std::mem::size_of::<HPCON>(),
-            std::ptr::null(),
-            std::ptr::null(),
-        );
-
-        let mut si: STARTUPINFOEXW = std::mem::zeroed();
-        si.StartupInfo.cb = std::mem::size_of::<STARTUPINFOEXW>() as u32;
-        si.lpAttributeList = lp_attribute_list;
-
-        let mut pi: PROCESS_INFORMATION = std::mem::zeroed();
-
-        let cmd = if command_str.is_empty() {
-            "cmd.exe\0".encode_utf16().collect::<Vec<u16>>()
-        } else {
-            format!("cmd.exe /c {}\0", command_str).encode_utf16().collect::<Vec<u16>>()
-        };
-
-        if CreateProcessW(
-            std::ptr::null(),
-            cmd.as_ptr() as _,
-            std::ptr::null(),
-            std::ptr::null(),
-            0,
-            EXTENDED_STARTUPINFO_PRESENT,
-            std::ptr::null(),
-            std::ptr::null(),
-            &si.StartupInfo as *const _ as _,
-            &mut pi,
-        ) == 0 {
-            ClosePseudoConsole(hpcon);
-            return Err(std::io::Error::last_os_error());
-        }
-
-        CloseHandle(pi.hThread);
-
-        Ok(ConPty {
-            hpcon,
-            h_stdin_write: AdbFd::from_raw_handle(h_stdin_write as _),
-            h_stdout_read: AdbFd::from_raw_handle(h_stdout_read as _),
-            h_process: pi.hProcess,
-        })
-    }
-}
-
 /// Service that runs a shell command.
 pub fn shell_service(adb_fd: AdbFd, args: &str) {
     let mut adb_fd_opt = Some(adb_fd);
@@ -197,111 +102,6 @@ pub fn shell_service(adb_fd: AdbFd, args: &str) {
 
     let is_pty = subprocess_type == "pty";
     let is_v2 = protocol == "v2";
-
-    #[cfg(windows)]
-    if is_pty {
-        let conpty = match open_conpty(command_str) {
-            Ok(c) => c,
-            Err(e) => {
-                log::error!("failed to open ConPTY: {}", e);
-                return;
-            }
-        };
-
-        let mut adb_fd = adb_fd_opt.take().unwrap();
-        let con_stdin = Arc::new(Mutex::new(conpty.h_stdin_write));
-        let mut con_stdout = conpty.h_stdout_read;
-        let hpcon = conpty.hpcon;
-
-        let adb_fd_clone = adb_fd.try_clone().expect("failed to clone adb fd");
-        let con_stdin_clone = con_stdin.clone();
-
-        // Thread to read from ADB and write to ConPTY stdin
-        std::thread::spawn(move || {
-            let mut adb_fd = adb_fd_clone;
-            let mut shell_read = ShellProtocol::new();
-            loop {
-                if is_v2 {
-                    match shell_read.read(&mut adb_fd) {
-                        Ok(true) => match shell_read.id {
-                            ShellId::Stdin => {
-                                let mut con_stdin = con_stdin_clone.lock().unwrap();
-                                if let Err(_) = con_stdin.write_all(&shell_read.data) {
-                                    break;
-                                }
-                            }
-                            ShellId::WindowSizeChange => {
-                                use windows_sys::Win32::System::Console::{ResizePseudoConsole, COORD};
-                                let s = String::from_utf8_lossy(&shell_read.data);
-                                if let Some((rows_cols, _)) = s.split_once(',') {
-                                    if let Some((rows, cols)) = rows_cols.split_once('x') {
-                                        if let (Ok(r), Ok(c)) = (rows.parse::<u16>(), cols.parse::<u16>()) {
-                                            unsafe { ResizePseudoConsole(hpcon, COORD { X: c as i16, Y: r as i16 }); }
-                                        }
-                                    }
-                                }
-                            }
-                            ShellId::CloseStdin => {
-                                let mut con_stdin = con_stdin_clone.lock().unwrap();
-                                con_stdin.close();
-                                break;
-                            }
-                            _ => {}
-                        },
-                        _ => break,
-                    }
-                } else {
-                    let mut buf = [0u8; 4096];
-                    match adb_fd.read(&mut buf) {
-                        Ok(n) if n > 0 => {
-                            let mut con_stdin = con_stdin_clone.lock().unwrap();
-                            if let Err(_) = con_stdin.write_all(&buf[..n]) {
-                                break;
-                            }
-                        }
-                        _ => break,
-                    }
-                }
-            }
-        });
-
-        // Loop to read from ConPTY stdout and write to ADB
-        loop {
-            let mut buf = [0u8; 4096];
-            match con_stdout.read(&mut buf) {
-                Ok(n) if n > 0 => {
-                    if is_v2 {
-                        if let Err(_) = ShellProtocol::write_packet(&mut adb_fd, ShellId::Stdout, &buf[..n]) {
-                            break;
-                        }
-                    } else {
-                        if let Err(_) = adb_fd.write_all(&buf[..n]) {
-                            break;
-                        }
-                    }
-                }
-                _ => break,
-            }
-
-            unsafe {
-                let mut exit_code: u32 = 0;
-                if windows_sys::Win32::System::Threading::GetExitCodeProcess(conpty.h_process, &mut exit_code) != 0 {
-                    if exit_code != windows_sys::Win32::System::Threading::STILL_ACTIVE as u32 {
-                        if is_v2 {
-                            let _ = ShellProtocol::write_packet(&mut adb_fd, ShellId::Exit, &[exit_code as u8]);
-                        }
-                        break;
-                    }
-                }
-            }
-        }
-
-        unsafe {
-            windows_sys::Win32::System::Console::ClosePseudoConsole(conpty.hpcon);
-            windows_sys::Win32::Foundation::CloseHandle(conpty.h_process);
-        }
-        return;
-    }
 
     let mut master_fd_opt: Option<AdbFd> = None;
     let child_stdin: std::process::Stdio;
@@ -349,6 +149,10 @@ pub fn shell_service(adb_fd: AdbFd, args: &str) {
     }
     #[cfg(windows)]
     {
+        if is_pty {
+            log::error!("PTY not supported on Windows");
+            return;
+        }
         child_stdin = std::process::Stdio::piped();
         child_stdout = std::process::Stdio::piped();
         child_stderr = std::process::Stdio::piped();

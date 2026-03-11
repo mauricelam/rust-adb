@@ -29,17 +29,11 @@ The ADB Rust port has successfully implemented the core infrastructure, includin
 | `bugreport_test.cpp` | `rust/rust-adb/src/bugreport.rs` | Ported (Unit) |
 | `mdns_utils_test.cpp` | `rust/adb-mdns/src/utils.rs` | Ported (Unit) |
 | `pairing_connection_test.cpp` | `rust/adb-pairing/src/lib.rs` | Ported (Unit) |
-| `key_test.cpp` | `rust/crypto/src/lib.rs` | Ported (Unit) |
-| `rsa_2048_key_test.cpp` | `rust/crypto/src/lib.rs` | Ported (Unit) |
-| `x509_generator_test.cpp` | `rust/crypto/src/lib.rs` | Ported (Unit) |
-| `adb_ca_list_test.cpp` | `rust/crypto/src/lib.rs` | Ported (Unit) |
-| `tls_connection_test.cpp` | `rust/adb-transport/src/lib.rs` | Ported (Unit) |
-| `apk_archive_test.cpp` | `rust/adb-fastdeploy/src/tests.rs` | Ported (Unit) |
-| `patch_utils_test.cpp` | `rust/adb-fastdeploy/src/tests.rs` | Ported (Unit) |
-| `deploy_patch_generator_test.cpp` | `rust/adb-fastdeploy/src/tests.rs` | Ported (Unit) |
 
 ### Remaining Gaps in Testing
+- **Missing Crypto/TLS Tests**: `key_test.cpp`, `rsa_2048_key_test.cpp`, `x509_generator_test.cpp`, `tls_connection_test.cpp`, and `adb_ca_list_test.cpp` have no direct Rust equivalents yet.
 - **Windows-Specific Tests**: `sysdeps_win32_test.cpp` and `errno_test.cpp` are not fully ported.
+- **FastDeploy Tests**: All tests under `fastdeploy/` are missing.
 
 ---
 
@@ -64,12 +58,12 @@ The ADB Rust port has successfully implemented the core infrastructure, includin
 | `tcpip` / `usb` | **Complete** | Restart services implemented in `adb-services`. |
 | `tradeinmode` | **Complete** | Trade-in mode logic and command validation. |
 | `remount` | **Missing** | Service to remount partitions. |
-| `sideload` | **Complete** | Recovery/sideloading support implemented in `rust-adb`. |
+| `sideload` | **Missing** | Recovery/sideloading support is missing. |
 
 ### Client CLI (`rust-adb`)
 The Rust client is currently a subset of the C++ `adb` tool.
-- **Available**: `devices`, `version`, `connect`, `disconnect`, `shell`, `bugreport`, `logcat`, `longcat`, `install`, `uninstall`, `sideload`, `rescue`, `forward`, `reverse`.
-- **Missing**: `push`, `pull`, `sync`, `pair`, `wait-for-*`, `reboot`, `root`, `unroot`.
+- **Available**: `devices`, `version`, `connect`, `disconnect`, `shell`, `bugreport`.
+- **Missing**: `push`, `pull`, `sync`, `install`, `uninstall`, `logcat`, `forward`, `reverse`, `pair`, `wait-for-*`, `reboot`, `root`, `unroot`.
 
 ---
 
@@ -79,15 +73,18 @@ To achieve full feature parity with the C++ implementation, the following work i
 
 1.  **Client CLI Completeness**:
     - Implement `push`/`pull` logic in the CLI using the existing `file_sync_client` module.
-    - Add `pair` command support.
+    - Implement `forward` and `reverse` management in the CLI.
+    - Add `install` and `uninstall` support, including APK streaming.
 2.  **Advanced Daemon Services**:
-    - Implement `remount` service.
-    - Implement `framebuffer` service for screen capture.
+    - Port `bugreport` and `framebuffer` services to `adb-services`.
+    - Implement `remount`, `root`, and `unroot` for development builds.
 3.  **Platform Support**:
     - Complete the Windows implementation of `sysdeps` and `socket-spec`.
     - Ensure `fdevent` and `shell` (PTY) work correctly on Windows (using WinPTY or similar).
-4.  **FastDeploy & Incremental**:
-    - Port the `incremental` installation logic.
+4.  **Security & Crypto**:
+    - Port the remaining RSA and X.509 generation tests to ensure the Rust crypto layer is robust.
+5.  **FastDeploy & Incremental**:
+    - Port the `fastdeploy` patch generation and `incremental` installation logic, which are critical for large APK deployments.
 
 ## 5. Conclusion
 The port is approximately **75% complete** in terms of core logic and **50% complete** in terms of user-facing CLI features. The foundation is solid, but the "polish" features (screen capture) and deployment optimizations (FastDeploy) are the primary remaining engineering tasks.
