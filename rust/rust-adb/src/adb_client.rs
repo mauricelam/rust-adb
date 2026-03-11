@@ -129,23 +129,20 @@ pub fn adb_connect(service: &str, force_switch: bool) -> Result<(NativeOwnedHand
     let mut transport_id = 0;
     if !service.starts_with("host") || force_switch {
         #[cfg(unix)]
-        let mut stream = unsafe { std::fs::File::from_raw_fd(fd.as_raw_fd()) };
+        let mut stream = std::mem::ManuallyDrop::new(unsafe { std::fs::File::from_raw_fd(fd.as_raw_fd()) });
         #[cfg(windows)]
-        let mut stream = unsafe { std::net::TcpStream::from_raw_socket(fd.as_raw_socket() as _) };
+        let mut stream = std::mem::ManuallyDrop::new(unsafe { std::net::TcpStream::from_raw_socket(fd.as_raw_socket() as _) });
 
-        transport_id = switch_socket_transport(&mut stream)?;
-        std::mem::forget(stream);
+        transport_id = switch_socket_transport(&mut *stream)?;
     }
 
     #[cfg(unix)]
-    let mut stream = unsafe { std::fs::File::from_raw_fd(fd.as_raw_fd()) };
+    let mut stream = std::mem::ManuallyDrop::new(unsafe { std::fs::File::from_raw_fd(fd.as_raw_fd()) });
     #[cfg(windows)]
-    let mut stream = unsafe { std::net::TcpStream::from_raw_socket(fd.as_raw_socket() as _) };
+    let mut stream = std::mem::ManuallyDrop::new(unsafe { std::net::TcpStream::from_raw_socket(fd.as_raw_socket() as _) });
 
-    send_protocol_string(&mut stream, service).map_err(AdbClientError::Io)?;
-    adb_status(&mut stream)?;
-
-    std::mem::forget(stream);
+    send_protocol_string(&mut *stream, service).map_err(AdbClientError::Io)?;
+    adb_status(&mut *stream)?;
 
     Ok((fd, transport_id))
 }
@@ -186,4 +183,33 @@ pub fn format_host_command(command: &str) -> String {
         TransportType::Host => "host",
     };
     format!("{}:{}", prefix, command)
+}
+
+/// Returns the feature set for the current transport.
+pub fn adb_get_feature_set() -> Result<adb_transport::FeatureSet> {
+    let query = format_host_command("features");
+    let result = adb_query(&query)?;
+    Ok(adb_transport::string_to_feature_set(&result))
+}
+
+/// Remounts partitions as read-write.
+/// Ported from `process_remount_or_verity_service` in `commandline.cpp`.
+pub fn adb_remount(reboot: bool) -> Result<NativeOwnedHandle> {
+    let features = adb_get_feature_set()?;
+    let service = if adb_transport::can_use_feature(&features, adb_transport::FEATURE_REMOUNT_SHELL) {
+        let mut cmd = "shell:remount".to_string();
+        if reboot {
+            cmd.push_str(" -R");
+        }
+        format_host_command(&cmd)
+    } else {
+        let mut cmd = "remount:".to_string();
+        if reboot {
+            cmd.push_str("-R");
+        }
+        format_host_command(&cmd)
+    };
+
+    let (fd, _) = adb_connect(&service, false)?;
+    Ok(fd)
 }

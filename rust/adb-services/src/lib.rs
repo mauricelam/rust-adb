@@ -595,6 +595,48 @@ pub fn host_service_to_socket(
         return Some(create_device_tracker(TrackerOutputType::Protobuf, registry));
     }
 
+    if name == "host-features" {
+        let features = adb_transport::feature_set_to_string(adb_transport::supported_features());
+        let fd = create_service_thread("host-features", move |mut fd| {
+            let _ = adb_io::send_okay(&mut fd);
+            let _ = adb_io::send_protocol_string(&mut fd, &features);
+        })
+        .ok()?;
+        return Some(create_local_socket(
+            fd.try_into_owned_fd().unwrap(),
+            registry,
+            fdevent,
+        ));
+    }
+
+    if name == "features" {
+        let serial = serial.to_string();
+        let fd = create_service_thread("features", move |mut fd| {
+            let serial_ptr = if serial.is_empty() {
+                None
+            } else {
+                Some(serial.as_str())
+            };
+
+            match acquire_one_transport(TransportType::Any, serial_ptr, transport_id) {
+                Ok(t) => {
+                    let features = adb_transport::feature_set_to_string(&t.get_features());
+                    let _ = adb_io::send_okay(&mut fd);
+                    let _ = adb_io::send_protocol_string(&mut fd, &features);
+                }
+                Err(e) => {
+                    let _ = adb_io::send_fail(&mut fd, &e);
+                }
+            }
+        })
+        .ok()?;
+        return Some(create_local_socket(
+            fd.try_into_owned_fd().unwrap(),
+            registry,
+            fdevent,
+        ));
+    }
+
     if let Some(spec) = name.strip_prefix("wait-for-") {
         let serial = serial.to_string();
         let spec = spec.to_string();
@@ -760,6 +802,13 @@ pub fn daemon_service_to_fd(name: &str, transport: &Arc<ATransport>) -> Option<A
         let args = args.to_string();
         return create_service_thread("shell", move |fd| {
             shell_service::shell_service(fd, &args);
+        })
+        .ok();
+    }
+    if let Some(args) = name.strip_prefix("remount:") {
+        let cmd = format!("/system/bin/remount {}", args);
+        return create_service_thread("remount", move |fd| {
+            shell_service::shell_service(fd, &format!(":{}", cmd));
         })
         .ok();
     }
@@ -1227,5 +1276,28 @@ mod integration_tests {
         let len_str = std::str::from_utf8(&data[0][0..4]).unwrap();
         let len = usize::from_str_radix(len_str, 16).unwrap();
         assert_eq!(len, data[0].len() - 4);
+    }
+
+    #[test]
+    fn test_host_features_dispatch() {
+        let registry = Arc::new(SocketRegistry::new());
+        let mut fdevent = Fdevent::new().unwrap();
+        let s = host_service_to_socket("host-features", "", 0, registry.clone(), &mut fdevent);
+        assert!(s.is_some());
+    }
+
+    #[test]
+    fn test_features_dispatch() {
+        let registry = Arc::new(SocketRegistry::new());
+        let mut fdevent = Fdevent::new().unwrap();
+        let s = host_service_to_socket("features", "", 0, registry.clone(), &mut fdevent);
+        assert!(s.is_some());
+    }
+
+    #[test]
+    fn test_remount_dispatch() {
+        let t = Arc::new(ATransport::new_offline(TransportType::Usb));
+        let s = daemon_service_to_fd("remount:", &t);
+        assert!(s.is_some());
     }
 }

@@ -6,7 +6,7 @@ mod bugreport;
 
 use clap::{Parser, Subcommand};
 use adb_protocol::TransportType;
-use crate::adb_client::{adb_set_transport, adb_set_socket_spec, adb_query, adb_connect, format_host_command};
+use crate::adb_client::{adb_set_transport, adb_set_socket_spec, adb_query, adb_connect, format_host_command, adb_remount};
 use std::io::{self, Read, Write};
 
 #[derive(Parser)]
@@ -73,6 +73,12 @@ enum Commands {
     Bugreport {
         /// [PATH] | [--stream]
         args: Vec<String>,
+    },
+    /// remount partitions read-write. if a reboot is required, -R will
+    Remount {
+        /// reboot if required
+        #[arg(short = 'R')]
+        reboot: bool,
     },
 }
 
@@ -159,6 +165,35 @@ fn main() -> anyhow::Result<()> {
         Commands::Bugreport { args } => {
             let mut br = bugreport::Bugreport::new();
             br.do_it(&args)?;
+        }
+        Commands::Remount { reboot } => {
+            let fd = adb_remount(reboot)?;
+            #[cfg(unix)]
+            {
+                use std::os::unix::io::FromRawFd;
+                let mut stream = unsafe { std::fs::File::from_raw_fd(fd.into_raw_fd()) };
+                let mut stdout = io::stdout();
+                let mut buf = [0u8; 4096];
+                loop {
+                    let n = stream.read(&mut buf)?;
+                    if n == 0 { break; }
+                    stdout.write_all(&buf[..n])?;
+                    stdout.flush()?;
+                }
+            }
+            #[cfg(windows)]
+            {
+                use std::os::windows::io::FromRawSocket;
+                let mut stream = unsafe { std::net::TcpStream::from_raw_socket(fd.into_raw_socket() as _) };
+                let mut stdout = io::stdout();
+                let mut buf = [0u8; 4096];
+                loop {
+                    let n = stream.read(&mut buf)?;
+                    if n == 0 { break; }
+                    stdout.write_all(&buf[..n])?;
+                    stdout.flush()?;
+                }
+            }
         }
     }
 
