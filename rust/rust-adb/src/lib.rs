@@ -5,6 +5,8 @@
 pub mod adb_client;
 /// Installation and uninstallation logic.
 pub mod adb_install;
+/// Logcat command implementation.
+pub mod logcat;
 /// Bugreport command implementation.
 pub mod bugreport;
 /// Sideload and rescue command implementation.

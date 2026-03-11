@@ -4,6 +4,7 @@
 mod adb_client;
 mod adb_install;
 mod bugreport;
+mod logcat;
 mod sideload;
 
 use clap::{Parser, Subcommand};
@@ -76,6 +77,16 @@ enum Commands {
         /// [PATH] | [--stream]
         args: Vec<String>,
     },
+    /// show device log (logcat --help for more)
+    Logcat {
+        /// [ARGS]
+        args: Vec<String>,
+    },
+    /// show device log
+    Longcat {
+        /// [ARGS]
+        args: Vec<String>,
+    },
     /// push a single package to the device and install it
     Install {
         /// [ARGS] APK
@@ -85,6 +96,7 @@ enum Commands {
     Uninstall {
         /// [ARGS] PACKAGE
         args: Vec<String>,
+    },
     /// sideload the given full OTA package
     Sideload {
         /// OTAPACKAGE
@@ -200,11 +212,18 @@ fn main() -> anyhow::Result<()> {
             let mut br = bugreport::Bugreport::new();
             br.do_it(&args)?;
         }
+        Commands::Logcat { args } => {
+            logcat::Logcat::do_it(&args, false)?;
+        }
+        Commands::Longcat { args } => {
+            logcat::Logcat::do_it(&args, true)?;
+        }
         Commands::Install { args } => {
             adb_install::install_app_streamed(&args)?;
         }
         Commands::Uninstall { args } => {
             adb_install::uninstall_app(&args)?;
+        }
         Commands::Sideload { filename } => {
             sideload::adb_sideload_install(&filename, false)?;
         }
