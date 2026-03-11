@@ -4,6 +4,7 @@
 mod adb_client;
 mod adb_install;
 mod bugreport;
+mod forward;
 mod logcat;
 mod sideload;
 
@@ -106,6 +107,16 @@ enum Commands {
     Rescue {
         #[command(subcommand)]
         command: RescueCommands,
+    },
+    /// forward socket connections
+    Forward {
+        /// [ARGS]
+        args: Vec<String>,
+    },
+    /// reverse socket connections
+    Reverse {
+        /// [ARGS]
+        args: Vec<String>,
     },
 }
 
@@ -242,6 +253,12 @@ fn main() -> anyhow::Result<()> {
                     sideload::adb_wipe_devices()?;
                 }
             }
+        }
+        Commands::Forward { args } => {
+            forward::do_forward_reverse(&args, false)?;
+        }
+        Commands::Reverse { args } => {
+            forward::do_forward_reverse(&args, true)?;
         }
     }
 
