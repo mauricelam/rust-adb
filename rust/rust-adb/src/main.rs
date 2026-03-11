@@ -6,6 +6,8 @@ mod adb_install;
 mod bugreport;
 mod forward;
 mod logcat;
+/// Root and unroot command implementation.
+pub mod root;
 mod sideload;
 
 use clap::{Parser, Subcommand};
@@ -118,6 +120,10 @@ enum Commands {
         /// [ARGS]
         args: Vec<String>,
     },
+    /// restart adbd with root permissions
+    Root,
+    /// restart adbd without root permissions
+    Unroot,
 }
 
 #[derive(Subcommand)]
@@ -259,6 +265,12 @@ fn main() -> anyhow::Result<()> {
         }
         Commands::Reverse { args } => {
             forward::do_forward_reverse(&args, true)?;
+        }
+        Commands::Root => {
+            root::adb_root("root")?;
+        }
+        Commands::Unroot => {
+            root::adb_root("unroot")?;
         }
     }
 
