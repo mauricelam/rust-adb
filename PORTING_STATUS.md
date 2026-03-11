@@ -68,8 +68,8 @@ The ADB Rust port has successfully implemented the core infrastructure, includin
 
 ### Client CLI (`rust-adb`)
 The Rust client is currently a subset of the C++ `adb` tool.
-- **Available**: `devices`, `version`, `connect`, `disconnect`, `shell`, `bugreport`, `logcat`, `longcat`, `install`, `uninstall`, `sideload`, `rescue`.
-- **Missing**: `push`, `pull`, `sync`, `forward`, `reverse`, `pair`, `wait-for-*`, `reboot`, `root`, `unroot`.
+- **Available**: `devices`, `version`, `connect`, `disconnect`, `shell`, `bugreport`, `logcat`, `longcat`, `install`, `uninstall`, `sideload`, `rescue`, `forward`, `reverse`.
+- **Missing**: `push`, `pull`, `sync`, `pair`, `wait-for-*`, `reboot`, `root`, `unroot`.
 
 ---
 
@@ -79,7 +79,6 @@ To achieve full feature parity with the C++ implementation, the following work i
 
 1.  **Client CLI Completeness**:
     - Implement `push`/`pull` logic in the CLI using the existing `file_sync_client` module.
-    - Implement `forward` and `reverse` management in the CLI.
     - Add `pair` command support.
 2.  **Advanced Daemon Services**:
     - Implement `remount` service.

@@ -11,3 +11,5 @@ pub mod logcat;
 pub mod bugreport;
 /// Sideload and rescue command implementation.
 pub mod sideload;
+/// Forward and reverse command implementation.
+pub mod forward;
