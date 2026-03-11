@@ -26,14 +26,15 @@ pub fn start_mock_server() -> std::io::Result<(u16, Receiver<String>, thread::Jo
 }
 
 fn handle_connection(client_stream: TcpStream, tx: Sender<String>) -> std::io::Result<()> {
-    let server_stream = TcpStream::connect("127.0.0.1:5037")?;
+    let server_stream_res = TcpStream::connect("127.0.0.1:5037");
 
     // MITM bi-directional forwarding
     let mut client_reader = client_stream.try_clone()?;
-    let mut server_reader = server_stream.try_clone()?;
+    let mut server_reader = server_stream_res.as_ref().ok().and_then(|s| s.try_clone().ok());
 
-    let mut client_writer = client_stream;
-    let mut server_writer = server_stream;
+    let mut client_writer1 = client_stream.try_clone()?;
+    let mut client_writer2 = client_stream;
+    let mut server_writer = server_stream_res.ok();
 
     let t1 = thread::spawn(move || {
         let mut x = || -> std::io::Result<()> {
@@ -55,11 +56,25 @@ fn handle_connection(client_stream: TcpStream, tx: Sender<String>) -> std::io::R
                 client_reader.read_exact(&mut msg_buf)?;
 
                 let msg = String::from_utf8_lossy(&msg_buf).to_string();
-                let _ = tx.send(msg);
+                let _ = tx.send(msg.clone());
 
-                // Forward the command
-                server_writer.write_all(&len_buf)?;
-                server_writer.write_all(&msg_buf)?;
+                if let Some(ref mut server_writer) = server_writer {
+                    // Forward the command
+                    let _ = server_writer.write_all(&len_buf);
+                    let _ = server_writer.write_all(&msg_buf);
+                } else {
+                    // Mock responses for CI environments where ADB server might be missing
+                    if msg == "host:version" {
+                        client_writer1.write_all(b"OKAY00040029")?;
+                    } else if msg == "host:features" || msg == "host:host-features" {
+                        client_writer1.write_all(b"OKAY0008remount,")?;
+                    } else if msg.contains("remount") {
+                        client_writer1.write_all(b"OKAY")?;
+                        client_writer1.write_all(b"remount succeeded")?;
+                    } else {
+                        client_writer1.write_all(b"FAIL000Enot connected")?;
+                    }
+                }
             }
             Ok(())
         };
@@ -67,7 +82,9 @@ fn handle_connection(client_stream: TcpStream, tx: Sender<String>) -> std::io::R
     });
 
     let t2 = thread::spawn(move || {
-        let _ = io::copy(&mut server_reader, &mut client_writer);
+        if let Some(mut server_reader) = server_reader {
+            let _ = io::copy(&mut server_reader, &mut client_writer2);
+        }
     });
 
     let _ = t1.join();

@@ -90,14 +90,13 @@ fn test_remount() {
     let _ = runner::run_adb_command(port, &["remount"]);
 
     // It may or may not ask for version first depending on internal client logic
-    let first = rx.recv_timeout(Duration::from_secs(5)).unwrap();
-    if first == "host:version" {
-        assert_eq!(
-            rx.recv_timeout(Duration::from_secs(5)).unwrap(),
-            "host:features"
-        );
-    } else {
-        assert_eq!(first, "host:features");
+    loop {
+        match rx.recv_timeout(Duration::from_secs(5)) {
+            Ok(cmd) if cmd == "host:features" => break,
+            Ok(cmd) if cmd == "host:version" => continue,
+            Ok(cmd) => panic!("Unexpected command: {}", cmd),
+            Err(e) => panic!("Failed to receive features command: {:?}", e),
+        }
     }
     // Then it should send remount command.
     // Since we don't know what features the local ADB server returns,
