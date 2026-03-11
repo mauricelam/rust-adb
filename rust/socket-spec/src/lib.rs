@@ -474,6 +474,17 @@ pub fn socket_spec_connect(
         }
     }
 
+    #[cfg(windows)]
+    {
+        let local_socket_types = get_local_socket_types();
+        for (name, _, _) in local_socket_types {
+            let prefix = format!("{}:", name);
+            if address.starts_with(&prefix) {
+                return Err(format!("socket type {} is unavailable on Windows", name));
+            }
+        }
+    }
+
     Err(format!("unknown socket specification: {}", address))
 }
 
@@ -537,6 +548,17 @@ pub fn socket_spec_listen(spec: &str, resolved_port: Option<&mut i32>) -> Result
             if spec.starts_with(&prefix) {
                 if !available { return Err(format!("attempted to listen on unavailable socket type: {}", spec)); }
                 return network_local_server(&spec[prefix.len()..], namespace_id, libc::SOCK_STREAM);
+            }
+        }
+    }
+
+    #[cfg(windows)]
+    {
+        let local_socket_types = get_local_socket_types();
+        for (name, _, _) in local_socket_types {
+            let prefix = format!("{}:", name);
+            if spec.starts_with(&prefix) {
+                return Err(format!("socket type {} is unavailable on Windows", name));
             }
         }
     }
