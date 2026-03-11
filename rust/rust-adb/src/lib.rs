@@ -13,3 +13,5 @@ pub mod bugreport;
 pub mod sideload;
 /// Forward and reverse command implementation.
 pub mod forward;
+/// Root and unroot command implementation.
+pub mod root;
