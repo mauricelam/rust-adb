@@ -55,6 +55,8 @@ pub mod restart_service;
 pub mod shell_service;
 /// Module handling trade-in mode services.
 pub mod tradeinmode;
+/// Module handling framebuffer services.
+pub mod framebuffer_service;
 
 /// Creates a socket pair, starts a new thread with the provided function,
 /// and returns one end of the socket pair as an `AdbFd`.
@@ -866,6 +868,10 @@ pub fn daemon_service_to_fd(name: &str, transport: &Arc<ATransport>) -> Option<A
 
     if name.starts_with("usb:") {
         return create_service_thread("usb", restart_service::restart_usb_service).ok();
+    }
+
+    if name.starts_with("framebuffer") {
+        return create_service_thread("fb", framebuffer_service::framebuffer_service).ok();
     }
 
     None

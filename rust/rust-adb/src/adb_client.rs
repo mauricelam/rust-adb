@@ -47,6 +47,7 @@ pub fn adb_set_transport(transport_type: TransportType, serial: Option<String>, 
 
 /// Returns the currently configured transport.
 /// Ported from `adb_get_transport` in `adb_client.cpp`.
+#[allow(dead_code)]
 pub fn adb_get_transport() -> (TransportType, Option<String>, u64) {
     (
         *G_ADB_TRANSPORT.lock().unwrap(),
