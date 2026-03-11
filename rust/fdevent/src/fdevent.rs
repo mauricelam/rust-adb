@@ -12,8 +12,10 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use thiserror::Error;
 
+#[cfg(unix)]
 use std::os::fd::OwnedFd;
-// use sysdeps::AdbFd;
+#[cfg(windows)]
+use std::os::windows::io::{OwnedHandle, AsRawHandle};
 
 /// Errors that can occur when using `fdevent`.
 #[derive(Error, Debug)]
@@ -90,17 +92,25 @@ pub enum MioSource {
     /// A TCP stream.
     #[cfg(windows)]
     TcpStream(Option<mio::net::TcpStream>),
+    /// A named pipe (Windows only).
+    #[cfg(windows)]
+    NamedPipe(Option<mio::windows::NamedPipe>),
 }
 
 #[cfg(windows)]
 impl Drop for MioSource {
     fn drop(&mut self) {
-        if let MioSource::TcpStream(ref mut s) = self {
-            if let Some(stream) = s.take() {
-                // We need to make sure the mio stream doesn't close the socket when dropped,
-                // because AdbFd still owns it.
-                use std::os::windows::io::IntoRawSocket;
-                let _ = stream.into_std().into_raw_socket();
+        match self {
+            MioSource::TcpStream(ref mut s) => {
+                if let Some(stream) = s.take() {
+                    use std::os::windows::io::IntoRawSocket;
+                    let _ = stream.into_std().into_raw_socket();
+                }
+            }
+            MioSource::NamedPipe(ref mut p) => {
+                if let Some(pipe) = p.take() {
+                    let _ = pipe.into_raw_handle();
+                }
             }
         }
     }
@@ -122,7 +132,9 @@ impl mio::event::Source for MioSource {
             #[cfg(windows)]
             MioSource::TcpStream(Some(s)) => registry.register(s, token, interests),
             #[cfg(windows)]
-            MioSource::TcpStream(None) => unreachable!(),
+            MioSource::NamedPipe(Some(p)) => registry.register(p, token, interests),
+            #[cfg(windows)]
+            _ => unreachable!(),
         }
     }
 
@@ -141,7 +153,9 @@ impl mio::event::Source for MioSource {
             #[cfg(windows)]
             MioSource::TcpStream(Some(s)) => registry.reregister(s, token, interests),
             #[cfg(windows)]
-            MioSource::TcpStream(None) => unreachable!(),
+            MioSource::NamedPipe(Some(p)) => registry.reregister(p, token, interests),
+            #[cfg(windows)]
+            _ => unreachable!(),
         }
     }
 
@@ -155,7 +169,9 @@ impl mio::event::Source for MioSource {
             #[cfg(windows)]
             MioSource::TcpStream(Some(s)) => registry.deregister(s),
             #[cfg(windows)]
-            MioSource::TcpStream(None) => unreachable!(),
+            MioSource::NamedPipe(Some(p)) => registry.deregister(p),
+            #[cfg(windows)]
+            _ => unreachable!(),
         }
     }
 }
@@ -172,7 +188,10 @@ pub struct Fdevent {
     /// A map from tokens to their corresponding event handlers.
     handlers: HashMap<Token, Box<dyn FdeventHandler>>,
     /// A map from tokens to their owned file descriptors, mio sources, and interests.
+    #[cfg(unix)]
     fds: HashMap<Token, (Arc<OwnedFd>, Option<MioSource>, Option<Interest>)>,
+    #[cfg(windows)]
+    fds: HashMap<Token, (Arc<OwnedHandle>, Option<MioSource>, Option<Interest>)>,
     /// A map from tokens to their registered timeouts.
     timeouts: HashMap<Token, (Instant, Duration)>,
     /// The queue of functions to be executed on the looper thread.
@@ -224,6 +243,7 @@ impl Fdevent {
     /// * `fd` - The file descriptor to monitor.
     /// * `handler` - The handler to execute when events occur.
     /// * `interest` - The initial set of events to monitor.
+    #[cfg(unix)]
     pub fn register(
         &mut self,
         fd: Arc<OwnedFd>,
@@ -233,28 +253,8 @@ impl Fdevent {
         let token = Token(self.next_token);
         self.next_token += 1;
 
-        let mut source = match () {
-            #[cfg(unix)]
-            () => {
-                use std::os::unix::io::AsRawFd;
-                MioSource::Fd(fd.as_raw_fd())
-            }
-            #[cfg(windows)]
-            () => {
-                use std::os::windows::io::AsRawSocket;
-                let s_raw = fd.as_raw_socket();
-                if s_raw != windows_sys::Win32::Networking::WinSock::INVALID_SOCKET as _ {
-                    // SAFETY: s_raw is a valid socket.
-                    let stream = unsafe { std::net::TcpStream::from_raw_socket(s_raw as _) };
-                    MioSource::TcpStream(Some(mio::net::TcpStream::from_std(stream)))
-                } else {
-                    return Err(FdeventError::Io(io::Error::new(
-                        io::ErrorKind::Other,
-                        "Only sockets are supported on Windows fdevent",
-                    )));
-                }
-            }
-        };
+        use std::os::unix::io::AsRawFd;
+        let mut source = MioSource::Fd(fd.as_raw_fd());
 
         self.poll
             .registry()
@@ -262,6 +262,40 @@ impl Fdevent {
 
         self.handlers.insert(token, handler);
         self.fds.insert(token, (fd, Some(source), Some(interest)));
+        Ok(token)
+    }
+
+    /// Registers a handle to be monitored on Windows.
+    #[cfg(windows)]
+    pub fn register(
+        &mut self,
+        handle: Arc<OwnedHandle>,
+        handler: Box<dyn FdeventHandler>,
+        interest: Interest,
+    ) -> FdeventResult<Token> {
+        let token = Token(self.next_token);
+        self.next_token += 1;
+
+        use std::os::windows::io::AsRawSocket;
+        let s_raw = handle.as_raw_socket();
+
+        let mut source = if s_raw != windows_sys::Win32::Networking::WinSock::INVALID_SOCKET as _ {
+            // SAFETY: s_raw is a valid socket.
+            let stream = unsafe { std::net::TcpStream::from_raw_socket(s_raw as _) };
+            MioSource::TcpStream(Some(mio::net::TcpStream::from_std(stream)))
+        } else {
+            // Assume it's a pipe if it's not a socket.
+            let h_raw = handle.as_raw_handle();
+            let pipe = unsafe { mio::windows::NamedPipe::from_raw_handle(h_raw as _) };
+            MioSource::NamedPipe(Some(pipe))
+        };
+
+        self.poll
+            .registry()
+            .register(&mut source, token, interest)?;
+
+        self.handlers.insert(token, handler);
+        self.fds.insert(token, (handle, Some(source), Some(interest)));
         Ok(token)
     }
 
@@ -311,6 +345,7 @@ impl Fdevent {
     /// # Arguments
     ///
     /// * `token` - The token returned by [`Self::register`].
+    #[cfg(unix)]
     pub fn unregister(&mut self, token: Token) -> FdeventResult<Arc<OwnedFd>> {
         let (fd, source, current_interest) = self.fds.remove(&token).ok_or_else(|| {
             FdeventError::Io(io::Error::new(io::ErrorKind::NotFound, "Token not found"))
@@ -325,6 +360,24 @@ impl Fdevent {
         self.handlers.remove(&token);
         self.timeouts.remove(&token);
         Ok(fd)
+    }
+
+    /// Unregisters a handle and removes its handler on Windows.
+    #[cfg(windows)]
+    pub fn unregister(&mut self, token: Token) -> FdeventResult<Arc<OwnedHandle>> {
+        let (handle, source, current_interest) = self.fds.remove(&token).ok_or_else(|| {
+            FdeventError::Io(io::Error::new(io::ErrorKind::NotFound, "Token not found"))
+        })?;
+
+        if let Some(mut source) = source {
+            if current_interest.is_some() {
+                self.poll.registry().deregister(&mut source)?;
+            }
+        }
+
+        self.handlers.remove(&token);
+        self.timeouts.remove(&token);
+        Ok(handle)
     }
 
     /// Sets a timeout for a registered file descriptor.
