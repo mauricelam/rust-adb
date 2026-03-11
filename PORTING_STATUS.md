@@ -37,6 +37,9 @@ The ADB Rust port has successfully implemented the core infrastructure, includin
 | `apk_archive_test.cpp` | `rust/adb-fastdeploy/src/tests.rs` | Ported (Unit) |
 | `patch_utils_test.cpp` | `rust/adb-fastdeploy/src/tests.rs` | Ported (Unit) |
 | `deploy_patch_generator_test.cpp` | `rust/adb-fastdeploy/src/tests.rs` | Ported (Unit) |
+| `auth.cpp` | `rust/adb-daemon/src/lib.rs` | Ported (Unit) |
+| `framebuffer_service.cpp` | `rust/adb-services/src/framebuffer_service.rs` | Ported (Unit) |
+| `abb_service.cpp` | `rust/adb-services/src/abb_service.rs` | Ported (Unit) |
 
 ### Remaining Gaps in Testing
 - **Windows-Specific Tests**: `sysdeps_win32_test.cpp` and `errno_test.cpp` are not fully ported.
@@ -59,7 +62,7 @@ The ADB Rust port has successfully implemented the core infrastructure, includin
 | `jdwp` / `track-app`| **Complete** | JDWP process tracking is implemented via `/proc` scanning. |
 | `abb` / `abb_exec` | **Complete** | Support for Android Bundle Bridge. |
 | `bugreport` | **Complete** | Implemented in `rust-adb` (client side). |
-| `framebuffer` | **Missing** | No implementation for screen capture. |
+| `framebuffer` | **Complete** | Screen capture service implemented in `adb-services`. |
 | `root` / `unroot` | **Complete** | Restart services implemented in `adb-services`. |
 | `tcpip` / `usb` | **Complete** | Restart services implemented in `adb-services`. |
 | `tradeinmode` | **Complete** | Trade-in mode logic and command validation. |
@@ -68,8 +71,8 @@ The ADB Rust port has successfully implemented the core infrastructure, includin
 
 ### Client CLI (`rust-adb`)
 The Rust client is currently a subset of the C++ `adb` tool.
-- **Available**: `devices`, `version`, `connect`, `disconnect`, `shell`, `bugreport`, `logcat`, `longcat`, `install`, `uninstall`, `sideload`, `rescue`, `forward`, `reverse`.
-- **Missing**: `push`, `pull`, `sync`, `pair`, `wait-for-*`, `reboot`, `root`, `unroot`.
+- **Available**: `devices`, `version`, `connect`, `disconnect`, `shell`, `bugreport`, `logcat`, `longcat`, `install`, `uninstall`, `sideload`, `rescue`, `forward`, `reverse`, `root`, `unroot`.
+- **Missing**: `push`, `pull`, `sync`, `pair`, `wait-for-*`, `reboot`.
 
 ---
 
@@ -82,7 +85,6 @@ To achieve full feature parity with the C++ implementation, the following work i
     - Add `pair` command support.
 2.  **Advanced Daemon Services**:
     - Implement `remount` service.
-    - Implement `framebuffer` service for screen capture.
 3.  **Platform Support**:
     - Complete the Windows implementation of `sysdeps` and `socket-spec`.
     - Ensure `fdevent` and `shell` (PTY) work correctly on Windows (using WinPTY or similar).
@@ -90,4 +92,4 @@ To achieve full feature parity with the C++ implementation, the following work i
     - Port the `incremental` installation logic.
 
 ## 5. Conclusion
-The port is approximately **75% complete** in terms of core logic and **50% complete** in terms of user-facing CLI features. The foundation is solid, but the "polish" features (screen capture) and deployment optimizations (FastDeploy) are the primary remaining engineering tasks.
+The port is approximately **85% complete** in terms of core logic and **60% complete** in terms of user-facing CLI features. The foundation is solid, but the "polish" features (remount) and deployment optimizations (FastDeploy) are the primary remaining engineering tasks.
