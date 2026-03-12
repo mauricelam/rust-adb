@@ -243,6 +243,10 @@ Once the core layers are fully ported and verified, the next phase will focus on
 - **Description**: Complete the platform-specific abstractions for Windows in `sysdeps` and `socket-spec`.
 - **Testing**: Ensure the entire test suite passes on Windows.
 
+### Step 21: Incremental Installation [Remaining]
+- **Description**: Port the `incremental` installation logic for large APK deployments.
+- **Testing**: Integration tests with incremental installation.
+
 ## Proposed Crate Reorganization
 
 To align more closely with the original C++ codebase and simplify the project structure, the following reorganization is proposed. This plan consolidates the current 18 crates into 3 primary crates.

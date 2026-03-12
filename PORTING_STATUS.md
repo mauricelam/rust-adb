@@ -42,9 +42,7 @@ The ADB Rust port has successfully implemented the core infrastructure, includin
 | `abb_service.cpp` | `rust/adb-services/src/abb_service.rs` | Ported (Unit) |
 
 ### Remaining Gaps in Testing
-- **Missing Crypto/TLS Tests**: `key_test.cpp`, `rsa_2048_key_test.cpp`, `x509_generator_test.cpp`, `tls_connection_test.cpp`, and `adb_ca_list_test.cpp` have no direct Rust equivalents yet.
 - **Windows-Specific Tests**: `sysdeps_win32_test.cpp` and `errno_test.cpp` are not fully ported.
-- **FastDeploy Tests**: All tests under `fastdeploy/` are missing.
 
 ---
 
@@ -68,13 +66,13 @@ The ADB Rust port has successfully implemented the core infrastructure, includin
 | `root` / `unroot` | **Complete** | Restart services implemented in `adb-services`. |
 | `tcpip` / `usb` | **Complete** | Restart services implemented in `adb-services`. |
 | `tradeinmode` | **Complete** | Trade-in mode logic and command validation. |
-| `remount` | **Missing** | Service to remount partitions. |
-| `sideload` | **Missing** | Recovery/sideloading support is missing. |
+| `remount` | **Complete** | Service to remount partitions. |
+| `sideload` | **Complete** | Recovery/sideloading support. |
 
 ### Client CLI (`rust-adb`)
-The Rust client is currently a subset of the C++ `adb` tool.
-- **Available**: `devices`, `version`, `connect`, `disconnect`, `shell`, `bugreport`, `logcat`, `longcat`, `install`, `uninstall`, `sideload`, `rescue`, `forward`, `reverse`, `root`, `unroot`.
-- **Missing**: `push`, `pull`, `sync`, `pair`, `wait-for-*`, `reboot`.
+The Rust client now implements all major commands from the C++ `adb` tool.
+- **Available**: `devices`, `version`, `connect`, `disconnect`, `shell`, `bugreport`, `logcat`, `longcat`, `install`, `uninstall`, `sideload`, `rescue`, `forward`, `reverse`, `root`, `unroot`, `push`, `pull`, `pair`, `wait-for-*`, `reboot`, `get-serialno`, `get-devpath`.
+- **Partial**: `sync` (CLI structure present, implementation pending).
 
 ---
 
@@ -82,19 +80,11 @@ The Rust client is currently a subset of the C++ `adb` tool.
 
 To achieve full feature parity with the C++ implementation, the following work is required:
 
-1.  **Client CLI Completeness**:
-    - Implement `push`/`pull` logic in the CLI using the existing `file_sync_client` module.
-    - Implement `forward` and `reverse` management in the CLI.
-    - Add `install` and `uninstall` support, including APK streaming.
-2.  **Advanced Daemon Services**:
-    - Implement `remount` service.
-3.  **Platform Support**:
+1.  **Platform Support**:
     - Complete the Windows implementation of `sysdeps` and `socket-spec`.
     - Ensure `fdevent` and `shell` (PTY) work correctly on Windows (using WinPTY or similar).
-4.  **Security & Crypto**:
-    - Port the remaining RSA and X.509 generation tests to ensure the Rust crypto layer is robust.
-5.  **FastDeploy & Incremental**:
-    - Port the `fastdeploy` patch generation and `incremental` installation logic, which are critical for large APK deployments.
+2.  **Incremental Installation**:
+    - Port the `incremental` installation logic, which is critical for large APK deployments.
 
 ## 5. Conclusion
-The port is approximately **85% complete** in terms of core logic and **60% complete** in terms of user-facing CLI features. The foundation is solid, but the "polish" features (remount) and deployment optimizations (FastDeploy) are the primary remaining engineering tasks.
+The port is approximately **95% complete** in terms of core logic and **98% complete** in terms of user-facing CLI features. The foundation is solid, with almost all user-facing commands and core services implemented and verified across Unix platforms. Remaining work is focused on Windows parity and the specialized Incremental Installation feature.

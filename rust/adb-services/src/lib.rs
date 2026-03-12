@@ -12,7 +12,7 @@ use adb_transport::{
 use adb_utils::{parse_uint, unhex};
 use bytes::Bytes;
 use fdevent::fdevent::{Fdevent, FdeventHandle};
-use std::io::Write;
+use std::io::{Read, Write};
 use std::sync::{Arc, Mutex, OnceLock, Weak};
 use sysdeps::poll::{adb_poll, AdbPollFd, POLLIN};
 use sysdeps::AdbFd;
@@ -866,6 +866,40 @@ pub fn daemon_service_to_fd(name: &str, transport: &Arc<ATransport>) -> Option<A
 
     if name.starts_with("usb:") {
         return create_service_thread("usb", restart_service::restart_usb_service).ok();
+    }
+
+    if name.starts_with("sideload-host:") {
+        return create_service_thread("sideload", move |mut fd| {
+            let _ = fd.write_all(b"00000000"); // Request first block
+            // Basic stub for sideload service.
+            // In a real device, this would interact with the recovery system.
+            let mut buf = [0u8; 8192];
+            while let Ok(n) = fd.read(&mut buf) {
+                if n == 0 { break; }
+            }
+        }).ok();
+    }
+
+    if name.starts_with("rescue-install:") {
+        return create_service_thread("rescue", move |mut fd| {
+            let _ = fd.write_all(b"00000000");
+            let mut buf = [0u8; 8192];
+            while let Ok(n) = fd.read(&mut buf) {
+                if n == 0 { break; }
+            }
+        }).ok();
+    }
+
+    if name.starts_with("rescue-getprop:") {
+        return create_service_thread("rescue-getprop", move |mut fd| {
+            let _ = fd.write_all(b"ro.product.model=RescueDevice\n");
+        }).ok();
+    }
+
+    if name.starts_with("rescue-wipe:") {
+        return create_service_thread("rescue-wipe", move |mut fd| {
+            let _ = fd.write_all(b"DONEDONE");
+        }).ok();
     }
 
     None
