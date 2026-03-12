@@ -17,5 +17,9 @@ pub mod adb_install;
 pub mod sideload;
 /// File sync command implementation.
 pub mod sync;
+/// Incremental installation utilities.
+pub mod incremental_utils;
+/// Incremental installation server.
+pub mod incremental_server;
 /// Pairing command implementation.
 pub mod pairing;

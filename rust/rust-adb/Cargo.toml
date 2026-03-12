@@ -20,6 +20,7 @@ adb-socket-spec = { path = "../socket-spec" }
 sysdeps = { path = "../sysdeps" }
 bytes = "1.0"
 libc = "0.2"
+tempfile = "3.8"
 
 [lints]
 workspace = true

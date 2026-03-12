@@ -10,6 +10,8 @@ mod pairing;
 mod root;
 mod sideload;
 mod sync;
+mod incremental_server;
+mod incremental_utils;
 
 use clap::{Parser, Subcommand};
 use adb_protocol::TransportType;
