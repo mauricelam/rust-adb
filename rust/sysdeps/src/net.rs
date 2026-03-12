@@ -110,25 +110,14 @@ pub fn set_tcp_keepalive<T: AsRawFd>(socket: &T, interval_sec: i32) -> bool {
 pub fn set_tcp_keepalive<T: AsRawSocket>(socket: &T, interval_sec: i32) -> bool {
     ensure_wsa_startup();
     let s = socket.as_raw_socket();
-
-    let mut keepalive = tcp_keepalive {
-        onoff: (interval_sec > 0) as u32,
-        keepalivetime: (interval_sec * 1000) as u32,
-        keepaliveinterval: (interval_sec * 1000) as u32,
-    };
-
-    let mut bytes_returned: u32 = 0;
+    let enable: i32 = if interval_sec > 0 { 1 } else { 0 };
     unsafe {
-        WSAIoctl(
-            s as usize,
-            SIO_KEEPALIVE_VALS,
-            &mut keepalive as *mut _ as *mut _,
-            std::mem::size_of::<tcp_keepalive>() as u32,
-            std::ptr::null_mut(),
-            0,
-            &mut bytes_returned,
-            std::ptr::null_mut(),
-            None,
+        setsockopt(
+            s,
+            SOL_SOCKET,
+            SO_KEEPALIVE,
+            &enable as *const _ as *const _,
+            std::mem::size_of_val(&enable) as i32,
         ) == 0
     }
 }
@@ -157,7 +146,7 @@ pub fn disable_tcp_nagle<T: AsRawSocket>(socket: &T) {
     let off: i32 = 1;
     unsafe {
         setsockopt(
-            s as usize,
+            s,
             IPPROTO_TCP as _,
             TCP_NODELAY as _,
             &off as *const _ as *const _,
@@ -227,7 +216,7 @@ pub fn network_peek<T: AsRawSocket>(socket: &T) -> Option<isize> {
     let s = socket.as_raw_socket();
     let mut available: i32 = 0;
     unsafe {
-        if ioctlsocket(s as usize, FIONREAD, &mut available) == 0 {
+        if ioctlsocket(s, FIONREAD, &mut available) == 0 {
             Some(available as isize)
         } else {
             None

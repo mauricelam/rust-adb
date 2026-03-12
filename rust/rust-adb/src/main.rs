@@ -2,17 +2,11 @@
 //! Ported from `client/main.cpp` and `commandline.cpp`.
 
 mod adb_client;
-mod adb_install;
 mod bugreport;
-mod forward;
-mod logcat;
-/// Root and unroot command implementation.
-pub mod root;
-mod sideload;
 
 use clap::{Parser, Subcommand};
 use adb_protocol::TransportType;
-use crate::adb_client::{adb_set_transport, adb_set_socket_spec, adb_query, adb_connect, format_host_command};
+use crate::adb_client::{adb_set_transport, adb_set_socket_spec, adb_query, adb_connect, format_host_command, adb_remount};
 use std::io::{self, Read, Write};
 
 #[derive(Parser)]
@@ -80,68 +74,11 @@ enum Commands {
         /// [PATH] | [--stream]
         args: Vec<String>,
     },
-    /// show device log (logcat --help for more)
-    Logcat {
-        /// [ARGS]
-        args: Vec<String>,
-    },
-    /// show device log
-    Longcat {
-        /// [ARGS]
-        args: Vec<String>,
-    },
-    /// push a single package to the device and install it
-    Install {
-        /// [ARGS] APK
-        args: Vec<String>,
-    },
-    /// remove a client package from the device
-    Uninstall {
-        /// [ARGS] PACKAGE
-        args: Vec<String>,
-    },
-    /// sideload the given full OTA package
-    Sideload {
-        /// OTAPACKAGE
-        filename: String,
-    },
-    /// rescue commands
-    Rescue {
-        #[command(subcommand)]
-        command: RescueCommands,
-    },
-    /// forward socket connections
-    Forward {
-        /// [ARGS]
-        args: Vec<String>,
-    },
-    /// reverse socket connections
-    Reverse {
-        /// [ARGS]
-        args: Vec<String>,
-    },
-    /// restart adbd with root permissions
-    Root,
-    /// restart adbd without root permissions
-    Unroot,
-}
-
-#[derive(Subcommand)]
-enum RescueCommands {
-    /// getprop [prop]
-    Getprop {
-        /// property name
-        prop: Option<String>,
-    },
-    /// install <filename>
-    Install {
-        /// OTA package filename
-        filename: String,
-    },
-    /// wipe userdata
-    Wipe {
-        /// wipe target (must be userdata)
-        target: String,
+    /// remount partitions read-write. if a reboot is required, -R will
+    Remount {
+        /// reboot if required
+        #[arg(short = 'R')]
+        reboot: bool,
     },
 }
 
@@ -200,7 +137,7 @@ fn main() -> anyhow::Result<()> {
 
             #[cfg(unix)]
             {
-                use std::os::fd::FromRawFd;
+                use std::os::unix::io::FromRawFd;
                 let mut stream = unsafe { std::fs::File::from_raw_fd(fd.into_raw_fd()) };
                 let mut stdout = io::stdout();
                 let mut buf = [0u8; 4096];
@@ -229,48 +166,34 @@ fn main() -> anyhow::Result<()> {
             let mut br = bugreport::Bugreport::new();
             br.do_it(&args)?;
         }
-        Commands::Logcat { args } => {
-            logcat::Logcat::do_it(&args, false)?;
-        }
-        Commands::Longcat { args } => {
-            logcat::Logcat::do_it(&args, true)?;
-        }
-        Commands::Install { args } => {
-            adb_install::install_app_streamed(&args)?;
-        }
-        Commands::Uninstall { args } => {
-            adb_install::uninstall_app(&args)?;
-        }
-        Commands::Sideload { filename } => {
-            sideload::adb_sideload_install(&filename, false)?;
-        }
-        Commands::Rescue { command } => {
-            match command {
-                RescueCommands::Getprop { prop } => {
-                    sideload::adb_rescue_getprop(prop.as_deref())?;
-                }
-                RescueCommands::Install { filename } => {
-                    sideload::adb_sideload_install(&filename, true)?;
-                }
-                RescueCommands::Wipe { target } => {
-                    if target != "userdata" {
-                        anyhow::bail!("invalid rescue wipe argument: {}", target);
-                    }
-                    sideload::adb_wipe_devices()?;
+        Commands::Remount { reboot } => {
+            let fd = adb_remount(reboot)?;
+            #[cfg(unix)]
+            {
+                use std::os::unix::io::FromRawFd;
+                let mut stream = unsafe { std::fs::File::from_raw_fd(fd.into_raw_fd()) };
+                let mut stdout = io::stdout();
+                let mut buf = [0u8; 4096];
+                loop {
+                    let n = stream.read(&mut buf)?;
+                    if n == 0 { break; }
+                    stdout.write_all(&buf[..n])?;
+                    stdout.flush()?;
                 }
             }
-        }
-        Commands::Forward { args } => {
-            forward::do_forward_reverse(&args, false)?;
-        }
-        Commands::Reverse { args } => {
-            forward::do_forward_reverse(&args, true)?;
-        }
-        Commands::Root => {
-            root::adb_root("root")?;
-        }
-        Commands::Unroot => {
-            root::adb_root("unroot")?;
+            #[cfg(windows)]
+            {
+                use std::os::windows::io::FromRawSocket;
+                let mut stream = unsafe { std::net::TcpStream::from_raw_socket(fd.into_raw_socket() as _) };
+                let mut stdout = io::stdout();
+                let mut buf = [0u8; 4096];
+                loop {
+                    let n = stream.read(&mut buf)?;
+                    if n == 0 { break; }
+                    stdout.write_all(&buf[..n])?;
+                    stdout.flush()?;
+                }
+            }
         }
     }
 

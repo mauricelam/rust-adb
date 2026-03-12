@@ -3,15 +3,5 @@
 
 /// ADB client connection and command execution.
 pub mod adb_client;
-/// Installation and uninstallation logic.
-pub mod adb_install;
-/// Logcat command implementation.
-pub mod logcat;
 /// Bugreport command implementation.
 pub mod bugreport;
-/// Sideload and rescue command implementation.
-pub mod sideload;
-/// Forward and reverse command implementation.
-pub mod forward;
-/// Root and unroot command implementation.
-pub mod root;

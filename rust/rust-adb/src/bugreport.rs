@@ -5,6 +5,8 @@ use adb_socket_spec::NativeOwnedHandle;
 use anyhow::{anyhow, Result};
 use std::io::{self, Read, Write};
 use std::path::Path;
+use std::sync::{Arc, Mutex};
+
 /// Represents the bugreport command.
 /// Ported from `bugreport.cpp`.
 pub struct Bugreport {
@@ -262,7 +264,6 @@ use std::os::windows::io::IntoRawSocket;
 mod tests {
     use super::*;
     use std::collections::HashMap;
-    use std::sync::{Arc, Mutex};
 
     struct BugreportMock {
         shell_commands: HashMap<String, (i32, String, String)>,

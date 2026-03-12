@@ -79,3 +79,37 @@ fn test_host_track_devices() {
 
     child.kill().unwrap();
 }
+
+#[test]
+fn test_remount() {
+    runner::run_adb_command(5037, &["devices"]).unwrap();
+    let (port, rx, _jh) = mock_server::start_mock_server().expect("Failed to start mock server");
+
+    std::thread::sleep(Duration::from_secs(1));
+
+    let _ = runner::run_adb_command(port, &["remount"]);
+
+    // It may or may not ask for version first depending on internal client logic
+    loop {
+        match rx.recv_timeout(Duration::from_secs(5)) {
+            Ok(cmd) if cmd == "host:features" => break,
+            Ok(cmd) if cmd == "host:version" => continue,
+            Ok(cmd) => panic!("Unexpected command: {}", cmd),
+            Err(e) => panic!("Failed to receive features command: {:?}", e),
+        }
+    }
+    // Then it should send remount command.
+    // Since we don't know what features the local ADB server returns,
+    // it could be "host:remount:" or "host:shell:remount" or some host-serial/host-transport-id variant
+    loop {
+        match rx.recv_timeout(Duration::from_secs(5)) {
+            Ok(cmd) => {
+                println!("Received command: {}", cmd);
+                if cmd.contains("remount") {
+                    return;
+                }
+            }
+            Err(e) => panic!("Failed to receive remount command: {:?}", e),
+        }
+    }
+}

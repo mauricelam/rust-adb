@@ -140,7 +140,6 @@ dependencies = [
  "regex",
  "sysdeps",
  "tempfile",
- "windows-sys 0.52.0",
  "zerocopy",
 ]
 
@@ -1428,7 +1427,6 @@ dependencies = [
  "libc",
  "log",
  "sysdeps",
- "tempfile",
  "thiserror",
 ]
 
@@ -1778,7 +1776,6 @@ dependencies = [
  "serial_test",
  "tempfile",
  "users",
- "windows-sys 0.52.0",
 ]
 
 [[package]]
