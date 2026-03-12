@@ -1,8 +1,11 @@
-#![cfg(unix)]
 use std::env;
 use std::io::{Error, ErrorKind, Result};
+
+#[cfg(unix)]
 use hostname;
+#[cfg(unix)]
 use users;
+#[cfg(unix)]
 use libc;
 
 /// Returns the value of the environment variable `var`.
@@ -20,43 +23,70 @@ pub fn get_host_name_utf8() -> Result<String> {
         }
     }
 
-    hostname::get()
-        .map(|h| h.to_string_lossy().into_owned())
-        .map_err(|e| Error::new(ErrorKind::Other, e))
+    #[cfg(unix)]
+    {
+        hostname::get()
+            .map(|h| h.to_string_lossy().into_owned())
+            .map_err(|e| Error::new(ErrorKind::Other, e))
+    }
+    #[cfg(windows)]
+    {
+        // Standard Windows API for hostname
+        Ok(env::var("COMPUTERNAME").unwrap_or_default())
+    }
 }
 
 /// Returns the login name in UTF-8.
 /// Ported from `get_login_name_utf8` in `sysdeps.h`.
 pub fn get_login_name_utf8() -> Result<String> {
-    if let Ok(user) = env::var("LOGNAME") {
+    #[cfg(unix)]
+    let var = "LOGNAME";
+    #[cfg(windows)]
+    let var = "USERNAME";
+
+    if let Ok(user) = env::var(var) {
         if !user.is_empty() {
             return Ok(user);
         }
     }
 
-    users::get_current_username()
-        .map(|u| u.to_string_lossy().into_owned())
-        .ok_or_else(|| Error::new(ErrorKind::NotFound, "failed to get current username"))
+    #[cfg(unix)]
+    {
+        users::get_current_username()
+            .map(|u| u.to_string_lossy().into_owned())
+            .ok_or_else(|| Error::new(ErrorKind::NotFound, "failed to get current username"))
+    }
+    #[cfg(windows)]
+    {
+        Ok(env::var("USERNAME").unwrap_or_default())
+    }
 }
 
 /// Returns a human-readable OS version string.
 /// Ported from `get_os_version` in `sysdeps.h`.
 pub fn get_os_version() -> String {
-    // SAFETY: utsname is a plain-old-data struct from libc. Zero-initializing it
-    // is safe before passing it to uname.
-    let mut name: libc::utsname = unsafe { std::mem::zeroed() };
+    #[cfg(unix)]
+    {
+        // SAFETY: utsname is a plain-old-data struct from libc. Zero-initializing it
+        // is safe before passing it to uname.
+        let mut name: libc::utsname = unsafe { std::mem::zeroed() };
 
-    // SAFETY: uname is a standard libc function. It returns 0 on success.
-    // We check the return value before accessing the struct members.
-    if unsafe { libc::uname(&mut name) } == 0 {
-        // SAFETY: The members of utsname are null-terminated byte arrays.
-        // from_ptr is safe here as we are pointing into our own stack-allocated struct.
-        let sysname = unsafe { std::ffi::CStr::from_ptr(name.sysname.as_ptr()) }.to_string_lossy();
-        let release = unsafe { std::ffi::CStr::from_ptr(name.release.as_ptr()) }.to_string_lossy();
-        let machine = unsafe { std::ffi::CStr::from_ptr(name.machine.as_ptr()) }.to_string_lossy();
-        format!("{} {} ({})", sysname, release, machine)
-    } else {
-        String::new()
+        // SAFETY: uname is a standard libc function. It returns 0 on success.
+        // We check the return value before accessing the struct members.
+        if unsafe { libc::uname(&mut name) } == 0 {
+            // SAFETY: The members of utsname are null-terminated byte arrays.
+            // from_ptr is safe here as we are pointing into our own stack-allocated struct.
+            let sysname = unsafe { std::ffi::CStr::from_ptr(name.sysname.as_ptr()) }.to_string_lossy();
+            let release = unsafe { std::ffi::CStr::from_ptr(name.release.as_ptr()) }.to_string_lossy();
+            let machine = unsafe { std::ffi::CStr::from_ptr(name.machine.as_ptr()) }.to_string_lossy();
+            format!("{} {} ({})", sysname, release, machine)
+        } else {
+            String::new()
+        }
+    }
+    #[cfg(windows)]
+    {
+        "Windows".to_string() // Simplified for now
     }
 }
 

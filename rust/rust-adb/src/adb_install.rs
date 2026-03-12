@@ -1,5 +1,6 @@
 use std::io::{Read, self};
 use crate::adb_client::{adb_connect, adb_get_feature_set, format_host_command};
+use crate::incremental_server::IncrementalServer;
 use adb_transport::{FEATURE_CMD, can_use_feature};
 use adb_utils::escape_arg;
 
@@ -10,10 +11,37 @@ use std::os::windows::io::{FromRawSocket, IntoRawSocket};
 
 /// Installs a single package.
 pub fn adb_install(pkg: &str, args: &[String]) -> anyhow::Result<()> {
-    let install_args = args.to_vec();
+    let mut install_args = args.to_vec();
+    let mut is_incremental = false;
+
+    install_args.retain(|arg| {
+        if arg == "--incremental" {
+            is_incremental = true;
+            false
+        } else {
+            true
+        }
+    });
 
     let features = adb_get_feature_set()?;
     let use_cmd = can_use_feature(&features, FEATURE_CMD);
+
+    if is_incremental {
+        let mut cmd = if use_cmd {
+            format!("exec:cmd package install-incremental")
+        } else {
+            format!("exec:pm install-incremental")
+        };
+        for arg in &install_args {
+            cmd.push_str(&format!(" {}", escape_arg(arg)));
+        }
+
+        let service = format_host_command(&cmd);
+        let (fd, _) = adb_connect(&service, false)?;
+
+        let mut server = IncrementalServer::new(fd, &[pkg.to_string()])?;
+        return server.serve();
+    }
 
     let file = std::fs::File::open(pkg)?;
     let size = file.metadata()?.len();
