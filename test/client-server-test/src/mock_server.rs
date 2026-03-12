@@ -2,6 +2,7 @@ use std::io::{self, Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::thread;
+use std::time::Duration;
 
 pub fn start_mock_server() -> std::io::Result<(u16, Receiver<String>, thread::JoinHandle<()>)> {
     let listener = TcpListener::bind("127.0.0.1:0")?;
@@ -26,11 +27,19 @@ pub fn start_mock_server() -> std::io::Result<(u16, Receiver<String>, thread::Jo
 }
 
 fn handle_connection(client_stream: TcpStream, tx: Sender<String>) -> std::io::Result<()> {
+    let timeout = Some(Duration::from_secs(10));
+    let _ = client_stream.set_read_timeout(timeout);
+    let _ = client_stream.set_write_timeout(timeout);
+
     let server_stream_res = TcpStream::connect("127.0.0.1:5037");
+    if let Ok(ref s) = server_stream_res {
+        let _ = s.set_read_timeout(timeout);
+        let _ = s.set_write_timeout(timeout);
+    }
 
     // MITM bi-directional forwarding
     let mut client_reader = client_stream.try_clone()?;
-    let mut server_reader = server_stream_res.as_ref().ok().and_then(|s| s.try_clone().ok());
+    let server_reader = server_stream_res.as_ref().ok().and_then(|s| s.try_clone().ok());
 
     let mut client_writer1 = client_stream.try_clone()?;
     let mut client_writer2 = client_stream;
