@@ -208,7 +208,7 @@ Once the core layers are fully ported and verified, the next phase will focus on
 
 ## Phase 3: Remaining Components and Platform Parity
 
-### Step 14: ADB Listeners
+### Step 14: ADB Listeners [Done]
 - **Files**: `adb_listeners.h`, `adb_listeners.cpp`
 - **Description**: Port the listener management logic for both host and daemon.
 - **Testing**: Port `adb_listeners_test.cpp` and verify listener creation/deletion.
@@ -231,11 +231,11 @@ Once the core layers are fully ported and verified, the next phase will focus on
 - **Description**: Implement `UsbConnection` for host (libusb/WinUSB) and daemon (FunctionFS).
 - **Testing**: Integration tests with actual USB devices.
 
-### Step 18: Daemon Authentication Key Management
+### Step 18: Daemon Authentication Key Management [Done]
 - **Description**: Port logic for managing authorized keys (`adb_keys`) on the daemon side from `daemon/auth.cpp`.
 - **Testing**: Verify that authorized devices can connect and unauthorized ones are prompted.
 
-### Step 19: Advanced Daemon Services
+### Step 19: Advanced Daemon Services [Done]
 - **Description**: Port remaining services like `track-app`, `abb`, and `abb_exec`.
 - **Testing**: Verify correct dispatch and execution of these services.
 
