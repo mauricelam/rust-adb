@@ -2,11 +2,19 @@
 //! Ported from `client/main.cpp` and `commandline.cpp`.
 
 mod adb_client;
+mod adb_install;
 mod bugreport;
+mod forward;
+mod logcat;
+mod pairing;
+mod root;
+mod sideload;
+mod sync;
 
 use clap::{Parser, Subcommand};
 use adb_protocol::TransportType;
-use crate::adb_client::{adb_set_transport, adb_set_socket_spec, adb_query, adb_connect, format_host_command, adb_remount};
+use crate::adb_client::{adb_set_transport, adb_set_socket_spec, adb_query, adb_connect, format_host_command, adb_remount, wait_for_device, adb_command};
+use crate::forward::ForwardCommand;
 use std::io::{self, Read, Write};
 
 #[derive(Parser)]
@@ -80,6 +88,127 @@ enum Commands {
         #[arg(short = 'R')]
         reboot: bool,
     },
+    /// copy local files/directories to device
+    Push {
+        /// source files
+        srcs: Vec<String>,
+        /// destination directory
+        dst: String,
+    },
+    /// copy files/dirs from device
+    Pull {
+        /// source files
+        srcs: Vec<String>,
+        /// destination directory
+        #[arg(default_value = ".")]
+        dst: String,
+    },
+    /// sync a local build from $ANDROID_PRODUCT_OUT to the device
+    Sync {
+        /// partition to sync (all, data, odm, oem, product, system, system_ext, vendor)
+        partition: Option<String>,
+    },
+    /// manage port forwarding
+    Forward {
+        /// list all forward socket connections
+        #[arg(long)]
+        list: bool,
+        /// remove all forward socket connections
+        #[arg(long)]
+        remove_all: bool,
+        /// remove specific forward socket connection
+        #[arg(long)]
+        remove: Option<String>,
+        /// prevent rebinding of existing redirection
+        #[arg(long)]
+        no_rebind: bool,
+        /// [LOCAL] [REMOTE]
+        args: Vec<String>,
+    },
+    /// manage reverse redirections
+    Reverse {
+        /// list all reverse socket connections
+        #[arg(long)]
+        list: bool,
+        /// remove all reverse socket connections
+        #[arg(long)]
+        remove_all: bool,
+        /// remove specific reverse socket connection
+        #[arg(long)]
+        remove: Option<String>,
+        /// prevent rebinding of existing redirection
+        #[arg(long)]
+        no_rebind: bool,
+        /// [REMOTE] [LOCAL]
+        args: Vec<String>,
+    },
+    /// install a single package
+    Install {
+        /// package to install
+        pkg: String,
+        /// additional arguments
+        args: Vec<String>,
+    },
+    /// remove this app package from the device
+    Uninstall {
+        /// keep the data and cache directories
+        #[arg(short = 'k')]
+        keep_data: bool,
+        /// package to uninstall
+        pkg: String,
+    },
+    /// show device log
+    Logcat {
+        /// logcat arguments
+        args: Vec<String>,
+    },
+    /// show device log (long format)
+    Longcat {
+        /// logcat arguments
+        args: Vec<String>,
+    },
+    /// restart adbd with root permissions
+    Root,
+    /// restart adbd without root permissions
+    Unroot,
+    /// restart adbd listening on TCP
+    Tcpip {
+        /// port
+        port: i32,
+    },
+    /// restart adbd listening on USB
+    Usb,
+    /// wait for device to be in a given state
+    #[command(external_subcommand)]
+    WaitFor(Vec<String>),
+    /// reboot the device
+    Reboot {
+        /// [bootloader|recovery|sideload|sideload-auto-reboot]
+        arg: Option<String>,
+    },
+    /// sideload the given full OTA package
+    Sideload {
+        /// OTA package
+        filename: String,
+    },
+    /// rescue commands
+    Rescue {
+        /// rescue arguments
+        args: Vec<String>,
+    },
+    /// pair with a device for secure TCP/IP communication
+    Pair {
+        /// HOST[:PORT]
+        host: String,
+        /// PAIRING CODE
+        password: Option<String>,
+    },
+    /// print <serial-number>
+    #[command(name = "get-serialno")]
+    GetSerialno,
+    /// print <device-path>
+    #[command(name = "get-devpath")]
+    GetDevpath,
 }
 
 fn main() -> anyhow::Result<()> {
@@ -194,6 +323,109 @@ fn main() -> anyhow::Result<()> {
                     stdout.flush()?;
                 }
             }
+        }
+        Commands::Push { srcs, dst } => {
+            sync::adb_push(&srcs, &dst)?;
+        }
+        Commands::Pull { srcs, dst } => {
+            sync::adb_pull(&srcs, &dst)?;
+        }
+        Commands::Sync { partition } => {
+            sync::adb_sync(partition.as_deref())?;
+        }
+        Commands::Forward { list, remove_all, remove, no_rebind, args } => {
+            let cmd = if list {
+                ForwardCommand::List
+            } else if remove_all {
+                ForwardCommand::RemoveAll
+            } else if let Some(local) = remove {
+                ForwardCommand::Remove(local)
+            } else if args.len() == 2 {
+                ForwardCommand::Add(args[0].clone(), args[1].clone(), no_rebind)
+            } else {
+                anyhow::bail!("invalid forward arguments");
+            };
+            forward::adb_forward_command(cmd, false)?;
+        }
+        Commands::Reverse { list, remove_all, remove, no_rebind, args } => {
+            let cmd = if list {
+                ForwardCommand::List
+            } else if remove_all {
+                ForwardCommand::RemoveAll
+            } else if let Some(remote) = remove {
+                ForwardCommand::Remove(remote)
+            } else if args.len() == 2 {
+                ForwardCommand::Add(args[0].clone(), args[1].clone(), no_rebind)
+            } else {
+                anyhow::bail!("invalid reverse arguments");
+            };
+            forward::adb_forward_command(cmd, true)?;
+        }
+        Commands::Install { pkg, args } => {
+            adb_install::adb_install(&pkg, &args)?;
+        }
+        Commands::Uninstall { keep_data, pkg } => {
+            adb_install::adb_uninstall(&pkg, keep_data)?;
+        }
+        Commands::Logcat { args } => {
+            logcat::adb_logcat(&args, false)?;
+        }
+        Commands::Longcat { args } => {
+            logcat::adb_logcat(&args, true)?;
+        }
+        Commands::Root => {
+            root::adb_root("root")?;
+        }
+        Commands::Unroot => {
+            root::adb_root("unroot")?;
+        }
+        Commands::Tcpip { port } => {
+            root::adb_tcpip(port)?;
+        }
+        Commands::Usb => {
+            root::adb_usb()?;
+        }
+        Commands::WaitFor(args) => {
+            if args.is_empty() {
+                anyhow::bail!("wait-for requires a state");
+            }
+            // Clap doesn't support hyphens in subcommands easily with external_subcommand
+            // but we can join them if needed. Actually WaitFor is called with ["wait-for-device"] etc.
+            wait_for_device(&args[0], None)?;
+        }
+        Commands::Reboot { arg } => {
+            let service = if let Some(a) = arg {
+                format!("reboot:{}", a)
+            } else {
+                "reboot:".to_string()
+            };
+            adb_command(&format_host_command(&service))?;
+        }
+        Commands::Sideload { filename } => {
+            sideload::adb_sideload(&filename)?;
+        }
+        Commands::Rescue { args } => {
+            sideload::adb_rescue(&args)?;
+        }
+        Commands::Pair { host, password } => {
+            let password = if let Some(p) = password {
+                p
+            } else {
+                print!("Enter pairing code: ");
+                io::stdout().flush()?;
+                let mut p = String::new();
+                io::stdin().read_line(&mut p)?;
+                p.trim().to_string()
+            };
+            pairing::adb_pair(&host, &password)?;
+        }
+        Commands::GetSerialno => {
+            let result = adb_query(&format_host_command("get-serialno"))?;
+            println!("{}", result);
+        }
+        Commands::GetDevpath => {
+            let result = adb_query(&format_host_command("get-devpath"))?;
+            println!("{}", result);
         }
     }
 

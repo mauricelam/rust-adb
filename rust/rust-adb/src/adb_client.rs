@@ -213,3 +213,89 @@ pub fn adb_remount(reboot: bool) -> Result<NativeOwnedHandle> {
     let (fd, _) = adb_connect(&service, false)?;
     Ok(fd)
 }
+
+/// Executes a command and waits for it to complete.
+/// Ported from `adb_command` in `commandline.cpp`.
+pub fn adb_command(service: &str) -> Result<()> {
+    let (fd, _) = adb_connect(service, false)?;
+
+    #[cfg(unix)]
+    let mut stream = unsafe { std::fs::File::from_raw_fd(fd.into_raw_fd()) };
+    #[cfg(windows)]
+    let mut stream = unsafe { std::net::TcpStream::from_raw_socket(fd.into_raw_socket() as _) };
+
+    let mut buf = String::new();
+    stream.read_to_string(&mut buf)?;
+    if !buf.is_empty() {
+        print!("{}", buf);
+    }
+
+    Ok(())
+}
+
+/// Waits for a device to be in a given state.
+/// Ported from `wait_for_device` in `commandline.cpp`.
+pub fn wait_for_device(service: &str, timeout: Option<std::time::Duration>) -> Result<()> {
+    let mut components: Vec<String> = service.split('-').map(|s| s.to_string()).collect();
+    if components.len() < 3 {
+        return Err(AdbClientError::ProtocolFault(format!("couldn't parse 'wait-for' command: {}", service)));
+    }
+
+    if components[2] != "usb" && components[2] != "local" && components[2] != "any" {
+        let (t_type, _, _) = adb_get_transport();
+        let it = match t_type {
+            TransportType::Usb => "usb",
+            TransportType::Local => "local",
+            _ => "any",
+        };
+        components.insert(2, it.to_string());
+    }
+
+    let cmd = format_host_command(&components.join("-"));
+
+    if let Some(timeout) = timeout {
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            std::thread::sleep(timeout);
+            let _ = tx.send(());
+        });
+
+        let (fd, _) = adb_connect(&cmd, false)?;
+        #[cfg(unix)]
+        let mut stream = std::mem::ManuallyDrop::new(unsafe { std::fs::File::from_raw_fd(fd.as_raw_fd()) });
+        #[cfg(windows)]
+        let mut stream = std::mem::ManuallyDrop::new(unsafe { std::net::TcpStream::from_raw_socket(fd.as_raw_socket() as _) });
+
+        let mut buf = [0u8; 1];
+        loop {
+            if rx.try_recv().is_ok() {
+                return Err(AdbClientError::Io(std::io::Error::new(std::io::ErrorKind::TimedOut, "timeout expired while waiting for device")));
+            }
+            #[cfg(unix)]
+            unsafe {
+                let flags = libc::fcntl(fd.as_raw_fd(), libc::F_GETFL);
+                libc::fcntl(fd.as_raw_fd(), libc::F_SETFL, flags | libc::O_NONBLOCK);
+            }
+            #[cfg(windows)]
+            {
+                let mode = 1u32;
+                unsafe {
+                    sysdeps::net::ioctlsocket(fd.as_raw_socket() as _, sysdeps::net::FIONBIO, &mode as *const _ as *mut _);
+                }
+            }
+            match stream.read(&mut buf) {
+                Ok(0) => break,
+                Ok(_) => continue,
+                Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                    std::thread::sleep(std::time::Duration::from_millis(100));
+                    continue;
+                }
+                Err(e) => return Err(e.into()),
+            }
+        }
+    } else {
+        adb_command(&cmd)?;
+    }
+
+    Ok(())
+}

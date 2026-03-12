@@ -403,6 +403,48 @@ mod tests {
     }
 
     #[test]
+    fn test_no_certificate_verification() {
+        let (server_cert, server_key, client_cert, client_key) = load_test_data();
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+
+        let server_thread = thread::spawn(move || {
+            let (stream, _) = listener.accept().unwrap();
+            let mut server = TlsConnection::create(
+                Role::Server,
+                &server_cert,
+                &server_key,
+                stream,
+            )
+            .unwrap();
+            server.set_cert_verify_callback(|| true);
+            assert_eq!(server.do_handshake(), TlsError::Success);
+
+            let mut buf = [0u8; 4];
+            server.read_fully_buf(&mut buf);
+            assert_eq!(&buf, b"ping");
+            server.write_fully(b"pong");
+        });
+
+        let client_stream = std::net::TcpStream::connect(addr).unwrap();
+        let mut client = TlsConnection::create(
+            Role::Client,
+            &client_cert,
+            &client_key,
+            client_stream,
+        )
+        .unwrap();
+        client.set_cert_verify_callback(|| true);
+
+        assert_eq!(client.do_handshake(), TlsError::Success);
+        client.write_fully(b"ping");
+        let resp = client.read_fully(4);
+        assert_eq!(resp, b"pong");
+
+        server_thread.join().unwrap();
+    }
+
+    #[test]
     fn test_no_trusted_certificates() {
         let (server_cert, server_key, client_cert, client_key) = load_test_data();
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();

@@ -333,6 +333,33 @@ mod tests {
     }
 
     #[test]
+    fn test_sha256_hex_string_to_bits_bad_param() {
+        assert!(sha256_hex_string_to_bits("").is_none());
+        assert!(sha256_hex_string_to_bits("a").is_none());
+        assert!(sha256_hex_string_to_bits(&"a".repeat(SHA256_DIGEST_LENGTH * 2 - 1)).is_none());
+        assert!(sha256_hex_string_to_bits(&"a".repeat(SHA256_DIGEST_LENGTH * 2 + 1)).is_none());
+        let mut hex = "a".repeat(SHA256_DIGEST_LENGTH * 2);
+        hex.replace_range(32..33, "x");
+        assert!(sha256_hex_string_to_bits(&hex).is_none());
+    }
+
+    #[test]
+    fn test_sha256_bits_to_hex_string_valid_param() {
+        let mut ct = 0u8;
+        for _ in 0..8 {
+            let mut bits = Vec::new();
+            while bits.len() < SHA256_DIGEST_LENGTH {
+                bits.push(ct);
+                ct = ct.wrapping_add(1);
+            }
+
+            let hex = sha256_bits_to_hex_string(&bits);
+            let out_bits = sha256_hex_string_to_bits(&hex).unwrap();
+            assert_eq!(bits, out_bits);
+        }
+    }
+
+    #[test]
     fn test_ca_list_smoke() {
         let key = "A45BC1FF6C89BF0E65F9BA153FBC98764969B4113F1CF878EEF9BF1C3F9C9227";
         let der = create_ca_issuer_from_encoded_key(key).unwrap();
