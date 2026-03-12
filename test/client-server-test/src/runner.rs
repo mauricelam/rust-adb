@@ -13,6 +13,7 @@ const ADB_PATH: &str = {
 
 pub fn run_adb_command(port: u16, args: &[&str]) -> std::io::Result<Output> {
     Command::new(ADB_PATH)
+        .env("ADB_NOSERVER", "1")
         .args(["-P", &port.to_string()])
         .args(args)
         .output()
@@ -20,6 +21,7 @@ pub fn run_adb_command(port: u16, args: &[&str]) -> std::io::Result<Output> {
 
 pub fn spawn_adb_command(port: u16, args: &[&str]) -> std::io::Result<std::process::Child> {
     Command::new(ADB_PATH)
+        .env("ADB_NOSERVER", "1")
         .args(["-P", &port.to_string()])
         .args(args)
         .spawn()

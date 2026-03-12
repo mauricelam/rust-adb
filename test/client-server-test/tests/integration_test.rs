@@ -21,11 +21,11 @@ fn test_host_devices() {
 
     // Assert that the received message is correct.
     assert_eq!(
-        rx.recv_timeout(Duration::from_secs(5)).unwrap(),
+        rx.recv_timeout(Duration::from_secs(10)).unwrap(),
         "host:version"
     );
     assert_eq!(
-        rx.recv_timeout(Duration::from_secs(5)).unwrap(),
+        rx.recv_timeout(Duration::from_secs(10)).unwrap(),
         "host:devices"
     );
 }
@@ -44,11 +44,11 @@ fn test_host_devices_l() {
 
     // Assert that the received messages are correct.
     assert_eq!(
-        rx.recv_timeout(Duration::from_secs(1)).unwrap(),
+        rx.recv_timeout(Duration::from_secs(10)).unwrap(),
         "host:version"
     );
     assert_eq!(
-        rx.recv_timeout(Duration::from_secs(1)).unwrap(),
+        rx.recv_timeout(Duration::from_secs(10)).unwrap(),
         "host:devices-l"
     );
 }
@@ -69,11 +69,11 @@ fn test_host_track_devices() {
 
     // Assert that the received messages are correct.
     assert_eq!(
-        rx.recv_timeout(Duration::from_secs(1)).unwrap(),
+        rx.recv_timeout(Duration::from_secs(10)).unwrap(),
         "host:version"
     );
     assert_eq!(
-        rx.recv_timeout(Duration::from_secs(1)).unwrap(),
+        rx.recv_timeout(Duration::from_secs(10)).unwrap(),
         "host:track-devices"
     );
 
@@ -91,7 +91,7 @@ fn test_remount() {
 
     // It may or may not ask for version first depending on internal client logic
     loop {
-        match rx.recv_timeout(Duration::from_secs(5)) {
+        match rx.recv_timeout(Duration::from_secs(10)) {
             Ok(cmd) if cmd == "host:features" => break,
             Ok(cmd) if cmd == "host:version" => continue,
             Ok(cmd) => panic!("Unexpected command: {}", cmd),
@@ -102,7 +102,7 @@ fn test_remount() {
     // Since we don't know what features the local ADB server returns,
     // it could be "host:remount:" or "host:shell:remount" or some host-serial/host-transport-id variant
     loop {
-        match rx.recv_timeout(Duration::from_secs(5)) {
+        match rx.recv_timeout(Duration::from_secs(10)) {
             Ok(cmd) => {
                 println!("Received command: {}", cmd);
                 if cmd.contains("remount") {

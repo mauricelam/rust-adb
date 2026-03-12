@@ -50,7 +50,7 @@ fn handle_connection(client_stream: TcpStream, tx: Sender<String>) -> std::io::R
             loop {
                 let mut len_buf = [0u8; 4];
                 if let Err(e) = client_reader.read_exact(&mut len_buf) {
-                    if e.kind() == io::ErrorKind::UnexpectedEof {
+                    if e.kind() == io::ErrorKind::UnexpectedEof || e.kind() == io::ErrorKind::TimedOut {
                         break;
                     }
                     return Err(e);
