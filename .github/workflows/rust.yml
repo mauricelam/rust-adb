@@ -16,7 +16,7 @@ jobs:
     timeout-minutes: 20
 
     steps:
-    - uses: actions/checkout@v3
+    - uses: actions/checkout@v4
     - name: Run tests
       run: cargo test --verbose
       working-directory: test/client-server-test
@@ -24,4 +24,4 @@ jobs:
   integration-test:
     runs-on: ubuntu-latest
     steps:
-    - uses: actions/checkout@v3
+    - uses: actions/checkout@v4
