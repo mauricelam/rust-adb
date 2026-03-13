@@ -63,3 +63,63 @@ fn test_remount() {
 
     assert!(wait_for_cmd(&rx, "remount"), "Did not receive remount command");
 }
+
+#[test]
+fn test_version() {
+    let (port, _rx, _jh) = mock_server::start_mock_server().expect("Failed to start mock server");
+    std::thread::sleep(Duration::from_secs(1));
+
+    let output = runner::run_adb_command(port, &["version"]).expect("Failed to run adb version");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+
+    assert!(stdout.contains("Android Debug Bridge version"), "Output does not contain version info");
+}
+
+#[test]
+fn test_get_serialno() {
+    let (port, rx, _jh) = mock_server::start_mock_server().expect("Failed to start mock server");
+    std::thread::sleep(Duration::from_secs(1));
+
+    let output = runner::run_adb_command(port, &["get-serialno"]).expect("Failed to run adb get-serialno");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+
+    assert!(stdout.contains("12345678"), "Output does not contain expected serial number: {}", stdout);
+    assert!(wait_for_cmd(&rx, "get-serialno"), "Did not receive get-serialno command");
+}
+
+#[test]
+fn test_get_devpath() {
+    let (port, rx, _jh) = mock_server::start_mock_server().expect("Failed to start mock server");
+    std::thread::sleep(Duration::from_secs(1));
+
+    let output = runner::run_adb_command(port, &["get-devpath"]).expect("Failed to run adb get-devpath");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+
+    assert!(stdout.contains("/dev/usb/001/002"), "Output does not contain expected devpath: {}", stdout);
+    assert!(wait_for_cmd(&rx, "get-devpath"), "Did not receive get-devpath command");
+}
+
+#[test]
+fn test_forward_list() {
+    let (port, rx, _jh) = mock_server::start_mock_server().expect("Failed to start mock server");
+    std::thread::sleep(Duration::from_secs(1));
+
+    let output = runner::run_adb_command(port, &["forward", "--list"]).expect("Failed to run adb forward --list");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+
+    assert!(stdout.contains("tcp:1234 tcp:5678"), "Output does not contain expected forward list: {}", stdout);
+    assert!(wait_for_cmd(&rx, "list-forward"), "Did not receive list-forward command");
+}
+
+#[test]
+fn test_shell_basic() {
+    let (port, rx, _jh) = mock_server::start_mock_server().expect("Failed to start mock server");
+    std::thread::sleep(Duration::from_secs(1));
+
+    // For shell commands, we use -e and pipe to ensure adb doesn't hang waiting for stdin
+    let _ = runner::run_adb_command(port, &["-e", "shell", "ls"]);
+
+    // We only assert that the command was sent.
+    // 'shell' might be sent as 'shell:ls' or 'shell,v2...:ls'.
+    assert!(wait_for_cmd(&rx, "shell"), "Did not receive shell command");
+}
