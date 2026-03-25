@@ -6,6 +6,11 @@ use std::env;
 
 pub mod harness;
 
+/// Manages the lifecycle of an Android Emulator instance.
+///
+/// It starts the emulator using `emulator -avd AVD_NAME` and polls for boot completion
+/// by checking the `sys.boot_completed` property via ADB.
+/// When the guard is dropped, it attempts to gracefully kill the emulator.
 pub struct EmulatorGuard {
     process: Child,
     adb_path: String,
@@ -13,6 +18,12 @@ pub struct EmulatorGuard {
 }
 
 impl EmulatorGuard {
+    /// Creates a new `EmulatorGuard`, starting the specified AVD.
+    ///
+    /// # Arguments
+    /// * `avd_name` - The name of the Android Virtual Device (AVD) to start.
+    /// * `adb_path` - Path to the `adb` binary used for readiness polling.
+    /// * `port` - The console port for the emulator (e.g., 5554).
     pub fn new(avd_name: &str, adb_path: &str, port: u16) -> Result<Self> {
         let emulator_path = env::var("ANDROID_HOME")
             .map(|home| format!("{}/emulator/emulator", home))
