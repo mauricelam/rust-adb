@@ -76,6 +76,15 @@ enum Commands {
     },
     /// run remote shell command (interactive shell if no command given)
     Shell {
+        /// force PTY allocation
+        #[arg(short = 't', action = clap::ArgAction::Count)]
+        pty: u8,
+        /// disable PTY allocation
+        #[arg(short = 'T')]
+        no_pty: bool,
+        /// disable Shell V2 protocol
+        #[arg(short = 'x')]
+        no_shell_v2: bool,
         /// COMMAND
         command: Vec<String>,
     },
@@ -257,13 +266,30 @@ fn main() -> anyhow::Result<()> {
             let result = adb_query(&query)?;
             println!("{}", result);
         }
-        Commands::Shell { command } => {
+        Commands::Shell { pty, no_pty, no_shell_v2, command } => {
             let shell_command = if command.is_empty() {
                 "".to_string()
             } else {
                 command.join(" ")
             };
-            let service = format_host_command(&format!("shell:{}", shell_command));
+
+            let mut prefix = String::new();
+            if no_pty {
+                prefix.push('T');
+            } else if pty > 0 {
+                for _ in 0..pty {
+                    prefix.push('t');
+                }
+            }
+            if no_shell_v2 {
+                prefix.push('x');
+            }
+
+            let service = if prefix.is_empty() {
+                format_host_command(&format!("shell:{}", shell_command))
+            } else {
+                format_host_command(&format!("shell,{}:{}", prefix, shell_command))
+            };
             let (fd, _) = adb_connect(&service, false)?;
 
             #[cfg(unix)]
