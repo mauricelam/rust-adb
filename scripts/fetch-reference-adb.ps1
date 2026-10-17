@@ -7,6 +7,20 @@
 
 $ErrorActionPreference = "Stop"
 
+# Ensure 32-bit VC++ Redistributable runtime is installed on 64-bit Windows Server VMs
+if (-not (Test-Path "$env:SystemRoot\SysWOW64\vcruntime140.dll")) {
+    try {
+        [Console]::Error.WriteLine("Installing 32-bit Visual C++ Redistributable runtime...")
+        $VcUrl = "https://aka.ms/vs/17/release/vc_redist.x86.exe"
+        $VcPath = Join-Path $env:TEMP "vc_redist.x86.exe"
+        Invoke-WebRequest -Uri $VcUrl -OutFile $VcPath -UseBasicParsing
+        Start-Process -FilePath $VcPath -ArgumentList "/quiet", "/norestart" -Wait
+        Remove-Item -Force $VcPath -ErrorAction SilentlyContinue
+    } catch {
+        [Console]::Error.WriteLine("Warning: Failed to install vc_redist.x86.exe: $_")
+    }
+}
+
 $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $RepoRoot = (Resolve-Path "$ScriptDir\..").Path
 $TargetDir = Join-Path $RepoRoot "target\reference"
@@ -44,12 +58,6 @@ if (Test-Path $SrcDir) {
 
     Remove-Item -Recurse -Force $TempExtract -ErrorAction SilentlyContinue | Out-Null
     Remove-Item -Force $ZipPath -ErrorAction SilentlyContinue | Out-Null
-}
-
-# Remove AdbWinUsbApi.dll on headless Server VMs to prevent STATUS_DLL_NOT_FOUND (0xC0000135) for missing SysWOW64 winusb.dll
-$WinUsbDll = Join-Path $TargetDir "AdbWinUsbApi.dll"
-if (Test-Path $WinUsbDll) {
-    Remove-Item -Force $WinUsbDll -ErrorAction SilentlyContinue | Out-Null
 }
 
 if (Get-Command Unblock-File -ErrorAction SilentlyContinue) {
