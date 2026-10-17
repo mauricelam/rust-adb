@@ -32,5 +32,24 @@ jobs:
       - name: Clippy check
         run: cargo clippy --workspace --all-targets -- -D warnings
 
+      - name: Fetch reference ADB (Unix)
+        if: runner.os != 'Windows'
+        run: |
+          chmod +x scripts/fetch-reference-adb.sh
+          ADB_PATH=$(scripts/fetch-reference-adb.sh)
+          echo "ADB_REFERENCE=$ADB_PATH" >> $GITHUB_ENV
+
+      - name: Fetch reference ADB (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $ADB_PATH = .\scripts\fetch-reference-adb.ps1
+          echo "ADB_REFERENCE=$ADB_PATH" >> $env:GITHUB_ENV
+
+      - name: Verify reference ADB version
+        shell: bash
+        run: |
+          "$ADB_REFERENCE" version
+
       - name: Run tests
         run: cargo test --workspace

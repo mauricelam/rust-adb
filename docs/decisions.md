@@ -42,5 +42,5 @@
 **Decision:** Defer resolution of specific upstream revision pinning and mutation kill-rate targets to their respective dedicated tasks.
 **Reason:** These parameters depend on upstream repository synchronization and baseline mutation testing results that are established in subsequent setup tasks.
 
-- Pinned upstream ADB revision: [Placeholder: Resolved in task 0.3]
+- Pinned upstream ADB revision: Tag `platform-tools-36.0.2` (build 14143358) from `platform/packages/modules/adb`. Official release `platform-tools_r36.0.2` is used as reference binaries in CI since building ADB source from scratch across all target host OSes is deferred to task 0.10.
 - Mutation kill-rate threshold: [Placeholder: Resolved in task 0.11]
