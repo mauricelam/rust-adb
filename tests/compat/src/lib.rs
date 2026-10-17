@@ -322,6 +322,8 @@ fn set_isolated_env(cmd: &mut Command, home_path: &std::path::Path, port: u16) {
     cmd.env("USERPROFILE", home_path);
     cmd.env("ANDROID_ADB_HOME", home_path);
     cmd.env("ANDROID_USER_HOME", home_path);
+    cmd.env("ADB_MDNS_AUTO_CONNECT", "0");
+    cmd.env("ADB_MDNS_OPENSCREEN", "0");
     if port != 0 {
         cmd.env("ANDROID_ADB_SERVER_PORT", port.to_string());
         cmd.env("ADB_SERVER_SOCKET", format!("tcp:localhost:{port}"));

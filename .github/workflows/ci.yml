@@ -68,6 +68,8 @@ jobs:
   compat-baseline:
     name: Compat Baseline (C++ vs C++) (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
+    env:
+      RUST_TEST_THREADS: 1
     strategy:
       fail-fast: false
       matrix:
@@ -118,6 +120,8 @@ jobs:
     name: Compat Quarantine (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
     continue-on-error: true
+    env:
+      RUST_TEST_THREADS: 1
     strategy:
       fail-fast: false
       matrix:
