@@ -1,83 +1,56 @@
-# Project Context: ADB Rust Port
+# AGENTS.md
 
-This project aims to create a modern, safe, and performant implementation of the Android Debug Bridge (ADB) protocol in Rust. This repository is structured to facilitate a "compare-and-port" workflow, ensuring high fidelity to the original logic while leveraging Rust's safety features.
+## Overview
 
-## Directory Structure & Purpose
+This project is a modern, safe, and performant implementation of the Android Debug Bridge (ADB) protocol in Rust, designed for strict behavioral parity with upstream C++ ADB. For key architectural decisions and guidelines, refer to [docs/decisions.md](docs/decisions.md). The repository is structured as a Cargo workspace consisting of six crates:
 
-### 1. `original/`
+- `adb-proto`: Wire protocol packet definitions, serialization, and framing logic.
+- `adb-auth`: Key generation, RSA key handling, and authentication protocols.
+- `adb-transport`: Connection and transport interfaces for USB, TCP/IP, and mDNS.
+- `adb-server`: Host server daemon implementation and service routing.
+- `adb-client`: Client-side library for connecting to and interacting with the ADB server.
+- `adb-cli`: Command-line interface binary (`adb`) parsing arguments and invoking client services.
 
-* **Purpose**: Contains the reference C++ source code from the Android Open Source Project (AOSP).
-* **Build System**: Uses `Android.bp` (Soong).
-* **Agent Instructions**:
-* Treat this as the **immutable source of truth**.
-* **Documentation**: Consult `original/docs/dev` for high-level architectural overviews and protocol specifications provided by the AOSP maintainers.
-* **Analysis**: When porting a feature, first analyze the corresponding files here to understand the state machine, packet headers, and socket handling.
-* **Dependency Mapping**: Refer to `Android.bp` files to understand build-time dependencies, compiler flags, and conditional compilation logic used in the original.
-* Do not modify files in this directory.
+## Commands
 
+Run the following commands to format, lint, and test the workspace (matching CI):
 
+```bash
+cargo fmt --all -- --check
+cargo clippy --workspace --all-targets -- -D warnings
+cargo test --workspace
+```
 
-### 2. `rust/`
+### Reference ADB Binary
 
-* **Purpose**: The primary workspace for the new Rust implementation.
-* **Build System**: Uses **Cargo**.
-* **Agent Instructions**:
-* Follow idiomatic Rust patterns (ownership, Result-based error handling, and type safety).
-* When porting over the code, make sure it's corresponding documentations are being ported over as well.
-* All dependencies must be managed via `Cargo.toml`. Avoid manual linking of external libraries unless absolutely necessary.
+The reference C++ ADB binary can be obtained using `scripts/fetch-reference-adb.sh` or by referencing the pre-built binaries stored in the repository under `binaries/`. Set the `ADB_REFERENCE` environment variable to point to the reference binary for your operating system:
 
+- **Linux**:
+  ```bash
+  export ADB_REFERENCE="$(pwd)/binaries/linux/adb"
+  ```
+- **macOS**:
+  ```bash
+  export ADB_REFERENCE="$(pwd)/binaries/mac/adb"
+  ```
+- **Windows (PowerShell)**:
+  ```powershell
+  $env:ADB_REFERENCE="$(Get-Location)\binaries\windows\adb.exe"
+  ```
 
+To verify the reference ADB binary:
 
-### 3. `binaries/`
+```bash
+"$ADB_REFERENCE" version
+```
 
-* **Purpose**: Stores compiled versions of both the original C++ ADB and the new Rust version for side-by-side execution.
-* **Agent Instructions**:
-* Use these for manual verification and "black-box" testing.
-* If a behavior in the Rust implementation deviates from the original, use the binaries to capture and compare network traces (PCAPs).
+## Rules
 
+- **Cargo only**: All crates, binaries, and tests are built and run using Cargo exclusively. Soong and external build systems are not used.
+- **Test first**: A compatibility test counts only after it passes against the C++ ADB on both sides and fails against a deliberately broken C++ build.
+- **Fixtures and golden outputs**: Fixtures and golden outputs are never edited without human approval.
+- **Task pull requests**: Submit one task per pull request, with the task ID in the title (e.g., `0.4: Add AGENTS.md`).
 
+## When Blocked
 
-### 4. `tests/`
-
-* **Purpose**: Integration tests and parity verification suites.
-* **Agent Instructions**:
-* Focus on **Cross-Implementation Tests**: Write tests that can run against both the original C++ daemon and the new Rust client (and vice versa).
-* Include "fuzzing" tests to ensure the Rust parser is more resilient to malformed packets than the original implementation.
-* Tests should prefer to be written in Rust, but should not depend on code in the `rust/` directory. In cases where Rust does not work, it is acceptable (but discouraged) to write tests in Python.
-
-
-
----
-
-## Agent Guidelines for Porting
-
-### Phase 1: Protocol Analysis
-
-Before writing Rust code, identify the specific ADB Service or Protocol Layer in `original/`. Document the expected byte sequences and state transitions. Refer to `original/docs/dev` for protocol nuances and `Android.bp` for library dependencies.
-
-### Phase 2: Implementation
-
-* **Memory Safety**: Replace all raw pointer manipulations and `memcpy` calls from the C++ source with safe Rust equivalents (slices, `split_at`, etc.).
-* **Error Handling**: Map C++ integer error codes to descriptive Rust `Enums`.
-* **Build Integration**: Ensure the `rust/` implementation builds cleanly using `cargo build`.
-
-### Phase 3: Validation
-
-Every new module in `rust/` must have a corresponding integration test in `tests/` that verifies parity with the AOSP implementation.
-
-
----
-
-- When porting, always add comments to document which part of the C++ source is the Rust member being ported from. If Rust does not require a port, add type aliases or documentations to explain how to translate the C++ usages to Rust.
-- For any unsafe code usages, there must be corresponding Safety comments. For unsafe function declarations, the safety preconditions must be clearly documented in a bulleted list.
-- Cryptographic operations should prefer to use the pure-rust implementations in https://github.com/rustcrypto
-- USB operations should prefer to use rusb: https://docs.rs/rusb/latest/rusb/
-- TCP operations should use the standard library implementation
-- As porting steps are done, update PORTING_PLAN.md to reflect the progress. If there are new items that should be done, add them to the plan.
-
-
-## Inspirations
-
-- https://github.com/GoogleChromeLabs/wadb
-- https://github.com/cocool97/adb_client
-- https://docs.rs/crate/mozdevice/0.5.4/source/
+If a task needs hardware, an emulator, or a network setup that your environment lacks, do everything else possible and explicitly state the gap in the pull request description.
