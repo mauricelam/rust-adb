@@ -44,6 +44,22 @@ To verify the reference ADB binary:
 "$ADB_REFERENCE" version
 ```
 
+### Compatibility Testing
+
+The `tests/compat` crate provides a test harness for running compatibility tests against any ADB implementation (C++ reference or Rust).
+
+To run compatibility tests:
+
+```bash
+cargo test -p compat
+```
+
+The harness respects the following environment variables:
+- `ADB_CLIENT`: Path to client binary under test (defaults to `ADB_REFERENCE`).
+- `ADB_SERVER_BIN`: Path to server binary under test (defaults to `ADB_REFERENCE`).
+- `ADB_SERVER_PORT`: Explicit server port (defaults to an automatically allocated free port).
+- `ADB_REFERENCE`: Path to reference C++ ADB binary.
+
 ## Rules
 
 - **Cargo only**: All crates, binaries, and tests are built and run using Cargo exclusively. Soong and external build systems are not used.
