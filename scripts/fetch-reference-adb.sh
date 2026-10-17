@@ -63,12 +63,16 @@ else
     mkdir -p "${TEMP_EXTRACT}"
     unzip -o -q "${TEMP_ZIP}" -d "${TEMP_EXTRACT}"
 
-    mv "${TEMP_EXTRACT}/platform-tools/"* "${TARGET_DIR}/"
+    cp -r "${TEMP_EXTRACT}/platform-tools/"* "${TARGET_DIR}/"
     rm -rf "${TEMP_EXTRACT}" "${TEMP_ZIP}"
 fi
 
 if [ -f "${TARGET_DIR}/${EXE_NAME}" ]; then
     chmod +x "${TARGET_DIR}/${EXE_NAME}"
+fi
+
+if command -v powershell.exe >/dev/null 2>&1; then
+    powershell.exe -Command "Get-ChildItem '${TARGET_DIR}' -Recurse | Unblock-File" 2>/dev/null || true
 fi
 
 echo "${ADB_BIN}"

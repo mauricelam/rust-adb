@@ -33,16 +33,20 @@ if (Test-Path $SrcDir) {
 
     [Console]::Error.WriteLine("Downloading reference ADB from $Url...")
     $null = Invoke-WebRequest -Uri $Url -OutFile $ZipPath -UseBasicParsing
+    if (Get-Command Unblock-File -ErrorAction SilentlyContinue) {
+        Unblock-File -Path $ZipPath -ErrorAction SilentlyContinue
+    }
 
     Expand-Archive -Path $ZipPath -DestinationPath $TempExtract -Force | Out-Null
 
-    $ExtractedItems = Get-ChildItem -Path (Join-Path $TempExtract "platform-tools")
-    foreach ($item in $ExtractedItems) {
-        Move-Item -Path $item.FullName -Destination $TargetDir -Force | Out-Null
-    }
+    Copy-Item -Path "$TempExtract\platform-tools\*" -Destination $TargetDir -Recurse -Force | Out-Null
 
     Remove-Item -Recurse -Force $TempExtract | Out-Null
     Remove-Item -Force $ZipPath | Out-Null
+}
+
+if (Get-Command Unblock-File -ErrorAction SilentlyContinue) {
+    Get-ChildItem -Path $TargetDir -Recurse | Unblock-File -ErrorAction SilentlyContinue
 }
 
 Write-Output $AdbBin
