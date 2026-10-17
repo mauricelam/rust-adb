@@ -1,9 +1,9 @@
 # Fetch reference ADB binary for Windows (version 36.0.2 / build 14143358).
 # Pinned upstream ADB revision: platform-tools 36.0.2 (Build 14143358) from
-# platform/packages/modules/adb (android15-tests-dev / platform-tools-36.0.2).
+# platform/packages/modules/adb (android15-tests-dev / platform-tools-36.0.2), checked in under original/.
 #
-# Note: Building full C++ ADB from source requires the full Android source tree / Soong build system.
-# Therefore, official platform-tools binaries corresponding to the pinned revision are fetched.
+# Reference ADB binaries matching this revision are included in binaries/ in the repository
+# and populated into target/reference/.
 
 $ErrorActionPreference = "Stop"
 
@@ -17,23 +17,17 @@ if (Test-Path $AdbBin) {
     exit 0
 }
 
-New-Item -ItemType Directory -Force -Path $TargetDir | Out-Null
-
-$Url = "https://dl.google.com/android/repository/platform-tools_r36.0.2-win.zip"
-$ZipPath = Join-Path $TargetDir "platform-tools.zip"
-$TempExtract = Join-Path $TargetDir "temp_extract"
-
-[Console]::Error.WriteLine("Downloading reference ADB from $Url...")
-Invoke-WebRequest -Uri $Url -OutFile $ZipPath
-
-Expand-Archive -Path $ZipPath -DestinationPath $TempExtract -Force
-
-$ExtractedItems = Get-ChildItem -Path (Join-Path $TempExtract "platform-tools")
-foreach ($item in $ExtractedItems) {
-    Move-Item -Path $item.FullName -Destination $TargetDir -Force
+$SrcDir = Join-Path $RepoRoot "binaries\win"
+if (-not (Test-Path $SrcDir)) {
+    $SrcDir = Join-Path $RepoRoot "binaries\windows"
 }
 
-Remove-Item -Recurse -Force $TempExtract
-Remove-Item -Force $ZipPath
+if (-not (Test-Path $SrcDir)) {
+    [Console]::Error.WriteLine("Reference binary directory not found at $SrcDir")
+    exit 1
+}
+
+New-Item -ItemType Directory -Force -Path $TargetDir | Out-Null
+Copy-Item -Path "$SrcDir\*" -Destination $TargetDir -Recurse -Force
 
 Write-Output $AdbBin

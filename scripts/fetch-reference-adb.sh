@@ -2,10 +2,10 @@
 #
 # Fetch reference ADB binary (version 36.0.2 / build 14143358).
 # Pinned upstream ADB revision: platform-tools 36.0.2 (Build 14143358) from
-# platform/packages/modules/adb (android15-tests-dev / platform-tools-36.0.2).
+# platform/packages/modules/adb (android15-tests-dev / platform-tools-36.0.2), checked in under original/.
 #
-# Note: Building full C++ ADB from source requires the full Android source tree / Soong build system.
-# Therefore, official platform-tools binaries corresponding to the pinned revision are fetched.
+# Reference ADB binaries matching this revision are included in binaries/ in the repository
+# and populated into target/reference/.
 
 set -euo pipefail
 
@@ -16,16 +16,25 @@ TARGET_DIR="${REPO_ROOT}/target/reference"
 OS="$(uname -s)"
 case "${OS}" in
     Linux*)
-        URL="https://dl.google.com/android/repository/platform-tools_r36.0.2-linux.zip"
+        SRC_DIR="${REPO_ROOT}/binaries/linux"
         EXE_NAME="adb"
         ;;
     Darwin*)
-        URL="https://dl.google.com/android/repository/platform-tools_r36.0.2-darwin.zip"
+        SRC_DIR="${REPO_ROOT}/binaries/mac"
         EXE_NAME="adb"
         ;;
     MINGW*|MSYS*|CYGWIN*)
-        URL="https://dl.google.com/android/repository/platform-tools_r36.0.2-win.zip"
+        if [ -d "${REPO_ROOT}/binaries/win" ]; then
+            SRC_DIR="${REPO_ROOT}/binaries/win"
+        elif [ -d "${REPO_ROOT}/binaries/windows" ]; then
+            SRC_DIR="${REPO_ROOT}/binaries/windows"
+        else
+            SRC_DIR="${REPO_ROOT}/binaries/linux"
+        fi
         EXE_NAME="adb.exe"
+        if [ ! -f "${SRC_DIR}/${EXE_NAME}" ] && [ -f "${SRC_DIR}/adb" ]; then
+            EXE_NAME="adb"
+        fi
         ;;
     *)
         echo "Unsupported OS: ${OS}" >&2
@@ -40,19 +49,16 @@ if [ -f "${ADB_BIN}" ]; then
     exit 0
 fi
 
+if [ ! -d "${SRC_DIR}" ]; then
+    echo "Reference binary directory not found at ${SRC_DIR}" >&2
+    exit 1
+fi
+
 mkdir -p "${TARGET_DIR}"
-TEMP_ZIP="${TARGET_DIR}/platform-tools.zip"
-TEMP_EXTRACT="${TARGET_DIR}/temp_extract"
+cp -r "${SRC_DIR}"/* "${TARGET_DIR}/"
 
-echo "Downloading reference ADB from ${URL}..." >&2
-curl -sSL -o "${TEMP_ZIP}" "${URL}"
-
-mkdir -p "${TEMP_EXTRACT}"
-unzip -o -q "${TEMP_ZIP}" -d "${TEMP_EXTRACT}"
-
-mv "${TEMP_EXTRACT}/platform-tools/"* "${TARGET_DIR}/"
-rm -rf "${TEMP_EXTRACT}" "${TEMP_ZIP}"
-
-chmod +x "${ADB_BIN}"
+if [ -f "${TARGET_DIR}/${EXE_NAME}" ]; then
+    chmod +x "${TARGET_DIR}/${EXE_NAME}"
+fi
 
 echo "${ADB_BIN}"

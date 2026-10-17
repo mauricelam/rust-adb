@@ -42,5 +42,5 @@
 **Decision:** Defer resolution of specific upstream revision pinning and mutation kill-rate targets to their respective dedicated tasks.
 **Reason:** These parameters depend on upstream repository synchronization and baseline mutation testing results that are established in subsequent setup tasks.
 
-- Pinned upstream ADB revision: `platform-tools-36.0.2` (Platform-Tools release 36.0.2 / Build 14143358, branch `android15-tests-dev` / `platform-tools-36.0.2` in `platform/packages/modules/adb`). Note: As full C++ ADB compilation from source requires the complete Android platform source tree and Soong build system, official platform-tools binaries corresponding to this revision are fetched as reference binaries.
+- Pinned upstream ADB revision: `platform-tools-36.0.2` (Platform-Tools release 36.0.2 / Build 14143358, branch `android15-tests-dev` / `platform-tools-36.0.2` in `platform/packages/modules/adb`, checked in under `original/`). Reference ADB binaries matching this revision are included in `binaries/` in the repository and populated into `target/reference/`.
 - Mutation kill-rate threshold: [Placeholder: Resolved in task 0.11]
