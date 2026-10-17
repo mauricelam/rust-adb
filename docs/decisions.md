@@ -42,5 +42,5 @@
 **Decision:** Defer resolution of specific upstream revision pinning and mutation kill-rate targets to their respective dedicated tasks.
 **Reason:** These parameters depend on upstream repository synchronization and baseline mutation testing results that are established in subsequent setup tasks.
 
-- Pinned upstream ADB revision: [Placeholder: Resolved in task 0.3]
+- Pinned upstream ADB revision: Android SDK Platform-tools 36.0.2 (Build 14143358)
 - Mutation kill-rate threshold: [Placeholder: Resolved in task 0.11]
