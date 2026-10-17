@@ -1,0 +1,16 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/adb-proto",
+    "crates/adb-auth",
+    "crates/adb-transport",
+    "crates/adb-server",
+    "crates/adb-client",
+    "crates/adb-cli",
+]
+
+[workspace.package]
+version = "0.0.0"
+edition = "2021"
+rust-version = "1.94.0"
+publish = false
