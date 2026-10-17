@@ -32,7 +32,7 @@ if (Test-Path $SrcDir) {
     $TempExtract = Join-Path $TargetDir "temp_extract"
 
     [Console]::Error.WriteLine("Downloading reference ADB from $Url...")
-    Invoke-WebRequest -Uri $Url -OutFile $ZipPath | Out-Null
+    $null = Invoke-WebRequest -Uri $Url -OutFile $ZipPath -UseBasicParsing
 
     Expand-Archive -Path $ZipPath -DestinationPath $TempExtract -Force | Out-Null
 
