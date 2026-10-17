@@ -77,6 +77,13 @@ else
     rm -rf "${TEMP_EXTRACT}" "${TEMP_ZIP}"
 fi
 
+case "${OS}" in
+    MINGW*|MSYS*|CYGWIN*)
+        # Remove AdbWinUsbApi.dll on headless Server VMs to prevent STATUS_DLL_NOT_FOUND (0xC0000135) for missing SysWOW64 winusb.dll
+        rm -f "${TARGET_DIR}/AdbWinUsbApi.dll"
+        ;;
+esac
+
 if [ -f "${TARGET_DIR}/${EXE_NAME}" ]; then
     chmod +x "${TARGET_DIR}/${EXE_NAME}"
 fi

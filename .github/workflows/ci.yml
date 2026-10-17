@@ -41,9 +41,9 @@ jobs:
 
       - name: Verify reference ADB version (Windows)
         if: runner.os == 'Windows'
-        shell: cmd
+        shell: pwsh
         run: |
-          "%ADB_REFERENCE%" version
+          & "$env:ADB_REFERENCE" version
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable

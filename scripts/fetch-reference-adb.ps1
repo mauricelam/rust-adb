@@ -46,6 +46,12 @@ if (Test-Path $SrcDir) {
     Remove-Item -Force $ZipPath -ErrorAction SilentlyContinue | Out-Null
 }
 
+# Remove AdbWinUsbApi.dll on headless Server VMs to prevent STATUS_DLL_NOT_FOUND (0xC0000135) for missing SysWOW64 winusb.dll
+$WinUsbDll = Join-Path $TargetDir "AdbWinUsbApi.dll"
+if (Test-Path $WinUsbDll) {
+    Remove-Item -Force $WinUsbDll -ErrorAction SilentlyContinue | Out-Null
+}
+
 if (Get-Command Unblock-File -ErrorAction SilentlyContinue) {
     Get-ChildItem -Path $TargetDir -Recurse -ErrorAction SilentlyContinue | Unblock-File -ErrorAction SilentlyContinue
 }
