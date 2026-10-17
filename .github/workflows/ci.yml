@@ -21,6 +21,24 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Fetch reference ADB (Unix)
+        if: runner.os != 'Windows'
+        run: |
+          chmod +x scripts/fetch-reference-adb.sh
+          echo "ADB_REFERENCE=$(./scripts/fetch-reference-adb.sh)" >> $GITHUB_ENV
+
+      - name: Fetch reference ADB (Windows)
+        if: runner.os == 'Windows'
+        shell: powershell
+        run: |
+          $adbPath = .\scripts\fetch-reference-adb.ps1
+          [System.IO.File]::AppendAllText($env:GITHUB_ENV, "ADB_REFERENCE=$adbPath`n", [System.Text.UTF8Encoding]::new($false))
+
+      - name: Verify reference ADB version
+        shell: bash
+        run: |
+          "$ADB_REFERENCE" version
+
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
         with:
