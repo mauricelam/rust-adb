@@ -4,8 +4,8 @@
 # Pinned upstream ADB revision: platform-tools 36.0.2 (Build 14143358) from
 # platform/packages/modules/adb (android15-tests-dev / platform-tools-36.0.2), checked in under original/.
 #
-# Reference ADB binaries matching this revision are included in binaries/ in the repository
-# and populated into target/reference/.
+# Reference ADB binaries are copied from binaries/ in the repository if present,
+# or downloaded from official platform-tools releases into target/reference/.
 
 set -euo pipefail
 
@@ -18,10 +18,12 @@ case "${OS}" in
     Linux*)
         SRC_DIR="${REPO_ROOT}/binaries/linux"
         EXE_NAME="adb"
+        URL="https://dl.google.com/android/repository/platform-tools_r36.0.2-linux.zip"
         ;;
     Darwin*)
         SRC_DIR="${REPO_ROOT}/binaries/mac"
         EXE_NAME="adb"
+        URL="https://dl.google.com/android/repository/platform-tools_r36.0.2-darwin.zip"
         ;;
     MINGW*|MSYS*|CYGWIN*)
         if [ -d "${REPO_ROOT}/binaries/win" ]; then
@@ -29,12 +31,10 @@ case "${OS}" in
         elif [ -d "${REPO_ROOT}/binaries/windows" ]; then
             SRC_DIR="${REPO_ROOT}/binaries/windows"
         else
-            SRC_DIR="${REPO_ROOT}/binaries/linux"
+            SRC_DIR=""
         fi
         EXE_NAME="adb.exe"
-        if [ ! -f "${SRC_DIR}/${EXE_NAME}" ] && [ -f "${SRC_DIR}/adb" ]; then
-            EXE_NAME="adb"
-        fi
+        URL="https://dl.google.com/android/repository/platform-tools_r36.0.2-win.zip"
         ;;
     *)
         echo "Unsupported OS: ${OS}" >&2
@@ -49,13 +49,23 @@ if [ -f "${ADB_BIN}" ]; then
     exit 0
 fi
 
-if [ ! -d "${SRC_DIR}" ]; then
-    echo "Reference binary directory not found at ${SRC_DIR}" >&2
-    exit 1
-fi
-
 mkdir -p "${TARGET_DIR}"
-cp -r "${SRC_DIR}"/* "${TARGET_DIR}/"
+
+if [ -n "${SRC_DIR:-}" ] && [ -d "${SRC_DIR}" ]; then
+    cp -r "${SRC_DIR}"/* "${TARGET_DIR}/"
+else
+    TEMP_ZIP="${TARGET_DIR}/platform-tools.zip"
+    TEMP_EXTRACT="${TARGET_DIR}/temp_extract"
+
+    echo "Downloading reference ADB from ${URL}..." >&2
+    curl -sSL -o "${TEMP_ZIP}" "${URL}"
+
+    mkdir -p "${TEMP_EXTRACT}"
+    unzip -o -q "${TEMP_ZIP}" -d "${TEMP_EXTRACT}"
+
+    mv "${TEMP_EXTRACT}/platform-tools/"* "${TARGET_DIR}/"
+    rm -rf "${TEMP_EXTRACT}" "${TEMP_ZIP}"
+fi
 
 if [ -f "${TARGET_DIR}/${EXE_NAME}" ]; then
     chmod +x "${TARGET_DIR}/${EXE_NAME}"
