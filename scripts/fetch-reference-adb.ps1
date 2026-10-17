@@ -26,7 +26,7 @@ if (-not (Test-Path $SrcDir)) {
 New-Item -ItemType Directory -Force -Path $TargetDir | Out-Null
 
 if (Test-Path $SrcDir) {
-    Copy-Item -Path "$SrcDir\*" -Destination $TargetDir -Recurse -Force | Out-Null
+    Get-ChildItem -Path $SrcDir | Copy-Item -Destination $TargetDir -Recurse -Force | Out-Null
 } else {
     $Url = "https://dl.google.com/android/repository/platform-tools_r36.0.2-win.zip"
     $ZipPath = Join-Path $RepoRoot "temp_reference.zip"
@@ -39,7 +39,7 @@ if (Test-Path $SrcDir) {
 
     $ExtractedDir = Join-Path $TempExtract "platform-tools"
     if (Test-Path $ExtractedDir) {
-        Copy-Item -Path "$ExtractedDir\*" -Destination $TargetDir -Recurse -Force | Out-Null
+        Get-ChildItem -Path $ExtractedDir | Copy-Item -Destination $TargetDir -Recurse -Force | Out-Null
     }
 
     Remove-Item -Recurse -Force $TempExtract -ErrorAction SilentlyContinue | Out-Null
