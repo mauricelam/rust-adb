@@ -208,7 +208,7 @@ impl TestServer {
     /// then reads the status (`OKAY` or `FAIL`), the 4-hex-digit length prefix,
     /// and the payload bytes.
     pub fn send_smart_socket_request(&self, service: &str) -> std::io::Result<SmartSocketResponse> {
-        let mut stream = std::net::TcpStream::connect(("127.0.0.1", self.port))?;
+        let mut stream = connect_with_retry(self.port, Duration::from_secs(5))?;
         stream.set_read_timeout(Some(Duration::from_secs(5)))?;
         stream.set_write_timeout(Some(Duration::from_secs(5)))?;
 
@@ -261,7 +261,7 @@ impl TestServer {
 
     /// Sends a smart-socket request and reads all raw output returned by the server until connection closes.
     pub fn send_smart_socket_request_raw(&self, service: &str) -> std::io::Result<Vec<u8>> {
-        let mut stream = std::net::TcpStream::connect(("127.0.0.1", self.port))?;
+        let mut stream = connect_with_retry(self.port, Duration::from_secs(5))?;
         stream.set_read_timeout(Some(Duration::from_secs(5)))?;
         stream.set_write_timeout(Some(Duration::from_secs(5)))?;
 
@@ -327,6 +327,21 @@ fn set_isolated_env(cmd: &mut Command, home_path: &std::path::Path, port: u16) {
     if port != 0 {
         cmd.env("ANDROID_ADB_SERVER_PORT", port.to_string());
         cmd.env("ADB_SERVER_SOCKET", format!("tcp:localhost:{port}"));
+    }
+}
+
+fn connect_with_retry(port: u16, timeout: Duration) -> std::io::Result<std::net::TcpStream> {
+    let start = Instant::now();
+    loop {
+        match std::net::TcpStream::connect(("127.0.0.1", port)) {
+            Ok(stream) => return Ok(stream),
+            Err(err) => {
+                if start.elapsed() >= timeout {
+                    return Err(err);
+                }
+                thread::sleep(Duration::from_millis(50));
+            }
+        }
     }
 }
 
