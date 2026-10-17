@@ -8,6 +8,7 @@ members = [
     "crates/adb-client",
     "crates/adb-cli",
     "tools/adb-proxy",
+    "tests/compat",
 ]
 
 [workspace.package]
