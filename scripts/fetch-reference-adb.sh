@@ -45,8 +45,18 @@ esac
 ADB_BIN="${TARGET_DIR}/${EXE_NAME}"
 
 if [ -f "${ADB_BIN}" ]; then
-    echo "${ADB_BIN}"
-    exit 0
+    case "${OS}" in
+        MINGW*|MSYS*|CYGWIN*)
+            if [ -f "${TARGET_DIR}/AdbWinApi.dll" ]; then
+                echo "${ADB_BIN}"
+                exit 0
+            fi
+            ;;
+        *)
+            echo "${ADB_BIN}"
+            exit 0
+            ;;
+    esac
 fi
 
 mkdir -p "${TARGET_DIR}"

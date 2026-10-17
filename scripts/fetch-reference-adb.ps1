@@ -11,8 +11,9 @@ $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $RepoRoot = (Resolve-Path "$ScriptDir\..").Path
 $TargetDir = Join-Path $RepoRoot "target\reference"
 $AdbBin = Join-Path $TargetDir "adb.exe"
+$AdbDll = Join-Path $TargetDir "AdbWinApi.dll"
 
-if (Test-Path $AdbBin) {
+if ((Test-Path $AdbBin) -and (Test-Path $AdbDll)) {
     Write-Output $AdbBin
     exit 0
 }
