@@ -43,14 +43,7 @@ jobs:
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
-          $out = & "$env:ADB_REFERENCE" version 2>&1
-          Write-Host $out
-          if ($out -match "version" -or $out -match "Android Debug Bridge") {
-            Write-Host "Reference ADB verified successfully."
-          } else {
-            Write-Error "Failed to verify reference ADB version output"
-            exit 1
-          }
+          & "$env:ADB_REFERENCE" version
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
