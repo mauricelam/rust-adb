@@ -8,7 +8,7 @@
 $ErrorActionPreference = "Stop"
 
 $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
-$RepoRoot = Resolve-Path "$ScriptDir\.."
+$RepoRoot = (Resolve-Path "$ScriptDir\..").Path
 $TargetDir = Join-Path $RepoRoot "target\reference"
 $AdbBin = Join-Path $TargetDir "adb.exe"
 
@@ -25,24 +25,24 @@ if (-not (Test-Path $SrcDir)) {
 New-Item -ItemType Directory -Force -Path $TargetDir | Out-Null
 
 if (Test-Path $SrcDir) {
-    Copy-Item -Path "$SrcDir\*" -Destination $TargetDir -Recurse -Force
+    Copy-Item -Path "$SrcDir\*" -Destination $TargetDir -Recurse -Force | Out-Null
 } else {
     $Url = "https://dl.google.com/android/repository/platform-tools_r36.0.2-win.zip"
     $ZipPath = Join-Path $TargetDir "platform-tools.zip"
     $TempExtract = Join-Path $TargetDir "temp_extract"
 
     [Console]::Error.WriteLine("Downloading reference ADB from $Url...")
-    Invoke-WebRequest -Uri $Url -OutFile $ZipPath
+    Invoke-WebRequest -Uri $Url -OutFile $ZipPath | Out-Null
 
-    Expand-Archive -Path $ZipPath -DestinationPath $TempExtract -Force
+    Expand-Archive -Path $ZipPath -DestinationPath $TempExtract -Force | Out-Null
 
     $ExtractedItems = Get-ChildItem -Path (Join-Path $TempExtract "platform-tools")
     foreach ($item in $ExtractedItems) {
-        Move-Item -Path $item.FullName -Destination $TargetDir -Force
+        Move-Item -Path $item.FullName -Destination $TargetDir -Force | Out-Null
     }
 
-    Remove-Item -Recurse -Force $TempExtract
-    Remove-Item -Force $ZipPath
+    Remove-Item -Recurse -Force $TempExtract | Out-Null
+    Remove-Item -Force $ZipPath | Out-Null
 }
 
 Write-Output $AdbBin
