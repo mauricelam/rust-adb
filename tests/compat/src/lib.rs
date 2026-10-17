@@ -1,10 +1,54 @@
 use std::env;
+use std::io::{Read, Write};
 use std::net::TcpListener;
 use std::path::PathBuf;
 use std::process::{Child, Command, ExitStatus};
 use std::thread;
 use std::time::{Duration, Instant};
 use tempfile::TempDir;
+
+/// Status of a smart-socket response.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SmartSocketStatus {
+    Okay,
+    Fail,
+}
+
+/// Parsed response from an ADB smart-socket request.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SmartSocketResponse {
+    pub status: SmartSocketStatus,
+    /// 4-byte status header (e.g. `b"OKAY"` or `b"FAIL"`)
+    pub status_bytes: [u8; 4],
+    /// 4-char hex length prefix string if present in response framing.
+    pub len_prefix: Option<String>,
+    /// Response payload bytes (or error reason string bytes if status is FAIL).
+    pub payload: Vec<u8>,
+    /// Complete raw bytes received from the socket.
+    pub raw_bytes: Vec<u8>,
+}
+
+impl SmartSocketResponse {
+    pub fn is_okay(&self) -> bool {
+        self.status == SmartSocketStatus::Okay
+    }
+
+    pub fn is_fail(&self) -> bool {
+        self.status == SmartSocketStatus::Fail
+    }
+
+    pub fn payload_str(&self) -> Result<&str, std::str::Utf8Error> {
+        std::str::from_utf8(&self.payload)
+    }
+
+    pub fn fail_reason(&self) -> Option<&str> {
+        if self.is_fail() {
+            self.payload_str().ok()
+        } else {
+            None
+        }
+    }
+}
 
 /// Configuration for the compatibility test harness.
 #[derive(Debug, Clone)]
@@ -158,6 +202,76 @@ impl TestServer {
             exit_code: output.status.code(),
             status: output.status,
         }
+    }
+
+    /// Sends a smart-socket request formatted as `4-hex-digit-len + service_name`,
+    /// then reads the status (`OKAY` or `FAIL`), the 4-hex-digit length prefix,
+    /// and the payload bytes.
+    pub fn send_smart_socket_request(&self, service: &str) -> std::io::Result<SmartSocketResponse> {
+        let mut stream = std::net::TcpStream::connect(("127.0.0.1", self.port))?;
+        stream.set_read_timeout(Some(Duration::from_secs(5)))?;
+        stream.set_write_timeout(Some(Duration::from_secs(5)))?;
+
+        let request = format!("{:04x}{}", service.len(), service);
+        stream.write_all(request.as_bytes())?;
+        stream.flush()?;
+
+        let mut raw_bytes = Vec::new();
+
+        let mut status_bytes = [0u8; 4];
+        stream.read_exact(&mut status_bytes)?;
+        raw_bytes.extend_from_slice(&status_bytes);
+
+        let status = match &status_bytes {
+            b"OKAY" => SmartSocketStatus::Okay,
+            b"FAIL" => SmartSocketStatus::Fail,
+            _ => {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    format!(
+                        "Unexpected smart socket status: {:?}",
+                        String::from_utf8_lossy(&status_bytes)
+                    ),
+                ))
+            }
+        };
+
+        let mut len_bytes = [0u8; 4];
+        stream.read_exact(&mut len_bytes)?;
+        raw_bytes.extend_from_slice(&len_bytes);
+
+        let len_str = String::from_utf8_lossy(&len_bytes).to_string();
+        let payload_len = usize::from_str_radix(&len_str, 16)
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
+
+        let mut payload = vec![0u8; payload_len];
+        if payload_len > 0 {
+            stream.read_exact(&mut payload)?;
+            raw_bytes.extend_from_slice(&payload);
+        }
+
+        Ok(SmartSocketResponse {
+            status,
+            status_bytes,
+            len_prefix: Some(len_str),
+            payload,
+            raw_bytes,
+        })
+    }
+
+    /// Sends a smart-socket request and reads all raw output returned by the server until connection closes.
+    pub fn send_smart_socket_request_raw(&self, service: &str) -> std::io::Result<Vec<u8>> {
+        let mut stream = std::net::TcpStream::connect(("127.0.0.1", self.port))?;
+        stream.set_read_timeout(Some(Duration::from_secs(5)))?;
+        stream.set_write_timeout(Some(Duration::from_secs(5)))?;
+
+        let request = format!("{:04x}{}", service.len(), service);
+        stream.write_all(request.as_bytes())?;
+        stream.flush()?;
+
+        let mut response = Vec::new();
+        stream.read_to_end(&mut response)?;
+        Ok(response)
     }
 }
 
