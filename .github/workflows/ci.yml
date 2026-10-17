@@ -21,17 +21,23 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Fetch reference ADB (Unix)
-        if: runner.os != 'Windows'
+      - name: Set ADB_REFERENCE (Linux)
+        if: runner.os == 'Linux'
         run: |
-          chmod +x scripts/fetch-reference-adb.sh
-          echo "ADB_REFERENCE=$(./scripts/fetch-reference-adb.sh)" >> $GITHUB_ENV
+          chmod +x binaries/linux/adb
+          echo "ADB_REFERENCE=$(pwd)/binaries/linux/adb" >> $GITHUB_ENV
 
-      - name: Fetch reference ADB (Windows)
+      - name: Set ADB_REFERENCE (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          chmod +x binaries/mac/adb
+          echo "ADB_REFERENCE=$(pwd)/binaries/mac/adb" >> $GITHUB_ENV
+
+      - name: Set ADB_REFERENCE (Windows)
         if: runner.os == 'Windows'
         shell: powershell
         run: |
-          $adbPath = .\scripts\fetch-reference-adb.ps1
+          $adbPath = (Resolve-Path "binaries/windows/adb.exe").Path -replace '\\', '/'
           [System.IO.File]::AppendAllText($env:GITHUB_ENV, "ADB_REFERENCE=$adbPath`n", [System.Text.UTF8Encoding]::new($false))
 
       - name: Verify reference ADB version
