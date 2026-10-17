@@ -28,25 +28,25 @@ if (Test-Path $SrcDir) {
     Copy-Item -Path "$SrcDir\*" -Destination $TargetDir -Recurse -Force | Out-Null
 } else {
     $Url = "https://dl.google.com/android/repository/platform-tools_r36.0.2-win.zip"
-    $ZipPath = Join-Path $TargetDir "platform-tools.zip"
-    $TempExtract = Join-Path $TargetDir "temp_extract"
+    $ZipPath = Join-Path $RepoRoot "temp_reference.zip"
+    $TempExtract = Join-Path $RepoRoot "temp_reference_extract"
 
     [Console]::Error.WriteLine("Downloading reference ADB from $Url...")
     $null = Invoke-WebRequest -Uri $Url -OutFile $ZipPath -UseBasicParsing
-    if (Get-Command Unblock-File -ErrorAction SilentlyContinue) {
-        Unblock-File -Path $ZipPath -ErrorAction SilentlyContinue
-    }
 
     Expand-Archive -Path $ZipPath -DestinationPath $TempExtract -Force | Out-Null
 
-    Copy-Item -Path "$TempExtract\platform-tools\*" -Destination $TargetDir -Recurse -Force | Out-Null
+    $ExtractedDir = Join-Path $TempExtract "platform-tools"
+    if (Test-Path $ExtractedDir) {
+        Copy-Item -Path "$ExtractedDir\*" -Destination $TargetDir -Recurse -Force | Out-Null
+    }
 
-    Remove-Item -Recurse -Force $TempExtract | Out-Null
-    Remove-Item -Force $ZipPath | Out-Null
+    Remove-Item -Recurse -Force $TempExtract -ErrorAction SilentlyContinue | Out-Null
+    Remove-Item -Force $ZipPath -ErrorAction SilentlyContinue | Out-Null
 }
 
 if (Get-Command Unblock-File -ErrorAction SilentlyContinue) {
-    Get-ChildItem -Path $TargetDir -Recurse | Unblock-File -ErrorAction SilentlyContinue
+    Get-ChildItem -Path $TargetDir -Recurse -ErrorAction SilentlyContinue | Unblock-File -ErrorAction SilentlyContinue
 }
 
 Write-Output $AdbBin

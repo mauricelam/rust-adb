@@ -54,8 +54,8 @@ mkdir -p "${TARGET_DIR}"
 if [ -n "${SRC_DIR:-}" ] && [ -d "${SRC_DIR}" ]; then
     cp -r "${SRC_DIR}"/* "${TARGET_DIR}/"
 else
-    TEMP_ZIP="${TARGET_DIR}/platform-tools.zip"
-    TEMP_EXTRACT="${TARGET_DIR}/temp_extract"
+    TEMP_ZIP="${REPO_ROOT}/temp_reference.zip"
+    TEMP_EXTRACT="${REPO_ROOT}/temp_reference_extract"
 
     echo "Downloading reference ADB from ${URL}..." >&2
     curl -sSL -o "${TEMP_ZIP}" "${URL}"
