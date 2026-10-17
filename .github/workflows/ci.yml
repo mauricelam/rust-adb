@@ -37,13 +37,19 @@ jobs:
         if: runner.os == 'Windows'
         shell: powershell
         run: |
-          $adbPath = (Resolve-Path "binaries/windows/adb.exe").Path -replace '\\', '/'
+          $adbPath = (Resolve-Path "binaries/windows/adb.exe").Path
           [System.IO.File]::AppendAllText($env:GITHUB_ENV, "ADB_REFERENCE=$adbPath`n", [System.Text.UTF8Encoding]::new($false))
 
-      - name: Verify reference ADB version
-        shell: bash
+      - name: Verify reference ADB version (Unix)
+        if: runner.os != 'Windows'
         run: |
           "$ADB_REFERENCE" version
+
+      - name: Verify reference ADB version (Windows)
+        if: runner.os == 'Windows'
+        shell: powershell
+        run: |
+          & "$env:ADB_REFERENCE" version
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
