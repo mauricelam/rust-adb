@@ -63,6 +63,7 @@ The harness respects the following environment variables:
 ## Rules
 
 - **Cargo only**: All crates, binaries, and tests are built and run using Cargo exclusively. Soong and external build systems are not used.
+- **No external downloads**: Builds and CI must not download external sources or binaries from URLs.
 - **Test first**: A compatibility test counts only after it passes against the C++ ADB on both sides and fails against a deliberately broken C++ build.
 - **Fixtures and golden outputs**: Fixtures and golden outputs are never edited without human approval.
 - **Task pull requests**: Submit one task per pull request, with the task ID in the title (e.g., `0.4: Add AGENTS.md`).
