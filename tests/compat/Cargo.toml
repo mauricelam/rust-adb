@@ -6,4 +6,6 @@ rust-version.workspace = true
 publish.workspace = true
 
 [dependencies]
+mock-adbd = { path = "../../tools/mock-adbd" }
 tempfile = "3"
+tokio = { version = "1", features = ["full"] }

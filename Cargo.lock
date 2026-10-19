@@ -156,7 +156,9 @@ checksum = "1d07550c9036bf2ae0c684c4297d503f838287c83c53686d05370d0e139ae570"
 name = "compat"
 version = "0.0.0"
 dependencies = [
+ "mock-adbd",
  "tempfile",
+ "tokio",
 ]
 
 [[package]]
@@ -246,6 +248,16 @@ dependencies = [
  "libc",
  "wasi",
  "windows-sys",
+]
+
+[[package]]
+name = "mock-adbd"
+version = "0.0.0"
+dependencies = [
+ "adb-proto",
+ "clap",
+ "tempfile",
+ "tokio",
 ]
 
 [[package]]
