@@ -1,0 +1,71 @@
+name: C++ ADB Build & Compat Test (Linux)
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '0 0 * * 0'
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  cpp-build-linux:
+    name: C++ ADB Build & Compat Test (Linux)
+    runs-on: ubuntu-latest
+    env:
+      RUST_TEST_THREADS: 1
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential \
+            cmake \
+            ninja-build \
+            pkg-config \
+            libabsl-dev \
+            libbrotli-dev \
+            libfmt-dev \
+            libgtest-dev \
+            liblz4-dev \
+            libprotobuf-dev \
+            libssl-dev \
+            libunwind-dev \
+            libusb-1.0-0-dev \
+            libzstd-dev \
+            protobuf-compiler \
+            zlib1g-dev
+
+      - name: Cache download tarball
+        uses: actions/cache@v4
+        with:
+          path: target/cpp-build/dl
+          key: cpp-build-dl-36.0.1
+
+      - name: Build C++ adb from source
+        id: build_adb
+        run: |
+          chmod +x scripts/build-cpp-adb.sh
+          adb_path="$(./scripts/build-cpp-adb.sh | tail -n 1)"
+          echo "BUILT_ADB=${adb_path}" >> $GITHUB_ENV
+          "${adb_path}" version
+
+      - name: Set ADB environment variables
+        run: |
+          echo "ADB_REFERENCE=${BUILT_ADB}" >> $GITHUB_ENV
+          echo "ADB_CLIENT=${BUILT_ADB}" >> $GITHUB_ENV
+          echo "ADB_SERVER_BIN=${BUILT_ADB}" >> $GITHUB_ENV
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Run compatibility suite 10 times against built binary
+        shell: bash
+        run: |
+          for i in {1..10}; do
+            echo "=== Compatibility Test Run $i / 10 ==="
+            cargo test -p compat
+          done

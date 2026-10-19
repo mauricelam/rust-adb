@@ -44,3 +44,10 @@
 
 - Pinned upstream ADB revision: Android SDK Platform-tools 36.0.2 (Build 14143358)
 - Mutation kill-rate threshold: [Placeholder: Resolved in task 0.11]
+
+## 9. C++ Build Source for Mutation
+
+**Decision:** Use `nmeum/android-tools` release tarball version `36.0.1` as the C++ ADB build source for mutation testing. Mutants are applied as unified patches against `vendor/adb` prior to building with CMake (`-DBUILD_SHARED_LIBS=OFF -DANDROID_TOOLS_USE_BUNDLED_LIBUSB=ON`).
+**Release Tarball URL:** `https://github.com/nmeum/android-tools/releases/download/36.0.1/android-tools-36.0.1.tar.xz`
+**Tarball SHA-256:** `38e8a84b739480141de0836bf6d581b3339ac7d53d0f7ce8c044a3368c8c2f8f`
+**Reason:** Building `original/` directly outside AOSP requires fetching and managing dozens of internal AOSP submodules and generated assets. `nmeum/android-tools` provides a clean standalone CMake build environment pinned close to platform-tools 36.x, allowing fast C++ builds and mutant insertion.
