@@ -203,6 +203,13 @@ fn test_vendor_keys_ordering_by_fingerprint() {
 
 #[test]
 fn test_oracle_against_reference_adb() {
+    if cfg!(windows) {
+        eprintln!(
+            "Skipping oracle test on Windows: C++ reference ADB calls SHGetFolderPathW (CSIDL_PROFILE) for home directory"
+        );
+        return;
+    }
+
     let ref_adb = match get_reference_adb() {
         Some(path) => path,
         None => return,
@@ -242,7 +249,7 @@ fn test_oracle_against_reference_adb() {
         .spawn()
         .expect("Failed to start reference adb server");
 
-    std::thread::sleep(std::time::Duration::from_millis(1500));
+    std::thread::sleep(std::time::Duration::from_millis(1000));
     let _ = child.kill();
     let output = child
         .wait_with_output()
