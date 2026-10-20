@@ -1,0 +1,26 @@
+[package]
+name = "adb-proto-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2021"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+adb-proto = { path = "../crates/adb-proto" }
+
+[[bin]]
+name = "fuzz_header"
+path = "fuzz_targets/fuzz_header.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "fuzz_smart_socket_reply"
+path = "fuzz_targets/fuzz_smart_socket_reply.rs"
+test = false
+doc = false
+
+[workspace]

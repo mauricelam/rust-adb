@@ -174,3 +174,27 @@ fn test_chained_reply_and_protocol_string() {
 
     assert_eq!(consumed_reply + consumed_payload, response_bytes.len());
 }
+
+use proptest::prelude::*;
+
+proptest! {
+    #[test]
+    fn prop_encode_request_round_trip(service in "\\PC{0,1000}") {
+        if service.len() <= 0xffff {
+            let encoded = encode_request(&service).expect("encoding service <= 65535 bytes must succeed");
+            let (parsed, consumed) = parse_protocol_string(&encoded).expect("parsing encoded request must succeed");
+            prop_assert_eq!(parsed, ProtocolString::Complete(service.clone()));
+            prop_assert_eq!(consumed, 4 + service.len());
+        }
+    }
+
+    #[test]
+    fn prop_parse_reply_no_panic(buf in prop::collection::vec(any::<u8>(), 0..200)) {
+        let _ = parse_reply(&buf);
+    }
+
+    #[test]
+    fn prop_parse_protocol_string_no_panic(buf in prop::collection::vec(any::<u8>(), 0..200)) {
+        let _ = parse_protocol_string(&buf);
+    }
+}

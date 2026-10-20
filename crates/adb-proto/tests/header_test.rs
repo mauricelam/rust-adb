@@ -139,3 +139,45 @@ fn test_encode_to_slice() {
     assert!(header.encode_to_slice(&mut full_buf).is_ok());
     assert_eq!(full_buf, header.encode());
 }
+
+use proptest::prelude::*;
+
+fn command_strategy() -> impl Strategy<Value = Command> {
+    prop_oneof![
+        Just(Command::Sync),
+        Just(Command::Cnxn),
+        Just(Command::Open),
+        Just(Command::Okay),
+        Just(Command::Clse),
+        Just(Command::Wrte),
+        Just(Command::Auth),
+        Just(Command::Stls),
+    ]
+}
+
+fn header_strategy() -> impl Strategy<Value = Header> {
+    (
+        command_strategy(),
+        any::<u32>(),
+        any::<u32>(),
+        any::<u32>(),
+        any::<u32>(),
+    )
+        .prop_map(|(cmd, arg0, arg1, data_length, data_crc32)| {
+            Header::new(cmd, arg0, arg1, data_length, data_crc32)
+        })
+}
+
+proptest! {
+    #[test]
+    fn prop_header_round_trip(header in header_strategy()) {
+        let encoded = header.encode();
+        let decoded = Header::decode(&encoded).expect("valid header must decode successfully");
+        prop_assert_eq!(decoded, header);
+    }
+
+    #[test]
+    fn prop_header_decode_no_panic(buf in prop::collection::vec(any::<u8>(), 0..100)) {
+        let _ = Header::decode(&buf);
+    }
+}
