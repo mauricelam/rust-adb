@@ -25,10 +25,54 @@ use rsa::traits::PublicKeyParts;
 use rsa::RsaPrivateKey;
 use sha2::{Digest, Sha256};
 
+pub const TOKEN_SIZE: usize = 20;
 pub const ANDROID_PUBKEY_MODULUS_SIZE: usize = 2048 / 8; // 256 bytes
 pub const ANDROID_PUBKEY_MODULUS_SIZE_WORDS: usize = ANDROID_PUBKEY_MODULUS_SIZE / 4; // 64 words
 pub const ANDROID_PUBKEY_ENCODED_SIZE: usize =
     4 + 4 + ANDROID_PUBKEY_MODULUS_SIZE + ANDROID_PUBKEY_MODULUS_SIZE + 4; // 524 bytes
+
+/// Errors that can occur when signing an authentication token.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SignError {
+    /// Token length is not TOKEN_SIZE (20 bytes).
+    InvalidTokenSize(usize),
+    /// RSA signing operation failed.
+    SigningFailed(String),
+}
+
+impl std::fmt::Display for SignError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            SignError::InvalidTokenSize(size) => {
+                write!(
+                    f,
+                    "Invalid token size: expected {}, got {}",
+                    TOKEN_SIZE, size
+                )
+            }
+            SignError::SigningFailed(msg) => write!(f, "Signing failed: {}", msg),
+        }
+    }
+}
+
+impl std::error::Error for SignError {}
+
+/// Signs an authentication token challenge using the provided RSA private key.
+///
+/// Ported from `adb_auth_sign` in `original/client/auth.cpp`.
+///
+/// The token must be exactly `TOKEN_SIZE` (20) bytes. The token is treated as an
+/// already-computed digest (e.g. SHA-1) and signed using PKCS#1 v1.5 with SHA-1
+/// without re-hashing the token bytes.
+pub fn sign_token(key: &RsaPrivateKey, token: &[u8]) -> Result<Vec<u8>, SignError> {
+    if token.len() != TOKEN_SIZE {
+        return Err(SignError::InvalidTokenSize(token.len()));
+    }
+
+    let scheme = rsa::Pkcs1v15Sign::new::<sha1::Sha1>();
+    key.sign(scheme, token)
+        .map_err(|e| SignError::SigningFailed(e.to_string()))
+}
 
 /// Global key store for loaded RSA private keys indexed by key fingerprint hash.
 static G_KEYS: OnceLock<Mutex<BTreeMap<[u8; 32], RsaPrivateKey>>> = OnceLock::new();
