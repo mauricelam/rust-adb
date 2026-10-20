@@ -7,3 +7,6 @@ publish.workspace = true
 
 [dependencies]
 tempfile = "3"
+
+[dev-dependencies]
+mock-adbd = { path = "../../tools/mock-adbd" }
