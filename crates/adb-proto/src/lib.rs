@@ -8,7 +8,7 @@ pub use header::{Command, DecodeError, EncodeError, Header};
 pub use smart_socket::{
     encode_request, parse_protocol_string, parse_reply, ProtocolString, SmartSocketError,
     SmartSocketReply,
-}
+};
 pub use shell::{
     ShellDecodeError, ShellDecoder, ShellEncodeError, ShellPacket, ShellPacketId, WindowSize,
     MAX_PAYLOAD,
