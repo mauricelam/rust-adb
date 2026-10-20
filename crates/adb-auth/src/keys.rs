@@ -188,39 +188,64 @@ impl KeyStore {
     }
 }
 
-/// Get login username in UTF-8.
-fn get_login_name() -> String {
-    env::var("USER")
-        .or_else(|_| env::var("LOGNAME"))
-        .or_else(|_| env::var("USERNAME"))
-        .unwrap_or_else(|_| "unknown".to_string())
+use rsa::RsaPublicKey;
+
+/// Returns standard default comment `login@host`.
+///
+/// Ported from `GetLoginNameUTF8` and `GetHostNameUTF8` in `original/sysdeps/env.cpp`.
+pub fn default_comment() -> String {
+    let login = if cfg!(windows) {
+        env::var("USERNAME").unwrap_or_default()
+    } else {
+        env::var("LOGNAME").unwrap_or_default()
+    };
+    let login = if login.is_empty() {
+        "unknown".to_string()
+    } else {
+        login
+    };
+
+    let host = if cfg!(windows) {
+        env::var("COMPUTERNAME").unwrap_or_default()
+    } else {
+        env::var("HOSTNAME").unwrap_or_default()
+    };
+    let host = if host.is_empty() {
+        "unknown".to_string()
+    } else {
+        host
+    };
+
+    format!("{}@{}", login, host)
 }
 
-/// Get hostname in UTF-8.
-fn get_host_name() -> String {
-    env::var("HOSTNAME")
-        .or_else(|_| env::var("COMPUTERNAME"))
-        .unwrap_or_else(|_| "unknown".to_string())
-}
-
-/// Encodes an RSA public key into Android's binary pubkey structure (524 bytes).
+/// Encodes an RSA 2048 public key into Android's binary pubkey structure (524 bytes).
 ///
 /// Format (little-endian):
 /// - `modulus_size_words`: u32 (64 for 2048-bit RSA)
 /// - `n0inv`: u32 (-n^-1 mod 2^32 where n is modulus)
 /// - `modulus`: [u8; 256] (modulus n in little-endian order)
 /// - `rr`: [u8; 256] (Montgomery parameter R^2 mod n in little-endian order)
-/// - `exponent`: u32 (public exponent e, typically 65537)
-pub fn encode_android_pubkey(key: &RsaPrivateKey) -> Result<Vec<u8>, String> {
+/// - `exponent`: u32 (public exponent e, 3 or 65537)
+pub fn encode_public_key(key: &RsaPublicKey) -> Result<[u8; ANDROID_PUBKEY_ENCODED_SIZE], String> {
     let n = key.n();
     let e = key.e();
 
     let n_bytes = n.to_bytes_le();
-    if n_bytes.len() > ANDROID_PUBKEY_MODULUS_SIZE {
-        return Err("Modulus size exceeds 2048 bits".to_string());
+    if n.bits() != 2048 || n_bytes.len() > ANDROID_PUBKEY_MODULUS_SIZE {
+        return Err("RSA public key must be 2048 bits".to_string());
     }
 
-    let mut modulus = vec![0u8; ANDROID_PUBKEY_MODULUS_SIZE];
+    let e_bytes = e.to_bytes_le();
+    let mut e_u32 = 0u32;
+    for (i, &b) in e_bytes.iter().enumerate().take(4) {
+        e_u32 |= (b as u32) << (i * 8);
+    }
+    if e_u32 != 3 && e_u32 != 65537 {
+        return Err(format!("Unsupported public exponent: {}", e_u32));
+    }
+
+    let mut modulus = [0u8; ANDROID_PUBKEY_MODULUS_SIZE];
     modulus[..n_bytes.len()].copy_from_slice(&n_bytes);
 
     // Compute n0inv = -n^-1 mod 2^32 using Newton-Raphson
@@ -241,38 +266,71 @@ pub fn encode_android_pubkey(key: &RsaPrivateKey) -> Result<Vec<u8>, String> {
     let r_sq = (&r * &r) % n;
     let rr_bytes = r_sq.to_bytes_le();
 
-    let mut rr = vec![0u8; ANDROID_PUBKEY_MODULUS_SIZE];
+    let mut rr = [0u8; ANDROID_PUBKEY_MODULUS_SIZE];
     if rr_bytes.len() <= ANDROID_PUBKEY_MODULUS_SIZE {
         rr[..rr_bytes.len()].copy_from_slice(&rr_bytes);
     }
 
-    let e_bytes = e.to_bytes_le();
-    let mut e_u32 = 0u32;
-    for (i, &b) in e_bytes.iter().enumerate().take(4) {
-        e_u32 |= (b as u32) << (i * 8);
-    }
-
-    let mut buf = Vec::with_capacity(ANDROID_PUBKEY_ENCODED_SIZE);
-    buf.extend_from_slice(&(ANDROID_PUBKEY_MODULUS_SIZE_WORDS as u32).to_le_bytes());
-    buf.extend_from_slice(&n0inv.to_le_bytes());
-    buf.extend_from_slice(&modulus);
-    buf.extend_from_slice(&rr);
-    buf.extend_from_slice(&e_u32.to_le_bytes());
+    let mut buf = [0u8; ANDROID_PUBKEY_ENCODED_SIZE];
+    buf[0..4].copy_from_slice(&(ANDROID_PUBKEY_MODULUS_SIZE_WORDS as u32).to_le_bytes());
+    buf[4..8].copy_from_slice(&n0inv.to_le_bytes());
+    buf[8..264].copy_from_slice(&modulus);
+    buf[264..520].copy_from_slice(&rr);
+    buf[520..524].copy_from_slice(&e_u32.to_le_bytes());
 
     Ok(buf)
+}
+
+/// Decodes an Android binary pubkey structure (524 bytes) into modulus (`BigUint`) and exponent (`u32`).
+pub fn decode_public_key(bytes: &[u8]) -> Result<(BigUint, u32), String> {
+    if bytes.len() < ANDROID_PUBKEY_ENCODED_SIZE {
+        return Err(format!(
+            "Buffer too short: expected at least {} bytes, got {}",
+            ANDROID_PUBKEY_ENCODED_SIZE,
+            bytes.len()
+        ));
+    }
+
+    let modulus_size_words = u32::from_le_bytes(bytes[0..4].try_into().unwrap());
+    if modulus_size_words != ANDROID_PUBKEY_MODULUS_SIZE_WORDS as u32 {
+        return Err(format!(
+            "Invalid modulus size in words: expected {}, got {}",
+            ANDROID_PUBKEY_MODULUS_SIZE_WORDS, modulus_size_words
+        ));
+    }
+
+    let exponent = u32::from_le_bytes(bytes[520..524].try_into().unwrap());
+    if exponent != 3 && exponent != 65537 {
+        return Err(format!("Invalid public exponent: {}", exponent));
+    }
+
+    let modulus_bytes = &bytes[8..264];
+    let modulus = BigUint::from_bytes_le(modulus_bytes);
+
+    Ok((modulus, exponent))
+}
+
+/// Formats public key string representation (`<base64> <comment>`).
+pub fn public_key_line(key: &RsaPublicKey, comment: &str) -> Result<String, String> {
+    let encoded = encode_public_key(key)?;
+    let b64 = BASE64.encode(encoded);
+    Ok(format!("{} {}", b64, comment))
+}
+
+/// Legacy alias / helper for private key public key calculation.
+pub fn encode_android_pubkey(key: &RsaPrivateKey) -> Result<Vec<u8>, String> {
+    let pub_key = key.to_public_key();
+    let encoded = encode_public_key(&pub_key)?;
+    Ok(encoded.to_vec())
 }
 
 /// Calculate the string representation of an RSA public key (`<base64> <user>@<host>`).
 ///
 /// Ported from `CalculatePublicKey` in `original/crypto/rsa_2048_key.cpp`.
 pub fn calculate_public_key(key: &RsaPrivateKey) -> Result<String, String> {
-    let binary_key_data = encode_android_pubkey(key)?;
-    let b64 = BASE64.encode(&binary_key_data);
-
-    let user = get_login_name();
-    let host = get_host_name();
-
-    Ok(format!("{} {}@{}", b64, user, host))
+    let pub_key = key.to_public_key();
+    let comment = default_comment();
+    public_key_line(&pub_key, &comment)
 }
 
 /// Read an RSA private key from a PEM file (supporting PKCS#1 and PKCS#8).
