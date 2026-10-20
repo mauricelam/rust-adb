@@ -1,0 +1,15 @@
+# Mutation: Version Command Exit Code
+# Breaks version command by returning exit code 1 instead of 0
+diff --git a/client/commandline.cpp b/client/commandline.cpp
+index 0e77793..93c9a8f 100644
+--- a/client/commandline.cpp
++++ b/client/commandline.cpp
+@@ -2186,7 +2186,7 @@ int adb_commandline(int argc, const char** argv) {
+         return 0;
+     } else if (!strcmp(argv[0], "--version") || !strcmp(argv[0], "version")) {
+         fprintf(stdout, "%s", adb_version().c_str());
+-        return 0;
++        return 1;
+     } else if (!strcmp(argv[0], "features")) {
+         // Only list the features common to both the adb client and the device.
+         auto&& features = adb_get_feature_set_or_die();

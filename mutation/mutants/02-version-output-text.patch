@@ -1,0 +1,17 @@
+# Mutation: Version Output Text
+# Breaks version output parsing by changing "version" and "Version" headers in adb_version()
+diff --git a/adb.cpp b/adb.cpp
+index 1197bdd..2b6d319 100644
+--- a/adb.cpp
++++ b/adb.cpp
+@@ -101,8 +101,8 @@ static void DecrementActiveConnections() {
+ std::string adb_version() {
+     // Don't change the format of this --- it's parsed by ddmlib.
+     return android::base::StringPrintf(
+-            "Android Debug Bridge version %d.%d.%d\n"
+-            "Version %s-%s\n"
++            "ADB v%d.%d.%d\n"
++            "Info %s-%s\n"
+             "Installed as %s\n"
+             "Running on %s\n",
+             ADB_VERSION_MAJOR, ADB_VERSION_MINOR, ADB_SERVER_VERSION, PLATFORM_TOOLS_VERSION,
