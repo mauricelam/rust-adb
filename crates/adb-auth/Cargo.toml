@@ -4,3 +4,16 @@ version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 publish.workspace = true
+
+[dependencies]
+rsa = { version = "0.9.10", features = ["pem", "sha2"] }
+pkcs8 = { version = "0.10.2", features = ["pem", "std"] }
+num-bigint-dig = "0.8.4"
+num-traits = "0.2.19"
+sha2 = "0.10.8"
+base64 = "0.23.1"
+rand = "0.8.5"
+
+[dev-dependencies]
+tempfile = "3.10.1"
+temp-env = "0.3.6"
