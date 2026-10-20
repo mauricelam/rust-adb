@@ -38,13 +38,17 @@ reset_submodule() {
   local dir="$1"
   if [[ -d "${dir}" ]]; then
     git -C "${dir}" am --abort >/dev/null 2>&1 || true
+    git -C "${dir}" rebase --abort >/dev/null 2>&1 || true
     git -C "${dir}" reset --hard >/dev/null 2>&1 || true
     git -C "${dir}" clean -fdx >/dev/null 2>&1 || true
   fi
 }
 
 # Reset any changes/patches in android-tools-cmake submodules
-git -C "${SUBMODULE_DIR}" am --abort >/dev/null 2>&1 || true
+if [[ -d "${SUBMODULE_DIR}" ]]; then
+  git -C "${SUBMODULE_DIR}" submodule foreach --recursive 'git am --abort >/dev/null 2>&1 || true; git reset --hard >/dev/null 2>&1 || true; git clean -fdx >/dev/null 2>&1 || true' >/dev/null 2>&1 || true
+  git -C "${SUBMODULE_DIR}" submodule update --init --force --recursive >/dev/null 2>&1 || true
+fi
 reset_submodule "${SUBMODULE_DIR}"
 if [[ -d "${SUBMODULE_DIR}/vendor" ]]; then
   for sub in "${SUBMODULE_DIR}"/vendor/*; do
@@ -54,7 +58,6 @@ fi
 
 # Prepare clean build work directory and download cache dir
 mkdir -p "${DL_DIR}"
-rm -rf "${WORK_DIR}"
 mkdir -p "${WORK_DIR}"
 
 # Configure CMake (this applies android-tools-cmake/patches/* to vendor submodules)

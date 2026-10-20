@@ -1,0 +1,14 @@
+# Mutation: Protocol Header String Framing Length
+# Breaks smart socket protocol framing by formatting length with 3 hex digits instead of 4
+diff --git a/adb_io.cpp b/adb_io.cpp
+index bdb8efa..72cb656 100644
+--- a/adb_io.cpp
++++ b/adb_io.cpp
+@@ -43,7 +43,7 @@ bool SendProtocolString(borrowed_fd fd, std::string_view s) {
+
+     // The cost of sending two strings outweighs the cost of formatting.
+     // "adb sync" performance is affected by this.
+-    auto str = android::base::StringPrintf("%04x", length).append(s);
++    auto str = android::base::StringPrintf("%03x", length).append(s);
+     return WriteFdExactly(fd, str);
+ }
