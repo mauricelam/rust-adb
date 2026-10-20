@@ -3,7 +3,7 @@
 pub mod header;
 pub mod shell;
 pub mod smart_socket;
- 
+
 pub use header::{Command, DecodeError, EncodeError, Header};
 pub use shell::{
     ShellDecodeError, ShellDecoder, ShellEncodeError, ShellPacket, ShellPacketId, WindowSize,
