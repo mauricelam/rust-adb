@@ -6,6 +6,7 @@ rust-version.workspace = true
 publish.workspace = true
 
 [dependencies]
+adb-proto = { path = "../adb-proto" }
 rsa = { version = "0.9.10", features = ["pem", "sha2"] }
 pkcs8 = { version = "0.10.2", features = ["pem", "std"] }
 num-bigint-dig = "0.8.4"
