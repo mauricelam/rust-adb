@@ -7,7 +7,7 @@
 //! - `original/adb_auth.h`: public key/auth interfaces
 //! - `original/crypto/rsa_2048_key.cpp`: `CalculatePublicKey` and `CreateRSA2048Key`
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashSet};
 use std::env;
 use std::fs::{self, OpenOptions};
 use std::io::Write;
@@ -31,23 +31,161 @@ pub const ANDROID_PUBKEY_ENCODED_SIZE: usize =
     4 + 4 + ANDROID_PUBKEY_MODULUS_SIZE + ANDROID_PUBKEY_MODULUS_SIZE + 4; // 524 bytes
 
 /// Global key store for loaded RSA private keys indexed by key fingerprint hash.
-static G_KEYS: OnceLock<Mutex<HashMap<Vec<u8>, RsaPrivateKey>>> = OnceLock::new();
+static G_KEYS: OnceLock<Mutex<BTreeMap<[u8; 32], RsaPrivateKey>>> = OnceLock::new();
 
-fn get_keys_mutex() -> &'static Mutex<HashMap<Vec<u8>, RsaPrivateKey>> {
-    G_KEYS.get_or_init(|| Mutex::new(HashMap::new()))
+fn get_keys_mutex() -> &'static Mutex<BTreeMap<[u8; 32], RsaPrivateKey>> {
+    G_KEYS.get_or_init(|| Mutex::new(BTreeMap::new()))
 }
 
-/// Compute SHA-256 fingerprint of an RSA private key based on its public key DER encoding.
+/// Compute SHA-256 fingerprint of an RSA private key based on its SubjectPublicKeyInfo DER encoding.
 ///
 /// Ported from `hash_key` in `original/client/auth.cpp`.
-pub fn hash_key(key: &RsaPrivateKey) -> Vec<u8> {
+pub fn fingerprint(key: &RsaPrivateKey) -> [u8; 32] {
     let pub_key = key.to_public_key();
     let der = pub_key
         .to_public_key_der()
         .expect("failed to encode RSA public key DER");
     let mut hasher = Sha256::new();
     hasher.update(der.as_bytes());
-    hasher.finalize().to_vec()
+    hasher.finalize().into()
+}
+
+/// Compute SHA-256 fingerprint of an RSA private key as a `Vec<u8>`.
+///
+/// Ported from `hash_key` in `original/client/auth.cpp`.
+pub fn hash_key(key: &RsaPrivateKey) -> Vec<u8> {
+    fingerprint(key).to_vec()
+}
+
+/// Store for ADB authentication RSA private keys, supporting standard user key
+/// loading/generation and extra vendor key paths from `ADB_VENDOR_KEYS`.
+///
+/// Keys are stored deduplicated by fingerprint and ordered in ascending byte order
+/// of their SHA-256 SubjectPublicKeyInfo fingerprint, matching C++ ADB's `std::map` ordering.
+///
+/// Note: File watching (inotify monitoring on Linux) is omitted in this implementation and left as a follow-up.
+#[derive(Debug, Clone, Default)]
+pub struct KeyStore {
+    user_key: Option<RsaPrivateKey>,
+    keys: BTreeMap<[u8; 32], RsaPrivateKey>,
+}
+
+impl KeyStore {
+    /// Create a new empty `KeyStore`.
+    pub fn new() -> Self {
+        Self {
+            user_key: None,
+            keys: BTreeMap::new(),
+        }
+    }
+
+    /// Load user key and vendor keys.
+    ///
+    /// - `user_dir`: optional user directory (e.g. `~/.android`), or user key file path. If `None`, defaults to standard path (`get_user_key_path()`).
+    /// - `vendor_keys_env`: optional string with vendor key paths separated by platform path separator. If `None`, reads `ADB_VENDOR_KEYS` environment variable.
+    pub fn load(user_dir: Option<&Path>, vendor_keys_env: Option<&str>) -> Self {
+        let mut store = Self::new();
+
+        // 1. Resolve user key path
+        let user_key_path = match user_dir {
+            Some(dir) => {
+                if dir.is_dir() {
+                    dir.join("adbkey")
+                } else if dir.file_name().is_some_and(|name| name == "adbkey")
+                    || (dir.extension().is_none() && dir.exists() && dir.is_file())
+                {
+                    dir.to_path_buf()
+                } else if !dir.exists() && dir.parent().is_some_and(|p| p.exists()) {
+                    if dir.extension().is_some() {
+                        dir.to_path_buf()
+                    } else {
+                        dir.join("adbkey")
+                    }
+                } else {
+                    dir.to_path_buf()
+                }
+            }
+            None => get_user_key_path(),
+        };
+
+        if let Ok(key) = load_or_generate(&user_key_path) {
+            let fp = fingerprint(&key);
+            store.keys.insert(fp, key.clone());
+            store.user_key = Some(key);
+        }
+
+        // 2. Resolve vendor keys environment string
+        let vendor_env_owned;
+        let vendor_str = match vendor_keys_env {
+            Some(s) => s,
+            None => {
+                vendor_env_owned = env::var("ADB_VENDOR_KEYS").unwrap_or_default();
+                &vendor_env_owned
+            }
+        };
+
+        if !vendor_str.is_empty() {
+            let sep = if cfg!(windows) { ';' } else { ':' };
+            let mut seen_paths = HashSet::new();
+            for path_str in vendor_str.split(sep) {
+                let trimmed = path_str.trim();
+                if !trimmed.is_empty() && seen_paths.insert(trimmed.to_string()) {
+                    store.load_vendor_path(Path::new(trimmed));
+                }
+            }
+        }
+
+        store
+    }
+
+    /// Load a vendor path (file or directory, non-recursive).
+    fn load_vendor_path(&mut self, path: &Path) {
+        let metadata = match fs::metadata(path) {
+            Ok(m) => m,
+            Err(_) => return,
+        };
+
+        if metadata.is_file() {
+            self.load_key_file(path);
+        } else if metadata.is_dir() {
+            let entries = match fs::read_dir(path) {
+                Ok(e) => e,
+                Err(_) => return,
+            };
+
+            for entry in entries.flatten() {
+                let entry_path = entry.path();
+                if entry_path.is_file() {
+                    if let Some(name) = entry_path.file_name().and_then(|n| n.to_str()) {
+                        if name == "." || name == ".." {
+                            continue;
+                        }
+                        if name.ends_with(".adb_key") {
+                            self.load_key_file(&entry_path);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /// Read a key file and insert into store if not already present.
+    fn load_key_file(&mut self, path: &Path) {
+        if let Ok(key) = read_key_file(path) {
+            let fp = fingerprint(&key);
+            self.keys.entry(fp).or_insert(key);
+        }
+    }
+
+    /// Get user private key if loaded.
+    pub fn user_key(&self) -> Option<&RsaPrivateKey> {
+        self.user_key.as_ref()
+    }
+
+    /// Get all loaded private keys sorted by fingerprint in ascending byte order.
+    pub fn private_keys(&self) -> Vec<RsaPrivateKey> {
+        self.keys.values().cloned().collect()
+    }
 }
 
 /// Get login username in UTF-8.
@@ -219,7 +357,7 @@ pub fn load_key<P: AsRef<Path>>(file: P) -> bool {
         Err(_) => return false,
     };
 
-    let fp = hash_key(&key);
+    let fp = fingerprint(&key);
     let mut keys = get_keys_mutex().lock().unwrap();
     keys.entry(fp).or_insert(key);
     true
@@ -342,9 +480,9 @@ pub fn load_or_generate<P: AsRef<Path>>(path: P) -> Result<RsaPrivateKey, String
 ///
 /// Ported from `adb_auth_init` in `original/client/auth.cpp`.
 pub fn adb_auth_init() {
-    let user_key_path = get_user_key_path();
-    let _ = load_or_generate(&user_key_path);
-    load_vendor_keys();
+    let store = KeyStore::load(None, None);
+    let mut keys = get_keys_mutex().lock().unwrap();
+    *keys = store.keys;
 }
 
 /// Command-line helper to generate key pair at specified filename.
