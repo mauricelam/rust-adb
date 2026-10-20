@@ -80,10 +80,8 @@ pub async fn write_packet<W: AsyncWrite + Unpin>(
 fn parse_echo_command(cmd: &str) -> Option<String> {
     let raw_text = if cmd == "echo" {
         ""
-    } else if let Some(t) = cmd.strip_prefix("echo ") {
-        t
     } else {
-        return None;
+        cmd.strip_prefix("echo ")?
     };
 
     let text = raw_text.trim();
