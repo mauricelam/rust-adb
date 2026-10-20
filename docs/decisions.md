@@ -44,3 +44,8 @@
 
 - Pinned upstream ADB revision: Android SDK Platform-tools 36.0.2 (Build 14143358)
 - Mutation kill-rate threshold: [Placeholder: Resolved in task 0.11]
+
+## 9. C++ Build Source for Mutation Testing
+
+**Decision:** Use the vendored `android-tools-cmake` submodule (`37.0.0p1`) rather than building `original/` directly or using external tarballs. Mutants for mutation testing are applied as unified diff patches against `android-tools-cmake/vendor/adb`.
+**Reason:** The standalone C++ build from `android-tools-cmake` builds cleanly outside AOSP, vendors required support libraries, and provides a reproducible target for mutation testing on Linux.
