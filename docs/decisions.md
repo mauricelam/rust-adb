@@ -43,7 +43,7 @@
 **Reason:** These parameters depend on upstream repository synchronization and baseline mutation testing results that are established in subsequent setup tasks.
 
 - Pinned upstream ADB revision: Android SDK Platform-tools 36.0.2 (Build 14143358)
-- Mutation kill-rate threshold: [Placeholder: Resolved in task 0.11]
+- Mutation kill-rate threshold: 100% (3/3 mutants killed, 0 survived in baseline task 0.10/0.11)
 
 ## 9. C++ Build Source for Mutation Testing
 
