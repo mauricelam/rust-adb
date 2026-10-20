@@ -1,9 +1,14 @@
-//! Message types, serialization, shell v2 framing, smart-socket framing, and the sync protocol. Pure code, no I/O.
+//! Message types, serialization, shell v2 framing, smart-socket framing, connection banners, features, and the sync protocol. Pure code, no I/O.
 
+pub mod banner;
 pub mod header;
 pub mod shell;
 pub mod smart_socket;
 
+pub use banner::{
+    negotiate_max_payload, negotiate_version, Banner, Feature, Features, A_VERSION, A_VERSION_MIN,
+    A_VERSION_SKIP_CHECKSUM, MAX_PAYLOAD_V1,
+};
 pub use header::{Command, DecodeError, EncodeError, Header};
 pub use shell::{
     ShellDecodeError, ShellDecoder, ShellEncodeError, ShellPacket, ShellPacketId, WindowSize,
