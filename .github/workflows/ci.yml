@@ -10,6 +10,51 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
+  check-compat-freeze:
+    name: Check Compatibility Suite Freeze
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Verify CHANGELOG updated if protected files modified
+        shell: bash
+        run: |
+          TARGET_BRANCH="${{ github.base_ref }}"
+          if [[ -z "$TARGET_BRANCH" ]]; then
+            TARGET_BRANCH="main"
+          fi
+
+          echo "Comparing against origin/$TARGET_BRANCH..."
+          git fetch origin "$TARGET_BRANCH" --depth=1 || true
+
+          # List modified files in this PR
+          MODIFIED_FILES=$(git diff --name-only "origin/$TARGET_BRANCH"...HEAD)
+
+          echo "Modified files:"
+          echo "$MODIFIED_FILES"
+
+          # Protected path patterns: tests/compat/, mutation/, or any path containing fixtures/ or fixture/
+          PROTECTED_CHANGES=$(echo "$MODIFIED_FILES" | grep -E '^tests/compat/|^mutation/|(/|^)fixtures?/|(/|^)fixture[s_]?' | grep -v '^tests/compat/CHANGELOG\.md$' || true)
+
+          if [[ -n "$PROTECTED_CHANGES" ]]; then
+            echo "The following protected files were modified:"
+            echo "$PROTECTED_CHANGES"
+
+            CHANGELOG_MODIFIED=$(echo "$MODIFIED_FILES" | grep '^tests/compat/CHANGELOG\.md$' || true)
+            if [[ -z "$CHANGELOG_MODIFIED" ]]; then
+              echo "Error: Protected compatibility suite, mutation, or fixture files were modified without an update to tests/compat/CHANGELOG.md."
+              echo "Please document your changes in tests/compat/CHANGELOG.md and bump the version in tests/compat/VERSION if applicable."
+              exit 1
+            else
+              echo "tests/compat/CHANGELOG.md was updated alongside protected changes. Check passed."
+            fi
+          else
+            echo "No protected compatibility suite or fixture files were modified."
+          fi
+
   ci:
     name: CI (${{ matrix.os }})
     runs-on: ${{ matrix.os }}

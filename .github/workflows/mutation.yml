@@ -1,0 +1,91 @@
+name: Mutation Check
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '0 0 * * 0'
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_TEST_THREADS: 1
+
+jobs:
+  mutation-check:
+    name: Run Mutation Suite (Linux)
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install C++ build dependencies
+        run: |
+          sudo apt-get update && sudo apt-get install -y \
+            cmake \
+            ninja-build \
+            libfmt-dev \
+            libprotobuf-dev \
+            protobuf-compiler \
+            libbrotli-dev \
+            liblz4-dev \
+            libpcre2-dev \
+            libzstd-dev \
+            zlib1g-dev \
+            libusb-1.0-0-dev \
+            libgtest-dev
+
+      - name: Cache C++ build assets
+        uses: actions/cache@v4
+        with:
+          path: target/cpp-build/dl/
+          key: ${{ runner.os }}-cpp-build-dl-${{ hashFiles('.gitmodules') }}
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Make scripts executable
+        run: |
+          chmod +x scripts/build-cpp-adb.sh
+          chmod +x mutation/run.sh
+
+      - name: Run mutation testing suite
+        run: |
+          ./mutation/run.sh
+
+      - name: Upload mutation results artifact
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: mutation-results
+          path: mutation/results.csv
+
+      - name: Check mutation kill rate threshold (100%)
+        shell: bash
+        run: |
+          RESULTS_FILE="mutation/results.csv"
+          if [[ ! -f "$RESULTS_FILE" ]]; then
+            echo "Error: Results file $RESULTS_FILE not found!"
+            exit 1
+          fi
+
+          TOTAL_MUTANTS=$(tail -n +2 "$RESULTS_FILE" | wc -l)
+          KILLED_MUTANTS=$(grep -c ",killed" "$RESULTS_FILE" || true)
+          SURVIVED_MUTANTS=$(grep -c ",survived" "$RESULTS_FILE" || true)
+
+          echo "Total mutants: $TOTAL_MUTANTS"
+          echo "Killed mutants: $KILLED_MUTANTS"
+          echo "Survived mutants: $SURVIVED_MUTANTS"
+
+          if [[ "$TOTAL_MUTANTS" -eq 0 ]]; then
+            echo "Error: No mutants evaluated!"
+            exit 1
+          fi
+
+          # Threshold from docs/decisions.md is 100% (3/3 mutants killed, 0 survived)
+          if [[ "$SURVIVED_MUTANTS" -gt 0 ]]; then
+            echo "Error: $SURVIVED_MUTANTS mutant(s) survived! Kill rate threshold is 100%."
+            exit 1
+          fi
+
+          echo "Mutation check passed: 100% kill rate ($KILLED_MUTANTS/$TOTAL_MUTANTS)."
