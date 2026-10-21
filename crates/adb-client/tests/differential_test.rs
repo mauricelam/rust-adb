@@ -1,7 +1,15 @@
-use adb_client::{resolve_server_address, AddressError, ServerAddressOptions};
+use adb_client::{
+    check_server_version, kill_server, ClientError, DefaultSessionFactory, ServerAddress,
+    ServerAddressOptions, ServerLauncher,
+};
+use compat::TestServer;
 use std::env;
+use std::future::Future;
 use std::path::PathBuf;
+use std::pin::Pin;
 use std::process::Command;
+use std::time::Duration;
+use tokio::net::TcpStream;
 
 fn get_reference_adb_path() -> PathBuf {
     if let Ok(path) = env::var("ADB_REFERENCE") {
@@ -54,10 +62,13 @@ fn test_differential_invalid_port() {
         port: Some("99999".to_string()),
         ..Default::default()
     };
-    let err = resolve_server_address(&options, &Default::default()).unwrap_err();
+    let err = adb_client::resolve_server_address(&options, &Default::default()).unwrap_err();
 
     assert_eq!(msg_after_prefix, err.to_string());
-    assert_eq!(err, AddressError::InvalidPort("99999".to_string()));
+    assert_eq!(
+        err,
+        adb_client::AddressError::InvalidPort("99999".to_string())
+    );
 }
 
 #[test]
@@ -82,8 +93,54 @@ fn test_differential_incompatible_options() {
         host: Some("x".to_string()),
         ..Default::default()
     };
-    let err = resolve_server_address(&options, &Default::default()).unwrap_err();
+    let err = adb_client::resolve_server_address(&options, &Default::default()).unwrap_err();
 
     assert_eq!(msg_after_prefix, err.to_string());
-    assert_eq!(err, AddressError::IncompatibleOptions);
+    assert_eq!(err, adb_client::AddressError::IncompatibleOptions);
+}
+
+struct NoOpLauncher;
+
+impl ServerLauncher for NoOpLauncher {
+    fn launch_server<'a>(
+        &'a self,
+        _addr: &'a ServerAddress,
+    ) -> Pin<Box<dyn Future<Output = Result<(), ClientError>> + Send + 'a>> {
+        Box::pin(async move { Ok(()) })
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn test_differential_check_version_and_kill_server() {
+    let server = TestServer::start();
+    let addr = ServerAddress {
+        host: Some("127.0.0.1".into()),
+        port: server.port,
+    };
+
+    let session_factory = DefaultSessionFactory;
+    let launcher = NoOpLauncher;
+    let mut events = Vec::new();
+
+    // 1. check_server_version against reference server returns matching version (41)
+    let res = check_server_version(&addr, &session_factory, &launcher, &mut events).await;
+    assert!(res.is_ok(), "check_server_version failed: {:?}", res);
+    assert!(
+        events.is_empty(),
+        "expected no events for matching version, got {:?}",
+        events
+    );
+
+    // 2. kill_server against reference server
+    let mut kill_events = Vec::new();
+    let kill_res = kill_server(&addr, &session_factory, &mut kill_events).await;
+    assert!(kill_res.is_ok(), "kill_server failed: {:?}", kill_res);
+
+    // 3. Verify server shut down and port stops accepting connections
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    let conn_res = TcpStream::connect(("127.0.0.1", server.port)).await;
+    assert!(
+        conn_res.is_err(),
+        "reference server should have shut down after kill_server, but connection succeeded"
+    );
 }

@@ -7,7 +7,7 @@ publish.workspace = true
 
 [dependencies]
 adb-proto = { path = "../adb-proto" }
-tokio = { version = "1", features = ["net", "io-util", "rt", "rt-multi-thread", "macros"] }
+tokio = { version = "1", features = ["net", "io-util", "rt", "rt-multi-thread", "macros", "sync"] }
 
 [dev-dependencies]
 compat = { path = "../../tests/compat" }
