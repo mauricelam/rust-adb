@@ -520,25 +520,23 @@ where
                                 stdin_closed = true;
                                 break;
                             }
-                            ShellPacketId::WindowSizeChange => {
-                                if ctx.is_pty {
-                                    let text = String::from_utf8_lossy(&pkt.data)
-                                        .trim_end_matches('\0')
-                                        .to_string();
-                                    let winsz_pkt = ShellPacket::new(
-                                        ShellPacketId::Stdout,
-                                        format!("WINSZ {text}\n").into_bytes(),
-                                    );
-                                    if !ctx
-                                        .send_shell_packet_and_wait_okay(
-                                            &winsz_pkt,
-                                            decoder,
-                                            &mut pending_winsz,
-                                        )
-                                        .await?
-                                    {
-                                        return Ok(());
-                                    }
+                            ShellPacketId::WindowSizeChange if ctx.is_pty => {
+                                let text = String::from_utf8_lossy(&pkt.data)
+                                    .trim_end_matches('\0')
+                                    .to_string();
+                                let winsz_pkt = ShellPacket::new(
+                                    ShellPacketId::Stdout,
+                                    format!("WINSZ {text}\n").into_bytes(),
+                                );
+                                if !ctx
+                                    .send_shell_packet_and_wait_okay(
+                                        &winsz_pkt,
+                                        decoder,
+                                        &mut pending_winsz,
+                                    )
+                                    .await?
+                                {
+                                    return Ok(());
                                 }
                             }
                             _ => {}
