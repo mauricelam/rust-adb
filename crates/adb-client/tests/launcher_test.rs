@@ -4,6 +4,7 @@
 // - `launch_server` in `original/adb.cpp` lines 813-1120
 // - `__adb_check_server_version` in `original/client/adb_client.cpp` lines 272-366
 
+#[allow(unused_imports)]
 use adb_client::{
     check_server_version, ClientError, ClientEvent, DefaultSessionFactory, ExternalBinaryLauncher,
     ServerAddress, SessionFactory, ADB_SERVER_VERSION,
