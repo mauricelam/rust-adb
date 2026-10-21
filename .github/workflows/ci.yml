@@ -19,40 +19,45 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Verify CHANGELOG updated if protected files modified
+      - name: Verify CHANGELOG and VERSION updated if protected files modified
         shell: bash
         run: |
-          TARGET_BRANCH="${{ github.base_ref }}"
-          if [[ -z "$TARGET_BRANCH" ]]; then
-            TARGET_BRANCH="main"
-          fi
+          # Use diff-filter=MDR to ignore newly added (A) files, tracking only modified, deleted, or renamed existing files
+          MODIFIED_FILES=$(git diff --name-only --diff-filter=MDR "origin/${{ github.base_ref }}...${{ github.event.pull_request.head.sha }}")
 
-          echo "Comparing against origin/$TARGET_BRANCH..."
-          git fetch origin "$TARGET_BRANCH" --depth=1 || true
-
-          # List modified files in this PR
-          MODIFIED_FILES=$(git diff --name-only "origin/$TARGET_BRANCH"...HEAD)
-
-          echo "Modified files:"
+          echo "Modified/Deleted/Renamed existing files:"
           echo "$MODIFIED_FILES"
 
-          # Protected path patterns: tests/compat/, mutation/, or any path containing fixtures/ or fixture/
-          PROTECTED_CHANGES=$(echo "$MODIFIED_FILES" | grep -E '^tests/compat/|^mutation/|(/|^)fixtures?/|(/|^)fixture[s_]?' | grep -v '^tests/compat/CHANGELOG\.md$' || true)
+          # Protected path patterns: ^tests/compat/, ^mutation/, or (^|/)fixtures/
+          # Exclude CHANGELOG.md and VERSION from protected trigger check
+          PROTECTED_CHANGES=$(echo "$MODIFIED_FILES" | grep -E '^tests/compat/|^mutation/|(^|/)fixtures/' | grep -v -E '^tests/compat/(CHANGELOG\.md|VERSION)$' || true)
 
           if [[ -n "$PROTECTED_CHANGES" ]]; then
-            echo "The following protected files were modified:"
+            echo "The following existing protected files were modified/deleted/renamed:"
             echo "$PROTECTED_CHANGES"
 
             CHANGELOG_MODIFIED=$(echo "$MODIFIED_FILES" | grep '^tests/compat/CHANGELOG\.md$' || true)
+            VERSION_MODIFIED=$(echo "$MODIFIED_FILES" | grep '^tests/compat/VERSION$' || true)
+
+            FAILED=0
             if [[ -z "$CHANGELOG_MODIFIED" ]]; then
               echo "Error: Protected compatibility suite, mutation, or fixture files were modified without an update to tests/compat/CHANGELOG.md."
-              echo "Please document your changes in tests/compat/CHANGELOG.md and bump the version in tests/compat/VERSION if applicable."
+              FAILED=1
+            fi
+
+            if [[ -z "$VERSION_MODIFIED" ]]; then
+              echo "Error: Protected compatibility suite, mutation, or fixture files were modified without an update to tests/compat/VERSION."
+              FAILED=1
+            fi
+
+            if [[ "$FAILED" -ne 0 ]]; then
+              echo "Please document your changes in tests/compat/CHANGELOG.md and bump the version in tests/compat/VERSION."
               exit 1
             else
-              echo "tests/compat/CHANGELOG.md was updated alongside protected changes. Check passed."
+              echo "Both tests/compat/CHANGELOG.md and tests/compat/VERSION were updated alongside protected changes. Check passed."
             fi
           else
-            echo "No protected compatibility suite or fixture files were modified."
+            echo "No existing protected compatibility suite, mutation, or fixture files were modified."
           fi
 
   ci:

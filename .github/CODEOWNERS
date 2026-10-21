@@ -1,4 +1,4 @@
 # Codeowners for freeze-protected compatibility suite and test fixtures (task 0.12)
-tests/compat/ @owner-placeholder
-mutation/ @owner-placeholder
-**/fixtures/ @owner-placeholder
+tests/compat/ @mauricelam
+mutation/ @mauricelam
+**/fixtures/ @mauricelam

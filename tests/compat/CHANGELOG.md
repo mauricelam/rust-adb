@@ -4,7 +4,7 @@ All notable changes to the compatibility test suite (`tests/compat/`), test fixt
 
 Any change to an existing test, fixture, or mutation patch requires a version bump in `tests/compat/VERSION` and a documented reason in this file.
 
-## [1.0.0] - 2026-03-02
+## [1.0.0] - 2026-10-21
 
 ### Added
 - Initial frozen release of the compatibility test suite (`tests/compat/`) and mutation testing framework (`mutation/`).

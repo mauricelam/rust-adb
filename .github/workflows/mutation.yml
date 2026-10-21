@@ -5,6 +5,9 @@ on:
   schedule:
     - cron: '0 0 * * 0'
 
+permissions:
+  contents: read
+
 env:
   CARGO_TERM_COLOR: always
   RUST_TEST_THREADS: 1
@@ -60,32 +63,57 @@ jobs:
           name: mutation-results
           path: mutation/results.csv
 
-      - name: Check mutation kill rate threshold (100%)
+      - name: Check mutation kill rate threshold
         shell: bash
         run: |
+          DECISIONS_FILE="docs/decisions.md"
           RESULTS_FILE="mutation/results.csv"
+
+          if [[ ! -f "$DECISIONS_FILE" ]]; then
+            echo "Error: Decisions file $DECISIONS_FILE not found!"
+            exit 1
+          fi
+
           if [[ ! -f "$RESULTS_FILE" ]]; then
             echo "Error: Results file $RESULTS_FILE not found!"
             exit 1
           fi
 
-          TOTAL_MUTANTS=$(tail -n +2 "$RESULTS_FILE" | wc -l)
+          # Extract threshold percentage from docs/decisions.md
+          THRESHOLD=$(grep -oP 'Mutation kill-rate threshold:\s*\K[0-9]+(?=%)' "$DECISIONS_FILE" || true)
+
+          if [[ -z "$THRESHOLD" ]]; then
+            echo "Error: Could not parse mutation kill-rate threshold from $DECISIONS_FILE! Expected format 'Mutation kill-rate threshold: <N>%'"
+            exit 1
+          fi
+
+          echo "Parsed mutation kill-rate threshold from $DECISIONS_FILE: ${THRESHOLD}%"
+
+          # Count statuses from results.csv (header: patch,status)
           KILLED_MUTANTS=$(grep -c ",killed" "$RESULTS_FILE" || true)
           SURVIVED_MUTANTS=$(grep -c ",survived" "$RESULTS_FILE" || true)
+          EQUIVALENT_MUTANTS=$(grep -c ",equivalent" "$RESULTS_FILE" || true)
 
-          echo "Total mutants: $TOTAL_MUTANTS"
+          EVALUATED_TOTAL=$(( KILLED_MUTANTS + SURVIVED_MUTANTS ))
+
           echo "Killed mutants: $KILLED_MUTANTS"
           echo "Survived mutants: $SURVIVED_MUTANTS"
+          echo "Equivalent mutants (excluded from denominator): $EQUIVALENT_MUTANTS"
+          echo "Total evaluated mutants (killed + survived): $EVALUATED_TOTAL"
 
-          if [[ "$TOTAL_MUTANTS" -eq 0 ]]; then
-            echo "Error: No mutants evaluated!"
+          if [[ "$EVALUATED_TOTAL" -eq 0 ]]; then
+            echo "Error: No evaluated mutants found in $RESULTS_FILE!"
             exit 1
           fi
 
-          # Threshold from docs/decisions.md is 100% (3/3 mutants killed, 0 survived)
-          if [[ "$SURVIVED_MUTANTS" -gt 0 ]]; then
-            echo "Error: $SURVIVED_MUTANTS mutant(s) survived! Kill rate threshold is 100%."
+          # Calculate kill rate percentage: (KILLED * 100) / EVALUATED_TOTAL
+          KILL_RATE_PCT=$(( (KILLED_MUTANTS * 100) / EVALUATED_TOTAL ))
+
+          echo "Calculated kill rate: ${KILL_RATE_PCT}% ($KILLED_MUTANTS / $EVALUATED_TOTAL)"
+
+          if [[ "$KILL_RATE_PCT" -lt "$THRESHOLD" ]]; then
+            echo "Error: Mutation kill rate ${KILL_RATE_PCT}% is below the required threshold of ${THRESHOLD}%!"
             exit 1
           fi
 
-          echo "Mutation check passed: 100% kill rate ($KILLED_MUTANTS/$TOTAL_MUTANTS)."
+          echo "Mutation check passed: ${KILL_RATE_PCT}% kill rate meets or exceeds the ${THRESHOLD}% threshold."
