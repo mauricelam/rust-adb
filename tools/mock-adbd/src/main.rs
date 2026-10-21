@@ -1,5 +1,5 @@
 use clap::Parser;
-use mock_adbd::handle_connection;
+use mock_adbd::{handle_connection_with_options, MockAdbdOptions};
 use tokio::net::TcpListener;
 
 #[derive(Parser, Debug)]
@@ -8,11 +8,19 @@ struct Args {
     /// Address to listen on (e.g. 127.0.0.1:0)
     #[arg(long, default_value = "127.0.0.1:0")]
     listen: String,
+
+    /// Disable shell_v2 feature advertisement
+    #[arg(long)]
+    no_shell_v2: bool,
 }
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args = Args::parse();
+    let options = MockAdbdOptions {
+        enable_shell_v2: !args.no_shell_v2,
+    };
+
     let listener = TcpListener::bind(&args.listen).await?;
     let bound_addr = listener.local_addr()?;
 
@@ -20,8 +28,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("{}", bound_addr);
 
     while let Ok((stream, _)) = listener.accept().await {
+        let options = options.clone();
         tokio::spawn(async move {
-            let _ = handle_connection(stream).await;
+            let _ = handle_connection_with_options(stream, options).await;
         });
     }
 
