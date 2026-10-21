@@ -146,17 +146,13 @@ pub fn resolve_server_address(
     let mut server_socket_str = options.socket.as_deref();
 
     // Check incompatibility: -L together with -H or -P is an error
-    if (server_host_option.is_some() || server_port_option.is_some())
-        && server_socket_str.is_some()
+    if (server_host_option.is_some() || server_port_option.is_some()) && server_socket_str.is_some()
     {
         return Err(AddressError::IncompatibleOptions);
     }
 
     // If none of -L, -H, -P is given, ADB_SERVER_SOCKET environment variable wins over everything else.
-    if server_host_option.is_none()
-        && server_port_option.is_none()
-        && server_socket_str.is_none()
-    {
+    if server_host_option.is_none() && server_port_option.is_none() && server_socket_str.is_none() {
         server_socket_str = env.adb_server_socket.as_deref();
     }
 
@@ -426,7 +422,8 @@ mod tests {
                 expected_is_local: Some(true),
             },
             TestCase {
-                name: "ANDROID_ADB_SERVER_ADDRESS and PORT used when no options or ADB_SERVER_SOCKET",
+                name:
+                    "ANDROID_ADB_SERVER_ADDRESS and PORT used when no options or ADB_SERVER_SOCKET",
                 options: ServerAddressOptions::default(),
                 env: ServerAddressEnv {
                     android_adb_server_address: Some("10.0.0.1".into()),
