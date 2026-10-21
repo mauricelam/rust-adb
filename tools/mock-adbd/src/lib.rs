@@ -424,21 +424,22 @@ where
 
                         decoder.feed(&payload);
                         loop {
-                            let pkt = match decoder.pop_packet() {
-                                Ok(Some(p)) => p,
+                            match decoder.pop_packet() {
+                                Ok(Some(pkt))
+                                    if pkt.id == ShellPacketId::WindowSizeChange && self.is_pty =>
+                                {
+                                    let text = String::from_utf8_lossy(&pkt.data)
+                                        .trim_end_matches('\0')
+                                        .to_string();
+                                    let winsz_pkt = ShellPacket::new(
+                                        ShellPacketId::Stdout,
+                                        format!("WINSZ {text}\n").into_bytes(),
+                                    );
+                                    pending_winsz.push_back(winsz_pkt);
+                                }
+                                Ok(Some(_)) => {}
                                 Ok(None) => break,
                                 Err(_) => return Ok(false),
-                            };
-
-                            if pkt.id == ShellPacketId::WindowSizeChange && self.is_pty {
-                                let text = String::from_utf8_lossy(&pkt.data)
-                                    .trim_end_matches('\0')
-                                    .to_string();
-                                let winsz_pkt = ShellPacket::new(
-                                    ShellPacketId::Stdout,
-                                    format!("WINSZ {text}\n").into_bytes(),
-                                );
-                                pending_winsz.push_back(winsz_pkt);
                             }
                         }
                     }
