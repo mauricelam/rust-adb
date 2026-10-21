@@ -1,3 +1,4 @@
+use crate::launcher::ServerLauncher;
 use crate::server_address::ServerAddress;
 use crate::session::{Session, SessionError};
 use std::future::Future;
@@ -116,14 +117,6 @@ impl SessionFactory for DefaultSessionFactory {
     }
 }
 
-/// Trait for launching an ADB server process.
-pub trait ServerLauncher: Send + Sync {
-    fn launch_server<'a>(
-        &'a self,
-        addr: &'a ServerAddress,
-    ) -> Pin<Box<dyn Future<Output = Result<(), ClientError>> + Send + 'a>>;
-}
-
 /// Kills the running ADB server at `addr`.
 ///
 /// Ports `adb_kill_server` from C++ `adb_client.cpp`.
@@ -240,14 +233,15 @@ async fn start_server(
     launcher: &dyn ServerLauncher,
     events: &mut Vec<ClientEvent>,
 ) -> Result<(), ClientError> {
-    match launcher.launch_server(addr).await {
+    let spec = addr.to_spec();
+    match launcher.launch(&spec, None).await {
         Ok(()) => {
             events.push(ClientEvent::DaemonStarted);
             Ok(())
         }
-        Err(err) => {
+        Err(_err) => {
             events.push(ClientEvent::FailedToStartDaemon);
-            Err(err)
+            Err(ClientError::CannotConnectDaemon)
         }
     }
 }
@@ -296,7 +290,7 @@ impl AdbClient {
 
         match res {
             Ok(()) => Ok(()),
-            Err(msg) => Err(ClientError::KillFailed(msg.clone())),
+            Err(_msg) => Err(ClientError::CannotConnectDaemon),
         }
     }
 

@@ -1,5 +1,5 @@
 use adb_client::{
-    check_server_version, kill_server, AdbClient, ClientError, ClientEvent, DefaultSessionFactory,
+    check_server_version, kill_server, AdbClient, ClientEvent, DefaultSessionFactory, LaunchError,
     ServerAddress, ServerLauncher, ADB_SERVER_VERSION,
 };
 use std::future::Future;
@@ -122,10 +122,11 @@ impl MockLauncher {
 }
 
 impl ServerLauncher for MockLauncher {
-    fn launch_server<'a>(
+    fn launch<'a>(
         &'a self,
-        _addr: &'a ServerAddress,
-    ) -> Pin<Box<dyn Future<Output = Result<(), ClientError>> + Send + 'a>> {
+        _spec: &'a str,
+        _one_device: Option<&'a str>,
+    ) -> Pin<Box<dyn Future<Output = Result<(), LaunchError>> + Send + 'a>> {
         let launched = self.launched.clone();
         Box::pin(async move {
             launched.store(true, Ordering::SeqCst);

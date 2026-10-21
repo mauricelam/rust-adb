@@ -29,6 +29,7 @@ version = "0.0.0"
 dependencies = [
  "adb-proto",
  "compat",
+ "libc",
  "mock-adbd",
  "tokio",
 ]

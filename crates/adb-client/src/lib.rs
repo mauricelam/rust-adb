@@ -1,14 +1,16 @@
 //! A library for talking to an ADB server.
 
 pub mod client;
+pub mod launcher;
 pub mod server_address;
 pub mod session;
 pub mod transport;
 
 pub use client::{
     check_server_version, kill_server, AdbClient, ClientError, ClientEvent, DefaultSessionFactory,
-    ServerLauncher, SessionFactory, ADB_SERVER_VERSION,
+    SessionFactory, ADB_SERVER_VERSION,
 };
+pub use launcher::{ExternalBinaryLauncher, LaunchError, SelfExecLauncher, ServerLauncher};
 pub use server_address::{
     resolve_server_address, AddressError, ServerAddress, ServerAddressEnv, ServerAddressOptions,
     DEFAULT_SERVER_PORT,

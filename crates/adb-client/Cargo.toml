@@ -9,6 +9,9 @@ publish.workspace = true
 adb-proto = { path = "../adb-proto" }
 tokio = { version = "1", features = ["net", "io-util", "rt", "rt-multi-thread", "macros", "sync"] }
 
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
 [dev-dependencies]
 compat = { path = "../../tests/compat" }
 mock-adbd = { path = "../../tools/mock-adbd" }
