@@ -1,0 +1,4 @@
+# Codeowners for freeze-protected compatibility suite and test fixtures (task 0.12)
+tests/compat/ @mauricelam
+mutation/ @mauricelam
+**/fixtures/ @mauricelam

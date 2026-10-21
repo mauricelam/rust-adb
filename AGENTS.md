@@ -66,6 +66,7 @@ The harness respects the following environment variables:
 - **No external downloads**: Builds and CI must not download external sources or binaries from URLs.
 - **Test first**: A compatibility test counts only after it passes against the C++ ADB on both sides and fails against a deliberately broken C++ build.
 - **Fixtures and golden outputs**: Fixtures and golden outputs are never edited without human approval.
+- **Compatibility Suite Freeze**: The compatibility suite (`tests/compat/`), test fixtures (`**/fixtures/`), and mutation testing suite (`mutation/`) are frozen as a versioned artifact (`tests/compat/VERSION`). Any modification to existing tests, fixtures, or mutation patches requires human owner review, a version bump in `tests/compat/VERSION`, and a documented entry in `tests/compat/CHANGELOG.md`. CI enforces that pull requests modifying protected files include an update to `tests/compat/CHANGELOG.md`.
 - **Task pull requests**: Submit one task per pull request, with the task ID in the title (e.g., `0.4: Add AGENTS.md`).
 
 ## When Blocked
