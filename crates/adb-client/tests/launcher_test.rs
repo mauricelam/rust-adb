@@ -8,7 +8,7 @@ use adb_client::{
     check_server_version, ClientError, ClientEvent, DefaultSessionFactory, ExternalBinaryLauncher,
     ServerAddress, SessionFactory, ADB_SERVER_VERSION,
 };
-use std::io::Write;
+use std::io::{Read, Write};
 use std::net::TcpListener as StdTcpListener;
 use std::path::PathBuf;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -28,7 +28,10 @@ impl Drop for ServerDropGuard {
         let host = self.addr.host.as_deref().unwrap_or("127.0.0.1");
         if let Ok(mut stream) = std::net::TcpStream::connect((host, self.addr.port)) {
             let req = "0009host:kill";
-            let _ = stream.write_all(req.as_bytes());
+            if stream.write_all(req.as_bytes()).is_ok() {
+                let mut resp = [0u8; 4];
+                let _ = stream.read_exact(&mut resp);
+            }
         }
     }
 }
@@ -46,39 +49,61 @@ async fn test_launch_server_success() {
     let _guard = ServerDropGuard { addr: addr.clone() };
 
     let res = check_server_version(&addr, &session_factory, &launcher, &mut events).await;
-    assert!(res.is_ok(), "Expected start_server to succeed: {:?}", res);
 
-    assert_eq!(
-        events,
-        vec![
-            ClientEvent::DaemonNotRunning {
-                spec: addr.to_spec()
-            },
-            ClientEvent::DaemonStarted,
-        ]
-    );
-    assert_eq!(
-        events[0].to_string(),
-        format!("* daemon not running; starting now at {}", addr.to_spec())
-    );
-    assert_eq!(events[1].to_string(), "* daemon started successfully");
+    #[cfg(unix)]
+    {
+        assert!(res.is_ok(), "Expected start_server to succeed: {:?}", res);
 
-    // Verify host:version answers afterwards
-    let mut session = session_factory
-        .connect(&addr)
-        .await
-        .expect("Should connect to launched server");
-    session
-        .send_service("host:version")
-        .await
-        .expect("Should send host:version");
-    session.read_status().await.expect("Status OKAY expected");
-    let ver_str = session
-        .read_string()
-        .await
-        .expect("Version string expected");
-    let ver = u32::from_str_radix(&ver_str, 16).expect("Hex version parse expected");
-    assert_eq!(ver, ADB_SERVER_VERSION);
+        assert_eq!(
+            events,
+            vec![
+                ClientEvent::DaemonNotRunning {
+                    spec: addr.to_spec()
+                },
+                ClientEvent::DaemonStarted,
+            ]
+        );
+        assert_eq!(
+            events[0].to_string(),
+            format!("* daemon not running; starting now at {}", addr.to_spec())
+        );
+        assert_eq!(events[1].to_string(), "* daemon started successfully");
+
+        // Verify host:version answers afterwards
+        let mut session = session_factory
+            .connect(&addr)
+            .await
+            .expect("Should connect to launched server");
+        session
+            .send_service("host:version")
+            .await
+            .expect("Should send host:version");
+        session.read_status().await.expect("Status OKAY expected");
+        let ver_str = session
+            .read_string()
+            .await
+            .expect("Version string expected");
+        let ver = u32::from_str_radix(&ver_str, 16).expect("Hex version parse expected");
+        assert_eq!(ver, ADB_SERVER_VERSION);
+    }
+
+    #[cfg(not(unix))]
+    {
+        assert!(
+            matches!(res, Err(ClientError::CannotConnectDaemon)),
+            "Expected Unsupported/CannotConnectDaemon on non-unix, got {:?}",
+            res
+        );
+        assert_eq!(
+            events,
+            vec![
+                ClientEvent::DaemonNotRunning {
+                    spec: addr.to_spec()
+                },
+                ClientEvent::FailedToStartDaemon,
+            ]
+        );
+    }
 }
 
 // Scenario 2: a second start does nothing and prints no starting now event.
@@ -92,21 +117,31 @@ async fn test_second_start_does_nothing() {
 
     let _guard = ServerDropGuard { addr: addr.clone() };
 
-    // First start
-    let mut events1 = Vec::new();
-    let res1 = check_server_version(&addr, &session_factory, &launcher, &mut events1).await;
-    assert!(res1.is_ok());
-    assert_eq!(events1.len(), 2);
+    #[cfg(unix)]
+    {
+        // First start
+        let mut events1 = Vec::new();
+        let res1 = check_server_version(&addr, &session_factory, &launcher, &mut events1).await;
+        assert!(res1.is_ok());
+        assert_eq!(events1.len(), 2);
 
-    // Second start
-    let mut events2 = Vec::new();
-    let res2 = check_server_version(&addr, &session_factory, &launcher, &mut events2).await;
-    assert!(res2.is_ok());
-    assert!(
-        events2.is_empty(),
-        "Second check should produce no events, got {:?}",
-        events2
-    );
+        // Second start
+        let mut events2 = Vec::new();
+        let res2 = check_server_version(&addr, &session_factory, &launcher, &mut events2).await;
+        assert!(res2.is_ok());
+        assert!(
+            events2.is_empty(),
+            "Second check should produce no events, got {:?}",
+            events2
+        );
+    }
+
+    #[cfg(not(unix))]
+    {
+        let mut events1 = Vec::new();
+        let res1 = check_server_version(&addr, &session_factory, &launcher, &mut events1).await;
+        assert!(res1.is_err());
+    }
 }
 
 // Scenario 3: a launcher that fails produces failed to start daemon and the cannot connect to daemon error.
@@ -188,33 +223,56 @@ async fn test_version_mismatch_restarts_server() {
     let _guard = ServerDropGuard { addr: addr.clone() };
 
     let res = check_server_version(&addr, &session_factory, &launcher, &mut events).await;
-    assert!(res.is_ok(), "Expected restart to succeed: {:?}", res);
 
-    assert_eq!(
-        events,
-        vec![
-            ClientEvent::ServerVersionMismatch {
-                server: 40,
-                client: 41
-            },
-            ClientEvent::DaemonStarted,
-        ]
-    );
+    #[cfg(unix)]
+    {
+        assert!(res.is_ok(), "Expected restart to succeed: {:?}", res);
 
-    // Verify real server is running on that port
-    let mut session = session_factory
-        .connect(&addr)
-        .await
-        .expect("Should connect to newly launched server");
-    session
-        .send_service("host:version")
-        .await
-        .expect("Should send host:version");
-    session.read_status().await.expect("Status OKAY expected");
-    let ver_str = session
-        .read_string()
-        .await
-        .expect("Version string expected");
-    let ver = u32::from_str_radix(&ver_str, 16).expect("Hex version parse expected");
-    assert_eq!(ver, ADB_SERVER_VERSION);
+        assert_eq!(
+            events,
+            vec![
+                ClientEvent::ServerVersionMismatch {
+                    server: 40,
+                    client: 41
+                },
+                ClientEvent::DaemonStarted,
+            ]
+        );
+
+        // Verify real server is running on that port
+        let mut session = session_factory
+            .connect(&addr)
+            .await
+            .expect("Should connect to newly launched server");
+        session
+            .send_service("host:version")
+            .await
+            .expect("Should send host:version");
+        session.read_status().await.expect("Status OKAY expected");
+        let ver_str = session
+            .read_string()
+            .await
+            .expect("Version string expected");
+        let ver = u32::from_str_radix(&ver_str, 16).expect("Hex version parse expected");
+        assert_eq!(ver, ADB_SERVER_VERSION);
+    }
+
+    #[cfg(not(unix))]
+    {
+        assert!(
+            matches!(res, Err(ClientError::CannotConnectDaemon)),
+            "Expected Unsupported/CannotConnectDaemon on non-unix, got {:?}",
+            res
+        );
+        assert_eq!(
+            events,
+            vec![
+                ClientEvent::ServerVersionMismatch {
+                    server: 40,
+                    client: 41
+                },
+                ClientEvent::FailedToStartDaemon,
+            ]
+        );
+    }
 }
