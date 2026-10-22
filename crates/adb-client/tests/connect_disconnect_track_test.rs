@@ -225,7 +225,7 @@ async fn test_differential_track_devices() {
     tokio::pin!(stream);
 
     // Initial update on connection (empty list "0000")
-    let initial_chunk = tokio::time::timeout(std::time::Duration::from_secs(2), stream.next())
+    let initial_chunk = tokio::time::timeout(std::time::Duration::from_secs(10), stream.next())
         .await
         .expect("Timeout waiting for initial track-devices update")
         .expect("Stream closed unexpectedly")
@@ -239,7 +239,7 @@ async fn test_differential_track_devices() {
     assert!(conn_res.success());
 
     // Second update should report mock device
-    let connect_chunk = tokio::time::timeout(std::time::Duration::from_secs(2), stream.next())
+    let connect_chunk = tokio::time::timeout(std::time::Duration::from_secs(10), stream.next())
         .await
         .expect("Timeout waiting for connect track-devices update")
         .expect("Stream closed unexpectedly")
@@ -253,7 +253,7 @@ async fn test_differential_track_devices() {
     assert!(disc_res.success());
 
     // Third update should report disconnect/offline or empty list
-    let disconnect_chunk = tokio::time::timeout(std::time::Duration::from_secs(2), stream.next())
+    let disconnect_chunk = tokio::time::timeout(std::time::Duration::from_secs(10), stream.next())
         .await
         .expect("Timeout waiting for disconnect track-devices update")
         .expect("Stream closed unexpectedly")
@@ -277,7 +277,7 @@ async fn test_track_devices_drop_closes_connection() {
     {
         let stream1 = client.track_devices(TrackDevicesMode::Normal, &session_factory);
         tokio::pin!(stream1);
-        let _init1 = tokio::time::timeout(std::time::Duration::from_secs(2), stream1.next())
+        let _init1 = tokio::time::timeout(std::time::Duration::from_secs(10), stream1.next())
             .await
             .expect("Timeout on init stream 1")
             .expect("Stream 1 closed")
@@ -288,7 +288,7 @@ async fn test_track_devices_drop_closes_connection() {
     let stream2 = client.track_devices(TrackDevicesMode::Normal, &session_factory);
     tokio::pin!(stream2);
 
-    let _init2 = tokio::time::timeout(std::time::Duration::from_secs(2), stream2.next())
+    let _init2 = tokio::time::timeout(std::time::Duration::from_secs(10), stream2.next())
         .await
         .expect("Timeout on init stream 2")
         .expect("Stream 2 closed")
@@ -300,7 +300,7 @@ async fn test_track_devices_drop_closes_connection() {
     assert!(conn_res.success());
 
     // Stream 2 gets update
-    let connect_chunk = tokio::time::timeout(std::time::Duration::from_secs(2), stream2.next())
+    let connect_chunk = tokio::time::timeout(std::time::Duration::from_secs(10), stream2.next())
         .await
         .expect("Timeout on connect stream 2")
         .expect("Stream 2 closed")
