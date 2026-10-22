@@ -66,6 +66,8 @@ impl Drop for MockAdbdProcess {
     }
 }
 
+use adb_client::LaunchError;
+
 struct DummyLauncher;
 
 use adb_client::LaunchError;
