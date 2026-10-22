@@ -106,16 +106,26 @@ fn parse_echo_command(cmd: &str) -> Option<String> {
         cmd.strip_prefix("echo ")?
     };
 
-    let text = raw_text.trim();
-    let text = if (text.starts_with('"') && text.ends_with('"') && text.len() >= 2)
-        || (text.starts_with('\'') && text.ends_with('\'') && text.len() >= 2)
-    {
-        &text[1..text.len() - 1]
-    } else {
-        text
-    };
+    let mut result = String::new();
+    let mut in_single_quote = false;
+    let mut i = 0;
+    let bytes = raw_text.as_bytes();
+    while i < bytes.len() {
+        if bytes[i] == b'\'' {
+            if in_single_quote && i + 3 < bytes.len() && &bytes[i..i + 4] == b"'\\''" {
+                result.push('\'');
+                i += 4;
+                continue;
+            }
+            in_single_quote = !in_single_quote;
+            i += 1;
+            continue;
+        }
+        result.push(bytes[i] as char);
+        i += 1;
+    }
 
-    Some(format!("{text}\n"))
+    Some(format!("{result}\n"))
 }
 
 fn parse_stderr_command(cmd: &str) -> Option<String> {
@@ -177,6 +187,7 @@ pub async fn handle_connection_with_options(
     let max_payload = negotiate_max_payload(host_max_payload, MAX_PAYLOAD);
 
     let mut features = Features::new();
+    features.push(Feature::Unknown("exec".to_string()));
     if options.enable_shell_v2 {
         features.push(Feature::Shell2);
     }
@@ -335,6 +346,102 @@ pub async fn handle_connection_with_options(
                     .is_err()
                     {
                         break;
+                    }
+                } else if let Some(cmd) = service.strip_prefix("exec:") {
+                    let mock_local_id = next_stream_id.fetch_add(1, Ordering::SeqCst);
+
+                    if write_packet(
+                        &mut writer,
+                        Command::Okay,
+                        mock_local_id,
+                        host_local_id,
+                        &[],
+                    )
+                    .await
+                    .is_err()
+                    {
+                        break;
+                    }
+
+                    if let Some(echo_text) = parse_echo_command(cmd) {
+                        let payload = echo_text.into_bytes();
+                        if write_packet(
+                            &mut writer,
+                            Command::Wrte,
+                            mock_local_id,
+                            host_local_id,
+                            &payload,
+                        )
+                        .await
+                        .is_ok()
+                        {
+                            loop {
+                                match read_packet(&mut reader).await {
+                                    Ok(Some((ack, _)))
+                                        if ack.command == Command::Okay
+                                            && ack.arg0 == host_local_id
+                                            && ack.arg1 == mock_local_id =>
+                                    {
+                                        break
+                                    }
+                                    Ok(None) | Err(_) => return Ok(()),
+                                    _ => {}
+                                }
+                            }
+                        }
+                        let _ = write_packet(
+                            &mut writer,
+                            Command::Clse,
+                            mock_local_id,
+                            host_local_id,
+                            &[],
+                        )
+                        .await;
+                    } else if cmd.starts_with("cat") {
+                        loop {
+                            let (hdr, _) = match read_packet(&mut reader).await {
+                                Ok(Some(pkt)) => pkt,
+                                _ => break,
+                            };
+                            if hdr.command == Command::Wrte {
+                                let _ = write_packet(
+                                    &mut writer,
+                                    Command::Okay,
+                                    mock_local_id,
+                                    host_local_id,
+                                    &[],
+                                )
+                                .await;
+                            } else if hdr.command == Command::Clse {
+                                break;
+                            }
+                        }
+                        let _ = write_packet(
+                            &mut writer,
+                            Command::Clse,
+                            mock_local_id,
+                            host_local_id,
+                            &[],
+                        )
+                        .await;
+                    } else {
+                        let payload = b"mock-adbd: exec unsupported\n".to_vec();
+                        let _ = write_packet(
+                            &mut writer,
+                            Command::Wrte,
+                            mock_local_id,
+                            host_local_id,
+                            &payload,
+                        )
+                        .await;
+                        let _ = write_packet(
+                            &mut writer,
+                            Command::Clse,
+                            mock_local_id,
+                            host_local_id,
+                            &[],
+                        )
+                        .await;
                     }
                 } else {
                     // Refuse unknown service with CLSE(0, host_local_id)
@@ -600,6 +707,18 @@ where
         host_local_id,
         is_pty,
     };
+
+    if cmd == "close-no-exit" {
+        let _ = write_packet(
+            ctx.writer,
+            Command::Clse,
+            ctx.mock_local_id,
+            ctx.host_local_id,
+            &[],
+        )
+        .await;
+        return Ok(());
+    }
 
     if cmd == "cat" {
         return handle_shell_v2_cat(&mut ctx, &mut decoder).await;

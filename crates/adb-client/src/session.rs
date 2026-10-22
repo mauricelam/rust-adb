@@ -273,11 +273,29 @@ impl Session {
         service: &str,
         force_switch: bool,
     ) -> Result<Self, SessionError> {
+        Self::connect_and_switch_factory(
+            addr,
+            selector,
+            service,
+            force_switch,
+            &crate::client::DefaultSessionFactory,
+        )
+        .await
+    }
+
+    /// Executing `connect_and_switch` using a custom `SessionFactory`.
+    pub async fn connect_and_switch_factory(
+        addr: &ServerAddress,
+        selector: &TransportSelector,
+        service: &str,
+        force_switch: bool,
+        factory: &dyn crate::client::SessionFactory,
+    ) -> Result<Self, SessionError> {
         if service.is_empty() || service.len() > MAX_PAYLOAD {
             return Err(SessionError::BadServiceLength(service.len()));
         }
 
-        let mut session = Self::connect(addr).await?;
+        let mut session = factory.connect(addr).await?;
 
         if !service.starts_with("host") || force_switch {
             session.select_transport(selector).await?;

@@ -4,6 +4,7 @@ pub mod client;
 pub mod device_selection;
 pub mod server_address;
 pub mod session;
+pub mod shell;
 pub mod transport;
 
 pub use client::{
@@ -17,6 +18,7 @@ pub use server_address::{
     DEFAULT_SERVER_PORT,
 };
 pub use session::{Session, SessionError};
+pub use shell::{escape_arg, exec_in, exec_out, shell, ShellOptions};
 pub use transport::{format_host_command, TransportSelector};
 
 #[cfg(test)]
