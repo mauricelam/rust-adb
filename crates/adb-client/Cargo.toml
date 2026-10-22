@@ -7,7 +7,10 @@ publish.workspace = true
 
 [dependencies]
 adb-proto = { path = "../adb-proto" }
+async-stream = "0.3"
+bytes = "1"
 tokio = { version = "1", features = ["net", "io-util", "rt", "rt-multi-thread", "macros", "sync", "process", "fs"] }
+tokio-stream = "0.1"
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
