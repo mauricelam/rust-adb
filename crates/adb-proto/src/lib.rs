@@ -9,8 +9,8 @@ pub mod sync;
 
 pub use auth::{ADB_AUTH_RSAPUBLICKEY, ADB_AUTH_SIGNATURE, ADB_AUTH_TOKEN};
 pub use banner::{
-    negotiate_max_payload, negotiate_version, Banner, Feature, Features, A_VERSION, A_VERSION_MIN,
-    A_VERSION_SKIP_CHECKSUM, MAX_PAYLOAD_V1,
+    negotiate_max_payload, negotiate_version, supported_features, Banner, Feature, Features,
+    A_VERSION, A_VERSION_MIN, A_VERSION_SKIP_CHECKSUM, MAX_PAYLOAD_V1,
 };
 pub use header::{Command, DecodeError, EncodeError, Header};
 pub use shell::{

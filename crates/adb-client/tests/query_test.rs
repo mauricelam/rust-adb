@@ -66,6 +66,8 @@ impl Drop for MockAdbdProcess {
     }
 }
 
+use adb_client::LaunchError;
+
 struct DummyLauncher;
 
 impl ServerLauncher for DummyLauncher {
@@ -74,7 +76,11 @@ impl ServerLauncher for DummyLauncher {
         _spec: &'a str,
         _one_device: Option<&'a str>,
     ) -> Pin<Box<dyn Future<Output = Result<(), LaunchError>> + Send + 'a>> {
-        Box::pin(async move { Err(LaunchError::Unsupported) })
+        Box::pin(async move {
+            Err(LaunchError::Unsupported(
+                "DummyLauncher cannot start daemon".to_string(),
+            ))
+        })
     }
 }
 

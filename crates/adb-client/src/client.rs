@@ -605,4 +605,58 @@ impl AdbClient {
         self.query_command(selector, "get-devpath", session_factory)
             .await
     }
+
+    /// Queries the target device transport ID (`transport-id`).
+    ///
+    /// Asks `host:features` with a forced device transport switch, returning the decimal transport ID.
+    /// Ports `transport-id` handling from `original/client/commandline.cpp`.
+    pub async fn transport_id(
+        &self,
+        selector: &TransportSelector,
+        session_factory: &dyn SessionFactory,
+    ) -> Result<String, ClientError> {
+        let mut session = session_factory.connect(&self.addr).await?;
+        let transport_id = session.select_transport(selector).await?.unwrap_or(0);
+        session.send_service("host:features").await?;
+        session.read_status().await?;
+        Ok(format!("{transport_id}\n"))
+    }
+
+    /// Queries target device features and filters against client supported features (`features`).
+    ///
+    /// Ports `features` handling from `original/client/commandline.cpp`.
+    pub async fn features(
+        &self,
+        selector: &TransportSelector,
+        session_factory: &dyn SessionFactory,
+    ) -> Result<String, ClientError> {
+        let service = format_host_command("features", selector);
+        let mut session = session_factory.connect(&self.addr).await?;
+        session.send_service(&service).await?;
+        session.read_status().await?;
+        let payload = session.read_string().await?;
+
+        let device_features = adb_proto::Features::parse(&payload);
+        let client_features = adb_proto::supported_features();
+
+        let mut output = String::new();
+        for feature in device_features.items() {
+            if client_features.contains(feature) {
+                output.push_str(feature.as_str());
+                output.push('\n');
+            }
+        }
+        Ok(output)
+    }
+
+    /// Queries server host features (`host-features`).
+    ///
+    /// Ports `host-features` handling from `original/client/commandline.cpp`.
+    pub async fn host_features(
+        &self,
+        session_factory: &dyn SessionFactory,
+    ) -> Result<String, ClientError> {
+        self.query_command(&TransportSelector::Any, "host-features", session_factory)
+            .await
+    }
 }
