@@ -777,7 +777,7 @@ impl AdbClient {
                 ))
             }
         };
-        self.track_devices(mode, session_factory).await
+        self.track_devices(mode, session_factory).await;
 
         let device_features = adb_proto::Features::parse(&payload);
         let client_features = adb_proto::supported_features();
