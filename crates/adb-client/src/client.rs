@@ -4,6 +4,27 @@ use crate::transport::{format_host_command, TransportSelector};
 use std::future::Future;
 use std::pin::Pin;
 
+/// Mode selector for `track-devices` service variants.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TrackDevicesMode {
+    Normal,
+    Long,
+    ProtoText,
+    ProtoBinary,
+}
+
+impl TrackDevicesMode {
+    /// Returns the host service string associated with this mode.
+    pub fn service_name(&self) -> &'static str {
+        match self {
+            TrackDevicesMode::Normal => "host:track-devices",
+            TrackDevicesMode::Long => "host:track-devices-l",
+            TrackDevicesMode::ProtoText => "host:track-devices-proto-text",
+            TrackDevicesMode::ProtoBinary => "host:track-devices-proto-binary",
+        }
+    }
+}
+
 /// Expected ADB server version matching C++ `ADB_SERVER_VERSION` in `original/adb.h`.
 pub const ADB_SERVER_VERSION: u32 = 41;
 
