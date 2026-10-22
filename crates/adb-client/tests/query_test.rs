@@ -123,10 +123,22 @@ async fn test_query_no_device() {
         .expect_err("invalid args should fail");
     assert_eq!(err_arg.to_string(), "adb devices [-l]");
 
+    fn extract_error_message(output_stderr: &str) -> &str {
+        let trimmed = output_stderr.trim();
+        if let Some((_prefix, rest)) = trimmed.split_once(": ") {
+            rest
+        } else {
+            trimmed
+        }
+    }
+
     let ref_bad_arg = server.run_client(&["devices", "-x"]);
     assert_eq!(ref_bad_arg.exit_code, Some(1));
-    // Ref client outputs "adb: adb devices [-l]" on stderr when error_exit("adb devices [-l]") is called from main binary.
-    assert_eq!(ref_bad_arg.stderr.trim(), "adb: adb devices [-l]");
+    // Ref client outputs "adb: adb devices [-l]" (or "adb.exe: adb devices [-l]" on Windows) on stderr when error_exit("adb devices [-l]") is called.
+    assert_eq!(
+        extract_error_message(&ref_bad_arg.stderr),
+        err_arg.to_string()
+    );
 
     // 4. adb get-state (no device)
     let err_state = client
