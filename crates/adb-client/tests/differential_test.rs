@@ -1,5 +1,5 @@
 use adb_client::{
-    check_server_version, kill_server, ClientError, DefaultSessionFactory, ServerAddress,
+    check_server_version, kill_server, DefaultSessionFactory, LaunchError, ServerAddress,
     ServerAddressOptions, ServerLauncher,
 };
 use compat::TestServer;
@@ -102,10 +102,11 @@ fn test_differential_incompatible_options() {
 struct NoOpLauncher;
 
 impl ServerLauncher for NoOpLauncher {
-    fn launch_server<'a>(
+    fn launch<'a>(
         &'a self,
-        _addr: &'a ServerAddress,
-    ) -> Pin<Box<dyn Future<Output = Result<(), ClientError>> + Send + 'a>> {
+        _spec: &'a str,
+        _one_device: Option<&'a str>,
+    ) -> Pin<Box<dyn Future<Output = Result<(), LaunchError>> + Send + 'a>> {
         Box::pin(async move { Ok(()) })
     }
 }
