@@ -96,6 +96,39 @@ impl From<SessionError> for ClientError {
     }
 }
 
+/// Errors that can occur during ADB server process launching.
+#[derive(Debug)]
+pub enum LaunchError {
+    Io(std::io::Error),
+    FailedToReadAck(String),
+    Unsupported(String),
+}
+
+impl std::fmt::Display for LaunchError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            LaunchError::Io(err) => write!(f, "IO error: {err}"),
+            LaunchError::FailedToReadAck(msg) => write!(f, "{msg}"),
+            LaunchError::Unsupported(msg) => write!(f, "{msg}"),
+        }
+    }
+}
+
+impl std::error::Error for LaunchError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            LaunchError::Io(err) => Some(err),
+            _ => None,
+        }
+    }
+}
+
+impl From<std::io::Error> for LaunchError {
+    fn from(err: std::io::Error) -> Self {
+        LaunchError::Io(err)
+    }
+}
+
 /// Trait for creating sessions to an ADB server address.
 pub trait SessionFactory: Send + Sync {
     fn connect<'a>(
@@ -118,10 +151,126 @@ impl SessionFactory for DefaultSessionFactory {
 
 /// Trait for launching an ADB server process.
 pub trait ServerLauncher: Send + Sync {
-    fn launch_server<'a>(
+    fn launch<'a>(
         &'a self,
-        addr: &'a ServerAddress,
-    ) -> Pin<Box<dyn Future<Output = Result<(), ClientError>> + Send + 'a>>;
+        spec: &'a str,
+        one_device: Option<&'a str>,
+    ) -> Pin<Box<dyn Future<Output = Result<(), LaunchError>> + Send + 'a>>;
+}
+
+/// Launches the server process by executing `std::env::current_exe()`.
+#[derive(Debug, Default, Clone, Copy)]
+pub struct SelfExecLauncher;
+
+impl ServerLauncher for SelfExecLauncher {
+    fn launch<'a>(
+        &'a self,
+        spec: &'a str,
+        one_device: Option<&'a str>,
+    ) -> Pin<Box<dyn Future<Output = Result<(), LaunchError>> + Send + 'a>> {
+        Box::pin(async move {
+            let exe = std::env::current_exe()?;
+            launch_binary(&exe, spec, one_device).await
+        })
+    }
+}
+
+/// Launches the server process by executing a specific binary path.
+#[derive(Debug, Clone)]
+pub struct ExternalBinaryLauncher {
+    path: std::path::PathBuf,
+}
+
+impl ExternalBinaryLauncher {
+    pub fn new(path: impl Into<std::path::PathBuf>) -> Self {
+        Self { path: path.into() }
+    }
+}
+
+impl ServerLauncher for ExternalBinaryLauncher {
+    fn launch<'a>(
+        &'a self,
+        spec: &'a str,
+        one_device: Option<&'a str>,
+    ) -> Pin<Box<dyn Future<Output = Result<(), LaunchError>> + Send + 'a>> {
+        Box::pin(async move { launch_binary(&self.path, spec, one_device).await })
+    }
+}
+
+#[cfg(unix)]
+async fn launch_binary(
+    path: &std::path::Path,
+    spec: &str,
+    one_device: Option<&str>,
+) -> Result<(), LaunchError> {
+    use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
+    use tokio::io::AsyncReadExt;
+
+    let mut fds = [0i32; 2];
+    if unsafe { libc::pipe(fds.as_mut_ptr()) } != 0 {
+        return Err(std::io::Error::last_os_error().into());
+    }
+
+    let read_fd = unsafe { OwnedFd::from_raw_fd(fds[0]) };
+    let write_fd = unsafe { OwnedFd::from_raw_fd(fds[1]) };
+
+    let write_fd_raw = write_fd.as_raw_fd();
+
+    let mut cmd = tokio::process::Command::new(path);
+    cmd.arg("-L")
+        .arg(spec)
+        .arg("fork-server")
+        .arg("server")
+        .arg("--reply-fd")
+        .arg(write_fd_raw.to_string());
+
+    if let Some(device) = one_device {
+        cmd.arg("--one-device").arg(device);
+    }
+
+    unsafe {
+        cmd.pre_exec(move || {
+            libc::setsid();
+
+            let flags = libc::fcntl(write_fd_raw, libc::F_GETFD);
+            if flags != -1 {
+                libc::fcntl(write_fd_raw, libc::F_SETFD, flags & !libc::FD_CLOEXEC);
+            }
+            Ok(())
+        });
+    }
+
+    let mut child = cmd.spawn()?;
+
+    // Explicitly drop write_fd so parent's copy closes and pipe EOF is signaled on child exit
+    drop(write_fd);
+
+    let read_file = std::fs::File::from(read_fd);
+    let mut async_read = tokio::fs::File::from_std(read_file);
+
+    let mut buf = [0u8; 3];
+    let read_res = async_read.read_exact(&mut buf).await;
+
+    match read_res {
+        Ok(3) if &buf == b"OK\n" => Ok(()),
+        _ => {
+            let _ = child.kill().await;
+            Err(LaunchError::FailedToReadAck(
+                "could not read ok from ADB Server".to_string(),
+            ))
+        }
+    }
+}
+
+#[cfg(not(unix))]
+async fn launch_binary(
+    _path: &std::path::Path,
+    _spec: &str,
+    _one_device: Option<&str>,
+) -> Result<(), LaunchError> {
+    Err(LaunchError::Unsupported(
+        "Windows server launching is not supported yet".to_string(),
+    ))
 }
 
 /// Kills the running ADB server at `addr`.
@@ -166,6 +315,36 @@ pub async fn kill_server(
             let msg = "failed to read response from server".to_string();
             events.push(ClientEvent::Error(msg.clone()));
             Err(ClientError::KillFailed(msg))
+        }
+    }
+}
+
+/// Launches a local ADB server for `addr`.
+///
+/// Ports `launch_server` invocation from `adb_connect` in C++ `adb_client.cpp`.
+pub async fn start_server(
+    addr: &ServerAddress,
+    launcher: &dyn ServerLauncher,
+    events: &mut Vec<ClientEvent>,
+) -> Result<(), ClientError> {
+    start_server_with_one_device(addr, None, launcher, events).await
+}
+
+/// Launches a local ADB server for `addr` with an optional `one_device` requirement.
+pub async fn start_server_with_one_device(
+    addr: &ServerAddress,
+    one_device: Option<&str>,
+    launcher: &dyn ServerLauncher,
+    events: &mut Vec<ClientEvent>,
+) -> Result<(), ClientError> {
+    match launcher.launch(&addr.to_spec(), one_device).await {
+        Ok(()) => {
+            events.push(ClientEvent::DaemonStarted);
+            Ok(())
+        }
+        Err(_err) => {
+            events.push(ClientEvent::FailedToStartDaemon);
+            Err(ClientError::CannotConnectDaemon)
         }
     }
 }
@@ -233,23 +412,6 @@ pub async fn check_server_version(
     }
 
     Ok(())
-}
-
-async fn start_server(
-    addr: &ServerAddress,
-    launcher: &dyn ServerLauncher,
-    events: &mut Vec<ClientEvent>,
-) -> Result<(), ClientError> {
-    match launcher.launch_server(addr).await {
-        Ok(()) => {
-            events.push(ClientEvent::DaemonStarted);
-            Ok(())
-        }
-        Err(err) => {
-            events.push(ClientEvent::FailedToStartDaemon);
-            Err(err)
-        }
-    }
 }
 
 /// Represents an ADB client instance associated with a server address.

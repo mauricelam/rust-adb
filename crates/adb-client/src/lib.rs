@@ -6,8 +6,9 @@ pub mod session;
 pub mod transport;
 
 pub use client::{
-    check_server_version, kill_server, AdbClient, ClientError, ClientEvent, DefaultSessionFactory,
-    ServerLauncher, SessionFactory, ADB_SERVER_VERSION,
+    check_server_version, kill_server, start_server, start_server_with_one_device, AdbClient,
+    ClientError, ClientEvent, DefaultSessionFactory, ExternalBinaryLauncher, LaunchError,
+    SelfExecLauncher, ServerLauncher, SessionFactory, ADB_SERVER_VERSION,
 };
 pub use server_address::{
     resolve_server_address, AddressError, ServerAddress, ServerAddressEnv, ServerAddressOptions,
