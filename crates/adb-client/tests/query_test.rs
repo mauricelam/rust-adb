@@ -1,5 +1,5 @@
 use adb_client::{
-    AdbClient, ClientError, DefaultSessionFactory, ServerAddress, ServerLauncher, TransportSelector,
+    AdbClient, DefaultSessionFactory, LaunchError, ServerAddress, ServerLauncher, TransportSelector,
 };
 use compat::TestServer;
 use std::env;
@@ -69,15 +69,12 @@ impl Drop for MockAdbdProcess {
 struct DummyLauncher;
 
 impl ServerLauncher for DummyLauncher {
-    fn launch_server<'a>(
+    fn launch<'a>(
         &'a self,
-        _addr: &'a ServerAddress,
-    ) -> Pin<Box<dyn Future<Output = Result<(), ClientError>> + Send + 'a>> {
-        Box::pin(async move {
-            Err(ClientError::KillFailed(
-                "DummyLauncher cannot start daemon".to_string(),
-            ))
-        })
+        _spec: &'a str,
+        _one_device: Option<&'a str>,
+    ) -> Pin<Box<dyn Future<Output = Result<(), LaunchError>> + Send + 'a>> {
+        Box::pin(async move { Err(LaunchError::Unsupported) })
     }
 }
 
@@ -125,7 +122,7 @@ async fn test_query_no_device() {
 
     fn extract_error_message(output_stderr: &str) -> &str {
         let trimmed = output_stderr.trim();
-        if let Some((_prefix, rest)) = trimmed.split_once(": ") {
+        if let Some((_prefix, rest)) = trimmed.split_once(": ")) {
             rest
         } else {
             trimmed
