@@ -13,6 +13,7 @@ jobs:
   ci:
     name: CI (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
@@ -68,6 +69,7 @@ jobs:
   compat-baseline:
     name: Compat Baseline (C++ vs C++) (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
     env:
       RUST_TEST_THREADS: 1
     strategy:
