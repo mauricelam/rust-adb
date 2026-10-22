@@ -15,3 +15,4 @@ libc = "0.2"
 [dev-dependencies]
 compat = { path = "../../tests/compat" }
 mock-adbd = { path = "../../tools/mock-adbd" }
+temp-env = "0.3"
