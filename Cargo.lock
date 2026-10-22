@@ -31,7 +31,6 @@ dependencies = [
  "compat",
  "libc",
  "mock-adbd",
- "temp-env",
  "tokio",
 ]
 

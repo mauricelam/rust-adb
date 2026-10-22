@@ -1,6 +1,6 @@
 use adb_proto::banner::{
-    negotiate_max_payload, negotiate_version, supported_features, Banner, Feature, A_VERSION,
-    A_VERSION_MIN, A_VERSION_SKIP_CHECKSUM, MAX_PAYLOAD, MAX_PAYLOAD_V1,
+    negotiate_max_payload, negotiate_version, Banner, Feature, A_VERSION, A_VERSION_MIN,
+    A_VERSION_SKIP_CHECKSUM, MAX_PAYLOAD, MAX_PAYLOAD_V1,
 };
 
 #[test]
@@ -147,30 +147,4 @@ fn test_feature_enum_str_conversions() {
         Feature::Unknown("something_new".to_string())
     );
     assert_eq!(parsed_unknown.as_str(), "something_new");
-}
-
-#[test]
-fn test_supported_features() {
-    let features = supported_features();
-    assert!(features.contains(&Feature::Shell2));
-    assert!(features.contains(&Feature::Cmd));
-    assert!(features.contains(&Feature::Stat2));
-    assert!(features.contains(&Feature::Ls2));
-    assert!(features.contains(&Feature::FixedPushMkdir));
-    assert!(features.contains(&Feature::Apex));
-    assert!(features.contains(&Feature::Abb));
-    assert!(features.contains(&Feature::FixedPushSymlinkTimestamp));
-    assert!(features.contains(&Feature::AbbExec));
-    assert!(features.contains(&Feature::RemountShell));
-    assert!(features.contains(&Feature::TrackApp));
-    assert!(features.contains(&Feature::SendRecv2));
-    assert!(features.contains(&Feature::SendRecv2Brotli));
-    assert!(features.contains(&Feature::SendRecv2LZ4));
-    assert!(features.contains(&Feature::SendRecv2Zstd));
-    assert!(features.contains(&Feature::SendRecv2DryRunSend));
-    assert!(features.contains(&Feature::OpenscreenMdns));
-    assert!(features.contains(&Feature::DeviceTrackerProtoFormat));
-    assert!(features.contains(&Feature::DevRaw));
-    assert!(features.contains(&Feature::AppInfo));
-    assert!(features.contains(&Feature::ServerStatus));
 }

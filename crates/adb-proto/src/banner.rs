@@ -101,39 +101,6 @@ impl Feature {
     }
 }
 
-/// Returns the client/server supported features matching `supported_features()` in C++ `original/transport.cpp`.
-pub fn supported_features() -> Features {
-    let mut features = Features::new();
-    features.push(Feature::Shell2);
-    features.push(Feature::Cmd);
-    features.push(Feature::Stat2);
-    features.push(Feature::Ls2);
-    features.push(Feature::FixedPushMkdir);
-    features.push(Feature::Apex);
-    features.push(Feature::Abb);
-    features.push(Feature::FixedPushSymlinkTimestamp);
-    features.push(Feature::AbbExec);
-    features.push(Feature::RemountShell);
-    features.push(Feature::TrackApp);
-    features.push(Feature::SendRecv2);
-    features.push(Feature::SendRecv2Brotli);
-    features.push(Feature::SendRecv2LZ4);
-    features.push(Feature::SendRecv2Zstd);
-    features.push(Feature::SendRecv2DryRunSend);
-    features.push(Feature::OpenscreenMdns);
-    features.push(Feature::DeviceTrackerProtoFormat);
-    features.push(Feature::DevRaw);
-    features.push(Feature::AppInfo);
-    features.push(Feature::ServerStatus);
-
-    let burst = std::env::var("ADB_BURST_MODE").is_ok_and(|v| v == "1");
-    if burst {
-        features.push(Feature::DelayedAck);
-    }
-
-    features
-}
-
 impl FromStr for Feature {
     type Err = std::convert::Infallible;
 

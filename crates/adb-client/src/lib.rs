@@ -1,7 +1,6 @@
 //! A library for talking to an ADB server.
 
 pub mod client;
-pub mod device_selection;
 pub mod server_address;
 pub mod session;
 pub mod transport;
@@ -11,7 +10,6 @@ pub use client::{
     ClientError, ClientEvent, DefaultSessionFactory, ExternalBinaryLauncher, LaunchError,
     SelfExecLauncher, ServerLauncher, SessionFactory, ADB_SERVER_VERSION,
 };
-pub use device_selection::{DeviceSelection, SelectionError};
 pub use server_address::{
     resolve_server_address, AddressError, ServerAddress, ServerAddressEnv, ServerAddressOptions,
     DEFAULT_SERVER_PORT,
