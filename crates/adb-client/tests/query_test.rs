@@ -93,6 +93,9 @@ async fn test_query_no_device() {
     let session_factory = DefaultSessionFactory;
     let launcher = DummyLauncher;
 
+    // Helper to normalize CRLF for cross-platform process output comparison
+    let norm = |s: &str| s.replace("\r\n", "\n");
+
     // 1. adb devices (no device)
     let devices_out = client
         .devices(false, &session_factory, &launcher)
@@ -100,7 +103,7 @@ async fn test_query_no_device() {
         .expect("devices query failed");
     let ref_devices_out = server.run_client(&["devices"]);
     assert!(ref_devices_out.success());
-    assert_eq!(devices_out, ref_devices_out.stdout);
+    assert_eq!(norm(&devices_out), norm(&ref_devices_out.stdout));
     assert_eq!(devices_out, "List of devices attached\n\n");
 
     // 2. adb devices -l (no device)
@@ -110,7 +113,7 @@ async fn test_query_no_device() {
         .expect("devices -l query failed");
     let ref_devices_l_out = server.run_client(&["devices", "-l"]);
     assert!(ref_devices_l_out.success());
-    assert_eq!(devices_l_out, ref_devices_l_out.stdout);
+    assert_eq!(norm(&devices_l_out), norm(&ref_devices_l_out.stdout));
     assert_eq!(devices_l_out, "List of devices attached\n\n");
 
     // 3. adb devices with invalid arguments
@@ -187,6 +190,8 @@ async fn test_query_mock_device() {
     let session_factory = DefaultSessionFactory;
     let launcher = DummyLauncher;
 
+    let norm = |s: &str| s.replace("\r\n", "\n");
+
     // 1. adb devices with connected mock adbd
     let devices_out = client
         .devices(false, &session_factory, &launcher)
@@ -194,7 +199,7 @@ async fn test_query_mock_device() {
         .expect("devices query failed");
     let ref_devices = server.run_client(&["devices"]);
     assert!(ref_devices.success());
-    assert_eq!(devices_out, ref_devices.stdout);
+    assert_eq!(norm(&devices_out), norm(&ref_devices.stdout));
     assert!(devices_out.contains(&format!("{}\tdevice\n", mock.addr)));
 
     // 2. adb devices -l with connected mock adbd
@@ -210,6 +215,7 @@ async fn test_query_mock_device() {
     // - product / model / device properties: Fixed or determined by mock adbd banner properties.
     fn mask_dynamic_fields(input: &str) -> String {
         input
+            .replace("\r\n", "\n")
             .lines()
             .map(|line| {
                 if let Some(idx) = line.find("transport_id:") {
@@ -240,7 +246,7 @@ async fn test_query_mock_device() {
         .expect("get-state failed");
     let ref_state = server.run_client(&["-s", &mock.addr, "get-state"]);
     assert!(ref_state.success());
-    assert_eq!(state_out, ref_state.stdout);
+    assert_eq!(norm(&state_out), norm(&ref_state.stdout));
     assert_eq!(state_out, "device\n");
 
     // 4. adb get-serialno with connected mock adbd
@@ -253,7 +259,7 @@ async fn test_query_mock_device() {
         .expect("get-serialno failed");
     let ref_serial = server.run_client(&["-s", &mock.addr, "get-serialno"]);
     assert!(ref_serial.success());
-    assert_eq!(serial_out, ref_serial.stdout);
+    assert_eq!(norm(&serial_out), norm(&ref_serial.stdout));
     assert_eq!(serial_out, format!("{}\n", mock.addr));
 
     // 5. adb get-devpath with connected mock adbd
@@ -266,6 +272,6 @@ async fn test_query_mock_device() {
         .expect("get-devpath failed");
     let ref_devpath = server.run_client(&["-s", &mock.addr, "get-devpath"]);
     assert!(ref_devpath.success());
-    assert_eq!(devpath_out, ref_devpath.stdout);
+    assert_eq!(norm(&devpath_out), norm(&ref_devpath.stdout));
     assert_eq!(devpath_out, "unknown\n");
 }
