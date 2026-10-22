@@ -129,14 +129,32 @@ impl Session {
             host
         };
 
-        let stream = TcpStream::connect((host, addr.port)).await.map_err(|err| {
-            SessionError::CannotConnect {
-                spec: spec.clone(),
-                cause: err.to_string(),
+        let mut last_err = None;
+        for i in 0..5 {
+            match TcpStream::connect((host, addr.port)).await {
+                Ok(stream) => return Ok(Self { stream }),
+                Err(err) => {
+                    let retryable = matches!(
+                        err.kind(),
+                        std::io::ErrorKind::ConnectionReset
+                            | std::io::ErrorKind::ConnectionRefused
+                            | std::io::ErrorKind::ConnectionAborted
+                    );
+                    last_err = Some(err);
+                    if retryable && i < 4 {
+                        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+                    } else {
+                        break;
+                    }
+                }
             }
-        })?;
+        }
 
-        Ok(Self { stream })
+        let err = last_err.unwrap();
+        Err(SessionError::CannotConnect {
+            spec,
+            cause: err.to_string(),
+        })
     }
 
     /// Selects a device transport on this connection.
