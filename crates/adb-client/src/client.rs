@@ -1,5 +1,6 @@
 use crate::server_address::ServerAddress;
 use crate::session::{Session, SessionError};
+use crate::transport::{format_host_command, TransportSelector};
 use std::future::Future;
 use std::pin::Pin;
 
@@ -61,12 +62,27 @@ pub enum ClientError {
     CannotConnectDaemon,
     CannotParseVersionString(String),
     KillFailed(String),
+    FailedToCheckVersion(String),
+    QueryFailed(String),
+    InvalidUsage(String),
 }
 
 impl std::fmt::Display for ClientError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            ClientError::Session(err) => write!(f, "{err}"),
+            ClientError::Session(err) => {
+                let msg = err.to_string();
+                if msg.starts_with("error:")
+                    || msg.starts_with("cannot connect")
+                    || msg.starts_with("protocol fault")
+                    || msg.starts_with("bad service")
+                    || msg.starts_with("write failure")
+                {
+                    write!(f, "{msg}")
+                } else {
+                    write!(f, "error: {msg}")
+                }
+            }
             ClientError::CannotConnect { spec, cause } => {
                 write!(f, "cannot connect to daemon at {spec}: {cause}")
             }
@@ -77,6 +93,17 @@ impl std::fmt::Display for ClientError {
                 write!(f, "cannot parse version string: {ver}")
             }
             ClientError::KillFailed(msg) => write!(f, "{msg}"),
+            ClientError::FailedToCheckVersion(err) => {
+                write!(f, "failed to check server version: {err}")
+            }
+            ClientError::QueryFailed(msg) => {
+                if msg.starts_with("error:") {
+                    write!(f, "{msg}")
+                } else {
+                    write!(f, "error: {msg}")
+                }
+            }
+            ClientError::InvalidUsage(msg) => write!(f, "{msg}"),
         }
     }
 }
@@ -307,5 +334,104 @@ impl AdbClient {
         events: &mut Vec<ClientEvent>,
     ) -> Result<(), ClientError> {
         kill_server(&self.addr, session_factory, events).await
+    }
+
+    /// Queries connected devices list (`host:devices` or `host:devices-l`).
+    ///
+    /// Ports `devices` command handling in `original/client/commandline.cpp`.
+    /// Checks server version first, then prepends `"List of devices attached\n"`.
+    pub async fn devices(
+        &self,
+        long: bool,
+        session_factory: &dyn SessionFactory,
+        launcher: &dyn ServerLauncher,
+    ) -> Result<String, ClientError> {
+        let mut events = Vec::new();
+        if let Err(err) = self
+            .check_server_version(session_factory, launcher, &mut events)
+            .await
+        {
+            let err_str = match &err {
+                ClientError::Session(s_err) => s_err.to_string(),
+                _ => err.to_string(),
+            };
+            let err_str = err_str.strip_prefix("error: ").unwrap_or(&err_str);
+            return Err(ClientError::FailedToCheckVersion(err_str.to_string()));
+        }
+
+        let service = if long {
+            "host:devices-l"
+        } else {
+            "host:devices"
+        };
+
+        let mut session = session_factory.connect(&self.addr).await?;
+        session.send_service(service).await?;
+        session.read_status().await?;
+        let payload = session.read_string().await?;
+
+        Ok(format!("List of devices attached\n{payload}\n"))
+    }
+
+    /// Validates arguments for `devices` and executes query.
+    pub async fn devices_with_args(
+        &self,
+        args: &[&str],
+        session_factory: &dyn SessionFactory,
+        launcher: &dyn ServerLauncher,
+    ) -> Result<String, ClientError> {
+        let long = match args {
+            [] => false,
+            ["-l"] => true,
+            _ => return Err(ClientError::InvalidUsage("adb devices [-l]".to_string())),
+        };
+        self.devices(long, session_factory, launcher).await
+    }
+
+    /// Executes a general host query command formatted with transport selector.
+    ///
+    /// Ports `adb_query_command(format_host_command(...))` from `commandline.cpp`.
+    pub async fn query_command(
+        &self,
+        selector: &TransportSelector,
+        command: &str,
+        session_factory: &dyn SessionFactory,
+    ) -> Result<String, ClientError> {
+        let service = format_host_command(command, selector);
+        let mut session = session_factory.connect(&self.addr).await?;
+        session.send_service(&service).await?;
+        session.read_status().await?;
+        let payload = session.read_string().await?;
+        Ok(format!("{payload}\n"))
+    }
+
+    /// Queries the target device state (`get-state`).
+    pub async fn get_state(
+        &self,
+        selector: &TransportSelector,
+        session_factory: &dyn SessionFactory,
+    ) -> Result<String, ClientError> {
+        self.query_command(selector, "get-state", session_factory)
+            .await
+    }
+
+    /// Queries the target device serial number (`get-serialno`).
+    pub async fn get_serialno(
+        &self,
+        selector: &TransportSelector,
+        session_factory: &dyn SessionFactory,
+    ) -> Result<String, ClientError> {
+        self.query_command(selector, "get-serialno", session_factory)
+            .await
+    }
+
+    /// Queries the target device path (`get-devpath`).
+    pub async fn get_devpath(
+        &self,
+        selector: &TransportSelector,
+        session_factory: &dyn SessionFactory,
+    ) -> Result<String, ClientError> {
+        self.query_command(selector, "get-devpath", session_factory)
+            .await
     }
 }
