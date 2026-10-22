@@ -1,6 +1,8 @@
 use adb_proto::{
     negotiate_max_payload, negotiate_version, Banner, Command, Feature, Features, Header,
     ShellDecoder, ShellPacket, ShellPacketId, A_VERSION, A_VERSION_SKIP_CHECKSUM, MAX_PAYLOAD,
+    ID_DATA, ID_DENT_V1, ID_DENT_V2, ID_DONE, ID_FAIL, ID_LIST_V1, ID_LIST_V2, ID_LSTAT_V1,
+    ID_LSTAT_V2, ID_OKAY, ID_QUIT, ID_RECV_V1, ID_RECV_V2, ID_SEND_V1, ID_SEND_V2, ID_STAT_V2,
 };
 use std::collections::{HashMap, VecDeque};
 use std::net::SocketAddr;
@@ -16,21 +18,286 @@ fn mock_log(msg: &str) {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum InMemoryNodeKind {
+    File { contents: Vec<u8> },
+    Directory,
+    Symlink { target: String },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InMemoryNode {
+    pub mode: u32,
+    pub mtime: u64,
+    pub atime: u64,
+    pub ctime: u64,
+    pub dev: u64,
+    pub ino: u64,
+    pub nlink: u64,
+    pub uid: u32,
+    pub gid: u32,
+    pub kind: InMemoryNodeKind,
+}
+
+impl InMemoryNode {
+    pub fn size(&self) -> u64 {
+        match &self.kind {
+            InMemoryNodeKind::File { contents } => contents.len() as u64,
+            InMemoryNodeKind::Symlink { target } => target.len() as u64,
+            InMemoryNodeKind::Directory => 0,
+        }
+    }
+}
+
+pub fn normalize_path(path: &str) -> String {
+    let path = path.replace('\\', "/");
+    let mut components = Vec::new();
+    for part in path.split('/') {
+        if part.is_empty() || part == "." {
+            continue;
+        } else if part == ".." {
+            components.pop();
+        } else {
+            components.push(part);
+        }
+    }
+    if components.is_empty() {
+        "/".to_string()
+    } else {
+        format!("/{}", components.join("/"))
+    }
+}
+
+pub fn parent_and_name(path: &str) -> Option<(&str, &str)> {
+    if path == "/" {
+        return None;
+    }
+    let idx = path.rfind('/')?;
+    let parent = if idx == 0 { "/" } else { &path[..idx] };
+    let name = &path[idx + 1..];
+    Some((parent, name))
+}
+
+#[derive(Debug, Clone)]
+pub struct InMemoryFs {
+    inner: Arc<Mutex<InMemoryFsInner>>,
+}
+
+#[derive(Debug)]
+struct InMemoryFsInner {
+    nodes: HashMap<String, InMemoryNode>,
+    next_ino: u64,
+}
+
+impl InMemoryFs {
+    pub fn new() -> Self {
+        let mut nodes = HashMap::new();
+        nodes.insert(
+            "/".to_string(),
+            InMemoryNode {
+                mode: 0o040755,
+                mtime: 0,
+                atime: 0,
+                ctime: 0,
+                dev: 1,
+                ino: 1,
+                nlink: 2,
+                uid: 0,
+                gid: 0,
+                kind: InMemoryNodeKind::Directory,
+            },
+        );
+        Self {
+            inner: Arc::new(Mutex::new(InMemoryFsInner {
+                nodes,
+                next_ino: 2,
+            })),
+        }
+    }
+
+    fn ensure_parents(&self, inner: &mut InMemoryFsInner, norm_path: &str) {
+        if let Some((parent, _)) = parent_and_name(norm_path) {
+            if !inner.nodes.contains_key(parent) {
+                let parent_str = parent.to_string();
+                let ino = inner.next_ino;
+                inner.next_ino += 1;
+                inner.nodes.insert(
+                    parent_str.clone(),
+                    InMemoryNode {
+                        mode: 0o040755,
+                        mtime: 0,
+                        atime: 0,
+                        ctime: 0,
+                        dev: 1,
+                        ino,
+                        nlink: 2,
+                        uid: 0,
+                        gid: 0,
+                        kind: InMemoryNodeKind::Directory,
+                    },
+                );
+                self.ensure_parents(inner, &parent_str);
+            }
+        }
+    }
+
+    pub fn add_file(&self, path: &str, contents: Vec<u8>, mode: u32, mtime: u64) {
+        let norm = normalize_path(path);
+        let mode = if mode & 0o170000 == 0 {
+            mode | 0o100000
+        } else {
+            mode
+        };
+        let mut inner = self.inner.lock().unwrap();
+        self.ensure_parents(&mut inner, &norm);
+        let ino = inner.next_ino;
+        inner.next_ino += 1;
+        inner.nodes.insert(
+            norm,
+            InMemoryNode {
+                mode,
+                mtime,
+                atime: mtime,
+                ctime: mtime,
+                dev: 1,
+                ino,
+                nlink: 1,
+                uid: 0,
+                gid: 0,
+                kind: InMemoryNodeKind::File { contents },
+            },
+        );
+    }
+
+    pub fn add_dir(&self, path: &str, mode: u32, mtime: u64) {
+        let norm = normalize_path(path);
+        let mode = if mode & 0o170000 == 0 {
+            mode | 0o040000
+        } else {
+            mode
+        };
+        let mut inner = self.inner.lock().unwrap();
+        self.ensure_parents(&mut inner, &norm);
+        let ino = inner.next_ino;
+        inner.next_ino += 1;
+        inner.nodes.insert(
+            norm,
+            InMemoryNode {
+                mode,
+                mtime,
+                atime: mtime,
+                ctime: mtime,
+                dev: 1,
+                ino,
+                nlink: 2,
+                uid: 0,
+                gid: 0,
+                kind: InMemoryNodeKind::Directory,
+            },
+        );
+    }
+
+    pub fn add_symlink(&self, path: &str, target: &str, mode: u32, mtime: u64) {
+        let norm = normalize_path(path);
+        let mode = if mode & 0o170000 == 0 {
+            mode | 0o120000
+        } else {
+            mode
+        };
+        let mut inner = self.inner.lock().unwrap();
+        self.ensure_parents(&mut inner, &norm);
+        let ino = inner.next_ino;
+        inner.next_ino += 1;
+        inner.nodes.insert(
+            norm,
+            InMemoryNode {
+                mode,
+                mtime,
+                atime: mtime,
+                ctime: mtime,
+                dev: 1,
+                ino,
+                nlink: 1,
+                uid: 0,
+                gid: 0,
+                kind: InMemoryNodeKind::Symlink {
+                    target: target.to_string(),
+                },
+            },
+        );
+    }
+
+    pub fn get_file(&self, path: &str) -> Option<Vec<u8>> {
+        let norm = normalize_path(path);
+        let inner = self.inner.lock().unwrap();
+        match inner.nodes.get(&norm)? {
+            node => match &node.kind {
+                InMemoryNodeKind::File { contents } => Some(contents.clone()),
+                _ => None,
+            },
+        }
+    }
+
+    pub fn get_node(&self, path: &str) -> Option<InMemoryNode> {
+        let norm = normalize_path(path);
+        let inner = self.inner.lock().unwrap();
+        inner.nodes.get(&norm).cloned()
+    }
+
+    pub fn list_dir(&self, path: &str) -> Vec<(String, InMemoryNode)> {
+        let norm = normalize_path(path);
+        let inner = self.inner.lock().unwrap();
+        let mut result = Vec::new();
+        for (key, node) in inner.nodes.iter() {
+            if let Some((parent, name)) = parent_and_name(key) {
+                if parent == norm {
+                    result.push((name.to_string(), node.clone()));
+                }
+            }
+        }
+        result.sort_by(|a, b| a.0.cmp(&b.0));
+        result
+    }
+
+    pub fn remove(&self, path: &str) -> bool {
+        let norm = normalize_path(path);
+        let mut inner = self.inner.lock().unwrap();
+        inner.nodes.remove(&norm).is_some()
+    }
+}
+
+impl Default for InMemoryFs {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct MockAdbdOptions {
     pub enable_shell_v2: bool,
+    pub enable_stat_v2: bool,
+    pub enable_ls_v2: bool,
+    pub enable_sendrecv_v2: bool,
+    pub enable_fixed_push_mkdir: bool,
+    pub fs: InMemoryFs,
 }
 
 impl Default for MockAdbdOptions {
     fn default() -> Self {
         Self {
             enable_shell_v2: true,
+            enable_stat_v2: true,
+            enable_ls_v2: true,
+            enable_sendrecv_v2: true,
+            enable_fixed_push_mkdir: false,
+            fs: InMemoryFs::new(),
         }
     }
 }
 
 pub struct MockAdbdServer {
     local_addr: SocketAddr,
+    options: MockAdbdOptions,
     accept_handle: JoinHandle<()>,
     tasks: Arc<Mutex<Vec<JoinHandle<()>>>>,
 }
@@ -46,9 +313,10 @@ impl MockAdbdServer {
         let tasks = Arc::new(Mutex::new(Vec::new()));
 
         let tasks_clone = tasks.clone();
+        let options_clone = options.clone();
         let accept_handle = tokio::spawn(async move {
             while let Ok((stream, _)) = listener.accept().await {
-                let options = options.clone();
+                let options = options_clone.clone();
                 let handle = tokio::spawn(async move {
                     if let Err(e) = handle_connection_with_options(stream, options).await {
                         mock_log(&format!("Connection error: {e}"));
@@ -62,6 +330,7 @@ impl MockAdbdServer {
 
         Ok(Self {
             local_addr,
+            options,
             accept_handle,
             tasks,
         })
@@ -69,6 +338,10 @@ impl MockAdbdServer {
 
     pub fn local_addr(&self) -> SocketAddr {
         self.local_addr
+    }
+
+    pub fn fs(&self) -> InMemoryFs {
+        self.options.fs.clone()
     }
 
     pub fn shutdown(self) {
@@ -186,6 +459,7 @@ enum StreamKind {
     ShellV1,
     ShellV2NonCat { decoder: ShellDecoder, is_pty: bool },
     ShellV2Cat { decoder: ShellDecoder, is_pty: bool },
+    Sync { buffer: Vec<u8> },
 }
 
 struct StreamState {
@@ -213,6 +487,16 @@ pub async fn handle_connection_with_options(
             Ok(Some((header, payload))) => {
                 if header.command == Command::Cnxn {
                     break (header, payload);
+                } else {
+                    let _ = write_packet_versioned(
+                        &mut writer,
+                        Command::Clse,
+                        0,
+                        header.arg0,
+                        &[],
+                        A_VERSION,
+                    )
+                    .await;
                 }
             }
             Ok(None) => return Ok(()),
@@ -232,6 +516,18 @@ pub async fn handle_connection_with_options(
     let mut features = Features::new();
     if options.enable_shell_v2 {
         features.push(Feature::Shell2);
+    }
+    if options.enable_stat_v2 {
+        features.push(Feature::Stat2);
+    }
+    if options.enable_ls_v2 {
+        features.push(Feature::Ls2);
+    }
+    if options.enable_sendrecv_v2 {
+        features.push(Feature::SendRecv2);
+    }
+    if options.enable_fixed_push_mkdir {
+        features.push(Feature::FixedPushMkdir);
     }
 
     let banner = Banner {
@@ -282,7 +578,35 @@ pub async fn handle_connection_with_options(
                 let service_raw = String::from_utf8_lossy(&payload);
                 let service = service_raw.trim_matches('\0');
 
-                if let Some(rest) = service.strip_prefix("shell,") {
+                if service == "sync" || service.starts_with("sync:") {
+                    let mock_local_id = next_stream_id.fetch_add(1, Ordering::SeqCst);
+                    if write_packet_versioned(
+                        &mut writer,
+                        Command::Okay,
+                        mock_local_id,
+                        host_local_id,
+                        &[],
+                        negotiated_version,
+                    )
+                    .await
+                    .is_err()
+                    {
+                        mock_log("Failed to write OKAY for sync: OPEN");
+                        break;
+                    }
+
+                    streams.insert(
+                        mock_local_id,
+                        StreamState {
+                            mock_local_id,
+                            host_local_id,
+                            kind: StreamKind::Sync { buffer: Vec::new() },
+                            write_in_flight: false,
+                            pending_writes: VecDeque::new(),
+                            close_pending: false,
+                        },
+                    );
+                } else if let Some(rest) = service.strip_prefix("shell,") {
                     let mock_local_id = next_stream_id.fetch_add(1, Ordering::SeqCst);
 
                     let (args_str, cmd_str) = match rest.find(':') {
@@ -326,9 +650,16 @@ pub async fn handle_connection_with_options(
                                 },
                             );
                         } else {
-                            let (output_pkt, exit_code) = if let Some(echo_text) =
-                                parse_text_command(cmd_str, "echo")
-                            {
+                            let (output_pkt, exit_code) = if cmd_str.starts_with("mkdir") {
+                                for arg in cmd_str.split_whitespace().skip(1) {
+                                    if !arg.starts_with('-') {
+                                        let clean_path =
+                                            arg.trim_matches('\'').trim_matches('"');
+                                        options.fs.add_dir(clean_path, 0o040755, 0);
+                                    }
+                                }
+                                (None, 0)
+                            } else if let Some(echo_text) = parse_text_command(cmd_str, "echo") {
                                 (
                                     Some(ShellPacket::new(
                                         ShellPacketId::Stdout,
@@ -418,14 +749,24 @@ pub async fn handle_connection_with_options(
                         break;
                     }
 
-                    let output = parse_text_command(cmd, "echo");
-                    let response_payload = match output {
-                        Some(text) => text.into_bytes(),
-                        None => b"mock-adbd: unsupported command\n".to_vec(),
+                    let response_payload = if cmd.starts_with("mkdir") {
+                        for arg in cmd.split_whitespace().skip(1) {
+                            if !arg.starts_with('-') {
+                                let clean_path = arg.trim_matches('\'').trim_matches('"');
+                                options.fs.add_dir(clean_path, 0o040755, 0);
+                            }
+                        }
+                        Vec::new()
+                    } else if let Some(text) = parse_text_command(cmd, "echo") {
+                        text.into_bytes()
+                    } else {
+                        b"mock-adbd: unsupported command\n".to_vec()
                     };
 
                     let mut pending_writes = VecDeque::new();
-                    pending_writes.push_back(response_payload);
+                    if !response_payload.is_empty() {
+                        pending_writes.push_back(response_payload);
+                    }
 
                     streams.insert(
                         mock_local_id,
@@ -512,6 +853,14 @@ pub async fn handle_connection_with_options(
                                 }
                             }
                         }
+                        StreamKind::Sync { buffer } => {
+                            buffer.extend_from_slice(&payload);
+                            let mut buf = std::mem::take(buffer);
+                            process_sync_requests(&mut buf, stream_state, &options.fs);
+                            if let StreamKind::Sync { buffer: b } = &mut stream_state.kind {
+                                *b = buf;
+                            }
+                        }
                     }
                 } else {
                     mock_log(&format!(
@@ -574,7 +923,8 @@ pub async fn handle_connection_with_options(
         // Writer Pump: Flush pending writes for streams
         let mut streams_to_remove = Vec::new();
         for (mock_local_id, stream_state) in streams.iter_mut() {
-            if !stream_state.write_in_flight {
+            let is_sync = matches!(stream_state.kind, StreamKind::Sync { .. });
+            if is_sync || !stream_state.write_in_flight {
                 if let Some(front) = stream_state.pending_writes.pop_front() {
                     let (to_send, remainder) = if front.len() > negotiated_max_payload {
                         let (head, tail) = front.split_at(negotiated_max_payload);
@@ -602,7 +952,9 @@ pub async fn handle_connection_with_options(
                         return Ok(());
                     }
 
-                    stream_state.write_in_flight = true;
+                    if !is_sync {
+                        stream_state.write_in_flight = true;
+                    }
                 } else if stream_state.close_pending {
                     if write_packet_versioned(
                         &mut writer,
@@ -629,4 +981,384 @@ pub async fn handle_connection_with_options(
     }
 
     Ok(())
+}
+
+fn encode_sync_okay() -> Vec<u8> {
+    let mut buf = Vec::with_capacity(8);
+    buf.extend_from_slice(&ID_OKAY.to_le_bytes());
+    buf.extend_from_slice(&0u32.to_le_bytes());
+    buf
+}
+
+fn encode_sync_fail(msg: &str) -> Vec<u8> {
+    let msg_bytes = msg.as_bytes();
+    let mut buf = Vec::with_capacity(8 + msg_bytes.len());
+    buf.extend_from_slice(&ID_FAIL.to_le_bytes());
+    buf.extend_from_slice(&(msg_bytes.len() as u32).to_le_bytes());
+    buf.extend_from_slice(msg_bytes);
+    buf
+}
+
+fn parse_send_v1_spec(spec: &str) -> Option<(String, u32)> {
+    let (path, mode_str) = spec.rsplit_once(',')?;
+    let mode = if let Some(hex) = mode_str.strip_prefix("0x").or_else(|| mode_str.strip_prefix("0X")) {
+        u32::from_str_radix(hex, 16).ok()?
+    } else if mode_str.len() > 1 && mode_str.starts_with('0') {
+        u32::from_str_radix(&mode_str[1..], 8).ok()?
+    } else {
+        mode_str.parse::<u32>().ok()?
+    };
+    Some((path.to_string(), mode))
+}
+
+fn process_sync_requests(buffer: &mut Vec<u8>, stream_state: &mut StreamState, fs: &InMemoryFs) {
+    loop {
+        if buffer.len() < 8 {
+            break;
+        }
+
+        let id = u32::from_le_bytes(buffer[0..4].try_into().unwrap());
+        let path_length = u32::from_le_bytes(buffer[4..8].try_into().unwrap()) as usize;
+
+        if path_length > 1024 {
+            stream_state
+                .pending_writes
+                .push_back(encode_sync_fail("path too long"));
+            stream_state.close_pending = true;
+            buffer.clear();
+            break;
+        }
+
+        if buffer.len() < 8 + path_length {
+            break;
+        }
+
+        let path_bytes = &buffer[8..8 + path_length];
+        let path = match String::from_utf8(path_bytes.to_vec()) {
+            Ok(s) => s,
+            Err(_) => {
+                stream_state
+                    .pending_writes
+                    .push_back(encode_sync_fail("invalid utf-8 path"));
+                stream_state.close_pending = true;
+                buffer.clear();
+                break;
+            }
+        };
+
+        match id {
+            ID_LSTAT_V1 => {
+                buffer.drain(..8 + path_length);
+                let node_opt = fs.get_node(&path);
+                let mut resp = Vec::with_capacity(16);
+                resp.extend_from_slice(&ID_LSTAT_V1.to_le_bytes());
+                if let Some(node) = node_opt {
+                    resp.extend_from_slice(&node.mode.to_le_bytes());
+                    resp.extend_from_slice(&(node.size() as u32).to_le_bytes());
+                    resp.extend_from_slice(&(node.mtime as u32).to_le_bytes());
+                } else {
+                    resp.extend_from_slice(&0u32.to_le_bytes());
+                    resp.extend_from_slice(&0u32.to_le_bytes());
+                    resp.extend_from_slice(&0u32.to_le_bytes());
+                }
+                stream_state.pending_writes.push_back(resp);
+            }
+            id if id == ID_STAT_V2 || id == ID_LSTAT_V2 => {
+                buffer.drain(..8 + path_length);
+                let node_opt = fs.get_node(&path);
+                let mut resp = Vec::with_capacity(64);
+                resp.extend_from_slice(&id.to_le_bytes());
+                if let Some(node) = node_opt {
+                    resp.extend_from_slice(&0u32.to_le_bytes()); // error = 0
+                    resp.extend_from_slice(&node.dev.to_le_bytes());
+                    resp.extend_from_slice(&node.ino.to_le_bytes());
+                    resp.extend_from_slice(&node.mode.to_le_bytes());
+                    resp.extend_from_slice(&(node.nlink as u32).to_le_bytes());
+                    resp.extend_from_slice(&node.uid.to_le_bytes());
+                    resp.extend_from_slice(&node.gid.to_le_bytes());
+                    resp.extend_from_slice(&node.size().to_le_bytes());
+                    resp.extend_from_slice(&(node.atime as i64).to_le_bytes());
+                    resp.extend_from_slice(&(node.mtime as i64).to_le_bytes());
+                    resp.extend_from_slice(&(node.ctime as i64).to_le_bytes());
+                } else {
+                    resp.extend_from_slice(&2u32.to_le_bytes()); // wire ENOENT = 2
+                    resp.extend_from_slice(&[0u8; 56]);
+                }
+                stream_state.pending_writes.push_back(resp);
+            }
+            ID_LIST_V1 => {
+                buffer.drain(..8 + path_length);
+                let entries = fs.list_dir(&path);
+                for (name, node) in entries {
+                    let name_bytes = name.as_bytes();
+                    let mut resp = Vec::with_capacity(20 + name_bytes.len());
+                    resp.extend_from_slice(&ID_DENT_V1.to_le_bytes());
+                    resp.extend_from_slice(&node.mode.to_le_bytes());
+                    resp.extend_from_slice(&(node.size() as u32).to_le_bytes());
+                    resp.extend_from_slice(&(node.mtime as u32).to_le_bytes());
+                    resp.extend_from_slice(&(name_bytes.len() as u32).to_le_bytes());
+                    resp.extend_from_slice(name_bytes);
+                    stream_state.pending_writes.push_back(resp);
+                }
+                let mut done_resp = Vec::with_capacity(20);
+                done_resp.extend_from_slice(&ID_DONE.to_le_bytes());
+                done_resp.extend_from_slice(&[0u8; 16]);
+                stream_state.pending_writes.push_back(done_resp);
+            }
+            ID_LIST_V2 => {
+                buffer.drain(..8 + path_length);
+                let entries = fs.list_dir(&path);
+                for (name, node) in entries {
+                    let name_bytes = name.as_bytes();
+                    let mut resp = Vec::with_capacity(72 + name_bytes.len());
+                    resp.extend_from_slice(&ID_DENT_V2.to_le_bytes());
+                    resp.extend_from_slice(&0u32.to_le_bytes()); // error = 0
+                    resp.extend_from_slice(&node.dev.to_le_bytes());
+                    resp.extend_from_slice(&node.ino.to_le_bytes());
+                    resp.extend_from_slice(&node.mode.to_le_bytes());
+                    resp.extend_from_slice(&(node.nlink as u32).to_le_bytes());
+                    resp.extend_from_slice(&node.uid.to_le_bytes());
+                    resp.extend_from_slice(&node.gid.to_le_bytes());
+                    resp.extend_from_slice(&node.size().to_le_bytes());
+                    resp.extend_from_slice(&(node.atime as i64).to_le_bytes());
+                    resp.extend_from_slice(&(node.mtime as i64).to_le_bytes());
+                    resp.extend_from_slice(&(node.ctime as i64).to_le_bytes());
+                    resp.extend_from_slice(&(name_bytes.len() as u32).to_le_bytes());
+                    resp.extend_from_slice(name_bytes);
+                    stream_state.pending_writes.push_back(resp);
+                }
+                let mut done_resp = Vec::with_capacity(72);
+                done_resp.extend_from_slice(&ID_DONE.to_le_bytes());
+                done_resp.extend_from_slice(&[0u8; 68]);
+                stream_state.pending_writes.push_back(done_resp);
+            }
+            ID_RECV_V1 => {
+                buffer.drain(..8 + path_length);
+                match fs.get_file(&path) {
+                    Some(contents) => {
+                        let chunk_size = 64 * 1024;
+                        for chunk in contents.chunks(chunk_size) {
+                            let mut resp = Vec::with_capacity(8 + chunk.len());
+                            resp.extend_from_slice(&ID_DATA.to_le_bytes());
+                            resp.extend_from_slice(&(chunk.len() as u32).to_le_bytes());
+                            resp.extend_from_slice(chunk);
+                            stream_state.pending_writes.push_back(resp);
+                        }
+                        let mut done_resp = Vec::with_capacity(8);
+                        done_resp.extend_from_slice(&ID_DONE.to_le_bytes());
+                        done_resp.extend_from_slice(&0u32.to_le_bytes());
+                        stream_state.pending_writes.push_back(done_resp);
+                    }
+                    None => {
+                        stream_state
+                            .pending_writes
+                            .push_back(encode_sync_fail("no such file or directory"));
+                    }
+                }
+            }
+            ID_RECV_V2 => {
+                if buffer.len() < 8 + path_length + 8 {
+                    break;
+                }
+                let setup_bytes = &buffer[8 + path_length..8 + path_length + 8];
+                let setup_id = u32::from_le_bytes(setup_bytes[0..4].try_into().unwrap());
+                let flags = u32::from_le_bytes(setup_bytes[4..8].try_into().unwrap());
+                buffer.drain(..8 + path_length + 8);
+
+                if setup_id != ID_RECV_V2 {
+                    stream_state
+                        .pending_writes
+                        .push_back(encode_sync_fail("mismatched recv_v2 setup id"));
+                } else if flags != 0 {
+                    stream_state
+                        .pending_writes
+                        .push_back(encode_sync_fail(&format!("unknown flags: {flags}")));
+                } else {
+                    match fs.get_file(&path) {
+                        Some(contents) => {
+                            let chunk_size = 64 * 1024;
+                            for chunk in contents.chunks(chunk_size) {
+                                let mut resp = Vec::with_capacity(8 + chunk.len());
+                                resp.extend_from_slice(&ID_DATA.to_le_bytes());
+                                resp.extend_from_slice(&(chunk.len() as u32).to_le_bytes());
+                                resp.extend_from_slice(chunk);
+                                stream_state.pending_writes.push_back(resp);
+                            }
+                            let mut done_resp = Vec::with_capacity(8);
+                            done_resp.extend_from_slice(&ID_DONE.to_le_bytes());
+                            done_resp.extend_from_slice(&0u32.to_le_bytes());
+                            stream_state.pending_writes.push_back(done_resp);
+                        }
+                        None => {
+                            stream_state
+                                .pending_writes
+                                .push_back(encode_sync_fail("no such file or directory"));
+                        }
+                    }
+                }
+            }
+            ID_SEND_V1 => {
+                let (target_path, mode) = match parse_send_v1_spec(&path) {
+                    Some(res) => res,
+                    None => {
+                        buffer.drain(..8 + path_length);
+                        stream_state
+                            .pending_writes
+                            .push_back(encode_sync_fail("invalid SEND_V1 spec"));
+                        continue;
+                    }
+                };
+
+                let mut offset = 8 + path_length;
+                let mut file_data = Vec::new();
+                let mut mtime = 0u32;
+                let mut send_complete = false;
+
+                while offset + 8 <= buffer.len() {
+                    let chunk_id =
+                        u32::from_le_bytes(buffer[offset..offset + 4].try_into().unwrap());
+                    let chunk_size = u32::from_le_bytes(
+                        buffer[offset + 4..offset + 8].try_into().unwrap(),
+                    ) as usize;
+
+                    if chunk_id == ID_DATA {
+                        if chunk_size > 64 * 1024 {
+                            stream_state
+                                .pending_writes
+                                .push_back(encode_sync_fail("data chunk too large"));
+                            send_complete = false;
+                            break;
+                        }
+                        if offset + 8 + chunk_size > buffer.len() {
+                            break;
+                        }
+                        file_data.extend_from_slice(&buffer[offset + 8..offset + 8 + chunk_size]);
+                        offset += 8 + chunk_size;
+                    } else if chunk_id == ID_DONE {
+                        mtime = chunk_size as u32;
+                        offset += 8;
+                        send_complete = true;
+                        break;
+                    } else {
+                        stream_state
+                            .pending_writes
+                            .push_back(encode_sync_fail("invalid chunk id in SEND"));
+                        break;
+                    }
+                }
+
+                if !send_complete {
+                    break;
+                }
+
+                buffer.drain(..offset);
+
+                let parent_dir = parent_and_name(&target_path).map(|(p, _)| p);
+                if let Some(p) = parent_dir {
+                    if fs.get_node(p).is_none() {
+                        stream_state
+                            .pending_writes
+                            .push_back(encode_sync_fail(&format!("directory {p} does not exist")));
+                        continue;
+                    }
+                }
+
+                fs.add_file(&target_path, file_data, mode, mtime as u64);
+                stream_state.pending_writes.push_back(encode_sync_okay());
+            }
+            ID_SEND_V2 => {
+                if buffer.len() < 8 + path_length + 12 {
+                    break;
+                }
+                let setup_bytes = &buffer[8 + path_length..8 + path_length + 12];
+                let setup_id = u32::from_le_bytes(setup_bytes[0..4].try_into().unwrap());
+                let mode = u32::from_le_bytes(setup_bytes[4..8].try_into().unwrap());
+                let flags = u32::from_le_bytes(setup_bytes[8..12].try_into().unwrap());
+
+                if setup_id != ID_SEND_V2 {
+                    buffer.drain(..8 + path_length + 12);
+                    stream_state
+                        .pending_writes
+                        .push_back(encode_sync_fail("mismatched send_v2 setup id"));
+                    continue;
+                }
+                if flags != 0 {
+                    buffer.drain(..8 + path_length + 12);
+                    stream_state
+                        .pending_writes
+                        .push_back(encode_sync_fail(&format!("unknown flags: {flags}")));
+                    continue;
+                }
+
+                let mut offset = 8 + path_length + 12;
+                let mut file_data = Vec::new();
+                let mut mtime = 0u32;
+                let mut send_complete = false;
+
+                while offset + 8 <= buffer.len() {
+                    let chunk_id =
+                        u32::from_le_bytes(buffer[offset..offset + 4].try_into().unwrap());
+                    let chunk_size = u32::from_le_bytes(
+                        buffer[offset + 4..offset + 8].try_into().unwrap(),
+                    ) as usize;
+
+                    if chunk_id == ID_DATA {
+                        if chunk_size > 64 * 1024 {
+                            stream_state
+                                .pending_writes
+                                .push_back(encode_sync_fail("data chunk too large"));
+                            send_complete = false;
+                            break;
+                        }
+                        if offset + 8 + chunk_size > buffer.len() {
+                            break;
+                        }
+                        file_data.extend_from_slice(&buffer[offset + 8..offset + 8 + chunk_size]);
+                        offset += 8 + chunk_size;
+                    } else if chunk_id == ID_DONE {
+                        mtime = chunk_size as u32;
+                        offset += 8;
+                        send_complete = true;
+                        break;
+                    } else {
+                        stream_state
+                            .pending_writes
+                            .push_back(encode_sync_fail("invalid chunk id in SEND_V2"));
+                        break;
+                    }
+                }
+
+                if !send_complete {
+                    break;
+                }
+
+                buffer.drain(..offset);
+
+                let parent_dir = parent_and_name(&path).map(|(p, _)| p);
+                if let Some(p) = parent_dir {
+                    if fs.get_node(p).is_none() {
+                        stream_state
+                            .pending_writes
+                            .push_back(encode_sync_fail(&format!("directory {p} does not exist")));
+                        continue;
+                    }
+                }
+
+                fs.add_file(&path, file_data, mode, mtime as u64);
+                stream_state.pending_writes.push_back(encode_sync_okay());
+            }
+            ID_QUIT => {
+                buffer.drain(..8 + path_length);
+                stream_state.close_pending = true;
+                break;
+            }
+            unknown => {
+                buffer.drain(..8 + path_length);
+                stream_state
+                    .pending_writes
+                    .push_back(encode_sync_fail(&format!("unknown command {unknown:08x}")));
+                break;
+            }
+        }
+    }
 }

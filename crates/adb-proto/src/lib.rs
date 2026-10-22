@@ -23,6 +23,7 @@ pub use smart_socket::{
 };
 pub use sync::{
     SyncDecodeError, SyncDecoder, SyncDecoderMode, SyncEncodeError, SyncMessage, ID_DATA,
-    ID_DENT_V1, ID_DONE, ID_FAIL, ID_LIST_V1, ID_LSTAT_V1, ID_OKAY, ID_QUIT, ID_RECV_V1,
-    ID_SEND_V1, SYNC_DATA_MAX, SYNC_PATH_MAX,
+    ID_DENT_V1, ID_DENT_V2, ID_DONE, ID_FAIL, ID_LIST_V1, ID_LIST_V2, ID_LSTAT_V1, ID_LSTAT_V2,
+    ID_OKAY, ID_QUIT, ID_RECV_V1, ID_RECV_V2, ID_SEND_V1, ID_SEND_V2, ID_STAT_V2, SYNC_DATA_MAX,
+    SYNC_PATH_MAX,
 };
