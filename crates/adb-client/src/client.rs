@@ -4,6 +4,27 @@ use crate::transport::{format_host_command, TransportSelector};
 use std::future::Future;
 use std::pin::Pin;
 
+/// Mode selector for `track-devices` service variants.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TrackDevicesMode {
+    Normal,
+    Long,
+    ProtoText,
+    ProtoBinary,
+}
+
+impl TrackDevicesMode {
+    /// Returns the host service string associated with this mode.
+    pub fn service_name(&self) -> &'static str {
+        match self {
+            TrackDevicesMode::Normal => "host:track-devices",
+            TrackDevicesMode::Long => "host:track-devices-l",
+            TrackDevicesMode::ProtoText => "host:track-devices-proto-text",
+            TrackDevicesMode::ProtoBinary => "host:track-devices-proto-binary",
+        }
+    }
+}
+
 /// Expected ADB server version matching C++ `ADB_SERVER_VERSION` in `original/adb.h`.
 pub const ADB_SERVER_VERSION: u32 = 41;
 
@@ -658,5 +679,121 @@ impl AdbClient {
     ) -> Result<String, ClientError> {
         self.query_command(&TransportSelector::Any, "host-features", session_factory)
             .await
+    }
+
+    /// Connects to a device via TCP/IP (`host:connect:<target>`).
+    ///
+    /// Ports `connect` command handling from `original/client/commandline.cpp`.
+    /// Returns reply text on success. Returns error on failure or query refusal.
+    pub async fn connect(
+        &self,
+        target: &str,
+        session_factory: &dyn SessionFactory,
+    ) -> Result<String, ClientError> {
+        let service = format!("host:connect:{target}");
+        let mut session = session_factory.connect(&self.addr).await?;
+        session.send_service(&service).await?;
+        session.read_status().await?;
+        let payload = session.read_string().await?;
+        Ok(payload)
+    }
+
+    /// Validates arguments for `connect` and executes command.
+    pub async fn connect_with_args(
+        &self,
+        args: &[&str],
+        session_factory: &dyn SessionFactory,
+    ) -> Result<String, ClientError> {
+        match args {
+            [target] => self.connect(target, session_factory).await,
+            _ => Err(ClientError::InvalidUsage(
+                "usage: adb connect HOST[:PORT]".to_string(),
+            )),
+        }
+    }
+
+    /// Disconnects from a TCP/IP device (`host:disconnect:<target or empty>`).
+    ///
+    /// Ports `disconnect` command handling from `original/client/commandline.cpp`.
+    /// If `target` is `None`, disconnects all TCP/IP devices.
+    pub async fn disconnect(
+        &self,
+        target: Option<&str>,
+        session_factory: &dyn SessionFactory,
+    ) -> Result<String, ClientError> {
+        let service = format!("host:disconnect:{}", target.unwrap_or(""));
+        let mut session = session_factory.connect(&self.addr).await?;
+        session.send_service(&service).await?;
+        session.read_status().await?;
+        let payload = session.read_string().await?;
+        Ok(payload)
+    }
+
+    /// Validates arguments for `disconnect` and executes command.
+    pub async fn disconnect_with_args(
+        &self,
+        args: &[&str],
+        session_factory: &dyn SessionFactory,
+    ) -> Result<String, ClientError> {
+        match args {
+            [] => self.disconnect(None, session_factory).await,
+            [target] => self.disconnect(Some(target), session_factory).await,
+            _ => Err(ClientError::InvalidUsage(
+                "usage: adb disconnect [HOST[:PORT]]".to_string(),
+            )),
+        }
+    }
+
+    /// Tracks device state changes over a raw stream (`host:track-devices*`).
+    ///
+    /// Ports `track-devices` command handling from `original/client/commandline.cpp`.
+    /// Returns a stream of raw byte chunks as sent by the server. Dropping the stream closes the socket connection.
+    pub fn track_devices<'a>(
+        &'a self,
+        mode: TrackDevicesMode,
+        session_factory: &'a dyn SessionFactory,
+    ) -> impl tokio_stream::Stream<Item = Result<bytes::Bytes, ClientError>> + Send + 'a {
+        async_stream::try_stream! {
+            let mut session = session_factory.connect(&self.addr).await?;
+            session.send_service(mode.service_name()).await?;
+            session.read_status().await?;
+
+            let mut stream = session.into_inner();
+            let mut buf = [0u8; 8192];
+            loop {
+                use tokio::io::AsyncReadExt;
+                let n = stream
+                    .read(&mut buf)
+                    .await
+                    .map_err(|e| ClientError::Session(SessionError::ReadStatusFailed(e)))?;
+                if n == 0 {
+                    break;
+                }
+                yield bytes::Bytes::copy_from_slice(&buf[..n]);
+            }
+        }
+    }
+
+    /// Validates arguments for `track-devices` and returns tracking stream.
+    pub fn track_devices_with_args<'a>(
+        &'a self,
+        args: &[&str],
+        session_factory: &'a dyn SessionFactory,
+    ) -> Result<
+        impl tokio_stream::Stream<Item = Result<bytes::Bytes, ClientError>> + Send + 'a,
+        ClientError,
+    > {
+        let mode = match args {
+            [] => TrackDevicesMode::Normal,
+            ["-l"] => TrackDevicesMode::Long,
+            ["--proto-text"] => TrackDevicesMode::ProtoText,
+            ["--proto-binary"] => TrackDevicesMode::ProtoBinary,
+            _ => {
+                return Err(ClientError::InvalidUsage(
+                    "usage: adb track-devices [-l][--proto-text][--proto-binary]".to_string(),
+                ))
+            }
+        };
+        Ok(self.track_devices(mode, session_factory))
     }
 }
