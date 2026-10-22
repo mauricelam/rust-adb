@@ -128,7 +128,7 @@ async fn test_query_no_device() {
 
     fn extract_error_message(output_stderr: &str) -> &str {
         let trimmed = output_stderr.trim();
-        if let Some((_prefix, rest)) = trimmed.split_once(": ")) {
+        if let Some((_prefix, rest)) = trimmed.split_once(": ") {
             rest
         } else {
             trimmed
