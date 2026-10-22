@@ -197,6 +197,9 @@ impl ServerLauncher for ExternalBinaryLauncher {
     }
 }
 
+/// Spawns a background ADB server binary and awaits the reply acknowledgment.
+///
+/// Cites C++ `launch_server` in `original/adb.cpp` and `adb_server_main` in `original/client/main.cpp`.
 #[cfg(unix)]
 async fn launch_binary(
     path: &std::path::Path,
@@ -206,6 +209,8 @@ async fn launch_binary(
     use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
     use tokio::io::AsyncReadExt;
 
+    // Set up a pipe so the child process can acknowledge readiness ("OK\n").
+    // See original/adb.cpp: launch_server()
     let mut fds = [0i32; 2];
     if unsafe { libc::pipe(fds.as_mut_ptr()) } != 0 {
         return Err(std::io::Error::last_os_error().into());
@@ -230,8 +235,12 @@ async fn launch_binary(
 
     unsafe {
         cmd.pre_exec(move || {
+            // Detach process into its own session and process group.
+            // See original/adb.cpp: launch_server()
             libc::setsid();
 
+            // Clear FD_CLOEXEC on write_fd so it is inherited by exec.
+            // See original/adb.cpp: launch_server() where fcntl(pipe_write.get(), F_SETFD, 0) is called.
             let flags = libc::fcntl(write_fd_raw, libc::F_GETFD);
             if flags != -1 {
                 libc::fcntl(write_fd_raw, libc::F_SETFD, flags & !libc::FD_CLOEXEC);
@@ -242,7 +251,7 @@ async fn launch_binary(
 
     let mut child = cmd.spawn()?;
 
-    // Explicitly drop write_fd so parent's copy closes and pipe EOF is signaled on child exit
+    // Explicitly drop write_fd in parent so pipe closure signals EOF if child terminates early.
     drop(write_fd);
 
     let read_file = std::fs::File::from(read_fd);
@@ -275,7 +284,7 @@ async fn launch_binary(
 
 /// Kills the running ADB server at `addr`.
 ///
-/// Ports `adb_kill_server` from C++ `adb_client.cpp`.
+/// Ports `adb_kill_server` from C++ `original/client/adb_client.cpp`.
 pub async fn kill_server(
     addr: &ServerAddress,
     session_factory: &dyn SessionFactory,
@@ -321,7 +330,7 @@ pub async fn kill_server(
 
 /// Launches a local ADB server for `addr`.
 ///
-/// Ports `launch_server` invocation from `adb_connect` in C++ `adb_client.cpp`.
+/// Ports `launch_server` invocation from `adb_connect` in C++ `original/client/adb_client.cpp`.
 pub async fn start_server(
     addr: &ServerAddress,
     launcher: &dyn ServerLauncher,
@@ -351,7 +360,7 @@ pub async fn start_server_with_one_device(
 
 /// Checks that the running server version matches `ADB_SERVER_VERSION`.
 ///
-/// Ports `__adb_check_server_version` from C++ `adb_client.cpp`.
+/// Ports `__adb_check_server_version` and `adb_connect` from C++ `original/client/adb_client.cpp`.
 pub async fn check_server_version(
     addr: &ServerAddress,
     session_factory: &dyn SessionFactory,

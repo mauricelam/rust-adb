@@ -1,7 +1,10 @@
 use adb_client::{
-    check_server_version, kill_server, ClientError, ClientEvent, DefaultSessionFactory,
-    ExternalBinaryLauncher, ServerAddress, SessionFactory, ADB_SERVER_VERSION,
+    check_server_version, ClientError, ClientEvent, DefaultSessionFactory, ExternalBinaryLauncher,
+    ServerAddress,
 };
+#[cfg(unix)]
+use adb_client::{kill_server, SessionFactory, ADB_SERVER_VERSION};
+
 use std::env;
 use std::net::TcpListener;
 use std::path::PathBuf;
@@ -9,6 +12,9 @@ use std::path::PathBuf;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 fn get_reference_adb_path() -> PathBuf {
+    if let Ok(path) = env::var("ADB_SERVER_BIN") {
+        return PathBuf::from(path);
+    }
     if let Ok(path) = env::var("ADB_REFERENCE") {
         return PathBuf::from(path);
     }
@@ -72,8 +78,9 @@ impl MockServer {
         let port = listener.local_addr().unwrap().port();
 
         tokio::spawn(async move {
-            loop {
-                let Ok((mut socket, _)) = listener.accept().await else {
+            let mut listener = Some(listener);
+            while let Some(l) = listener.as_ref() {
+                let Ok((mut socket, _)) = l.accept().await else {
                     break;
                 };
 
@@ -100,7 +107,10 @@ impl MockServer {
                 } else if service == "host:kill" {
                     let _ = socket.write_all(b"OKAY").await;
                     let _ = socket.shutdown().await;
-                    break; // Exit loop and drop listener to free the port
+                    // Explicitly drop listener so port is released immediately
+                    drop(listener.take());
+                    tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
+                    break;
                 }
             }
         });
