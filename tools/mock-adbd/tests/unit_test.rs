@@ -1,6 +1,6 @@
 use adb_proto::{
     Banner, Command, Feature, ShellDecoder, ShellPacket, ShellPacketId, WindowSize, A_VERSION,
-    MAX_PAYLOAD,
+    A_VERSION_MIN, MAX_PAYLOAD,
 };
 use mock_adbd::{read_packet, write_packet, MockAdbdOptions, MockAdbdServer};
 use tokio::net::TcpStream;
@@ -419,4 +419,546 @@ async fn test_mock_adbd_shell_v2_unsupported_command() {
     assert_eq!(clse.command, Command::Clse);
 
     server.shutdown();
+}
+
+// ------------------- New C14 Tests -------------------
+
+#[tokio::test]
+async fn test_mock_adbd_concurrent_cat_streams() {
+    let server = MockAdbdServer::bind("127.0.0.1:0").await.unwrap();
+    let addr = server.local_addr();
+
+    let mut client = TcpStream::connect(addr).await.unwrap();
+    let (mut reader, mut writer) = client.split();
+
+    write_packet(
+        &mut writer,
+        Command::Cnxn,
+        A_VERSION,
+        MAX_PAYLOAD as u32,
+        b"host::",
+    )
+    .await
+    .unwrap();
+    let _ = read_packet(&mut reader).await.unwrap();
+
+    // Stream 1
+    let host_id_1 = 201u32;
+    write_packet(
+        &mut writer,
+        Command::Open,
+        host_id_1,
+        0,
+        b"shell,v2,raw:cat\0",
+    )
+    .await
+    .unwrap();
+
+    let (okay1, _) = read_packet(&mut reader).await.unwrap().unwrap();
+    assert_eq!(okay1.command, Command::Okay);
+    let mock_id_1 = okay1.arg0;
+
+    // Stream 2
+    let host_id_2 = 202u32;
+    write_packet(
+        &mut writer,
+        Command::Open,
+        host_id_2,
+        0,
+        b"shell,v2,raw:cat\0",
+    )
+    .await
+    .unwrap();
+
+    let (okay2, _) = read_packet(&mut reader).await.unwrap().unwrap();
+    assert_eq!(okay2.command, Command::Okay);
+    let mock_id_2 = okay2.arg0;
+
+    // Send stdin to Stream 1
+    let stdin1 = ShellPacket::new(ShellPacketId::Stdin, b"hello stream1".to_vec());
+    write_packet(
+        &mut writer,
+        Command::Wrte,
+        host_id_1,
+        mock_id_1,
+        &stdin1.encode_to_vec(),
+    )
+    .await
+    .unwrap();
+
+    // Send stdin to Stream 2
+    let stdin2 = ShellPacket::new(ShellPacketId::Stdin, b"hello stream2".to_vec());
+    write_packet(
+        &mut writer,
+        Command::Wrte,
+        host_id_2,
+        mock_id_2,
+        &stdin2.encode_to_vec(),
+    )
+    .await
+    .unwrap();
+
+    let mut decoder1 = ShellDecoder::new();
+    let mut decoder2 = ShellDecoder::new();
+    let mut got_stream1_stdout = false;
+    let mut got_stream2_stdout = false;
+
+    while !got_stream1_stdout || !got_stream2_stdout {
+        let (hdr, payload) = read_packet(&mut reader).await.unwrap().unwrap();
+        if hdr.command == Command::Okay {
+            // Acknowledge of host's WRTE
+            continue;
+        }
+        assert_eq!(hdr.command, Command::Wrte);
+        if hdr.arg1 == host_id_1 {
+            decoder1.feed(&payload);
+            let pkt = decoder1.pop_packet().unwrap().unwrap();
+            assert_eq!(pkt.id, ShellPacketId::Stdout);
+            assert_eq!(String::from_utf8_lossy(&pkt.data), "hello stream1");
+            got_stream1_stdout = true;
+            write_packet(&mut writer, Command::Okay, host_id_1, mock_id_1, &[])
+                .await
+                .unwrap();
+        } else if hdr.arg1 == host_id_2 {
+            decoder2.feed(&payload);
+            let pkt = decoder2.pop_packet().unwrap().unwrap();
+            assert_eq!(pkt.id, ShellPacketId::Stdout);
+            assert_eq!(String::from_utf8_lossy(&pkt.data), "hello stream2");
+            got_stream2_stdout = true;
+            write_packet(&mut writer, Command::Okay, host_id_2, mock_id_2, &[])
+                .await
+                .unwrap();
+        }
+    }
+
+    // Close Stream 1
+    let close1 = ShellPacket::new(ShellPacketId::CloseStdin, vec![]);
+    write_packet(
+        &mut writer,
+        Command::Wrte,
+        host_id_1,
+        mock_id_1,
+        &close1.encode_to_vec(),
+    )
+    .await
+    .unwrap();
+
+    // Read until Stream 1 closes
+    loop {
+        let (hdr, payload) = read_packet(&mut reader).await.unwrap().unwrap();
+        if hdr.command == Command::Okay {
+            continue;
+        }
+        if hdr.command == Command::Wrte && hdr.arg1 == host_id_1 {
+            decoder1.feed(&payload);
+            let pkt = decoder1.pop_packet().unwrap().unwrap();
+            assert_eq!(pkt.id, ShellPacketId::Exit);
+            assert_eq!(pkt.parse_exit_code().unwrap(), 0);
+            write_packet(&mut writer, Command::Okay, host_id_1, mock_id_1, &[])
+                .await
+                .unwrap();
+        } else if hdr.command == Command::Clse && hdr.arg1 == host_id_1 {
+            break;
+        }
+    }
+
+    // Close Stream 2
+    let close2 = ShellPacket::new(ShellPacketId::CloseStdin, vec![]);
+    write_packet(
+        &mut writer,
+        Command::Wrte,
+        host_id_2,
+        mock_id_2,
+        &close2.encode_to_vec(),
+    )
+    .await
+    .unwrap();
+
+    loop {
+        let (hdr, payload) = read_packet(&mut reader).await.unwrap().unwrap();
+        if hdr.command == Command::Okay {
+            continue;
+        }
+        if hdr.command == Command::Wrte && hdr.arg1 == host_id_2 {
+            decoder2.feed(&payload);
+            let pkt = decoder2.pop_packet().unwrap().unwrap();
+            assert_eq!(pkt.id, ShellPacketId::Exit);
+            assert_eq!(pkt.parse_exit_code().unwrap(), 0);
+            write_packet(&mut writer, Command::Okay, host_id_2, mock_id_2, &[])
+                .await
+                .unwrap();
+        } else if hdr.command == Command::Clse && hdr.arg1 == host_id_2 {
+            break;
+        }
+    }
+
+    server.shutdown();
+}
+
+#[tokio::test]
+async fn test_mock_adbd_open_during_pending_okay() {
+    let server = MockAdbdServer::bind("127.0.0.1:0").await.unwrap();
+    let addr = server.local_addr();
+
+    let mut client = TcpStream::connect(addr).await.unwrap();
+    let (mut reader, mut writer) = client.split();
+
+    write_packet(
+        &mut writer,
+        Command::Cnxn,
+        A_VERSION,
+        MAX_PAYLOAD as u32,
+        b"host::",
+    )
+    .await
+    .unwrap();
+    let _ = read_packet(&mut reader).await.unwrap();
+
+    // Stream 1 OPEN
+    let host_id_1 = 301u32;
+    write_packet(
+        &mut writer,
+        Command::Open,
+        host_id_1,
+        0,
+        b"shell:echo stream1\0",
+    )
+    .await
+    .unwrap();
+
+    let (okay1, _) = read_packet(&mut reader).await.unwrap().unwrap();
+    assert_eq!(okay1.command, Command::Okay);
+    let mock_id_1 = okay1.arg0;
+
+    // Mock sends WRTE for Stream 1
+    let (wrte1, payload1) = read_packet(&mut reader).await.unwrap().unwrap();
+    assert_eq!(wrte1.command, Command::Wrte);
+    assert_eq!(wrte1.arg1, host_id_1);
+    assert_eq!(&payload1, b"stream1\n");
+
+    // Do NOT send OKAY for Stream 1 yet. Instead send OPEN for Stream 2!
+    let host_id_2 = 302u32;
+    write_packet(
+        &mut writer,
+        Command::Open,
+        host_id_2,
+        0,
+        b"shell:echo stream2\0",
+    )
+    .await
+    .unwrap();
+
+    // Stream 2 should still get OKAY and WRTE
+    let (okay2, _) = read_packet(&mut reader).await.unwrap().unwrap();
+    assert_eq!(okay2.command, Command::Okay);
+    let mock_id_2 = okay2.arg0;
+
+    let (wrte2, payload2) = read_packet(&mut reader).await.unwrap().unwrap();
+    assert_eq!(wrte2.command, Command::Wrte);
+    assert_eq!(wrte2.arg1, host_id_2);
+    assert_eq!(&payload2, b"stream2\n");
+
+    // Now send OKAY for Stream 1 and Stream 2
+    write_packet(&mut writer, Command::Okay, host_id_1, mock_id_1, &[])
+        .await
+        .unwrap();
+    write_packet(&mut writer, Command::Okay, host_id_2, mock_id_2, &[])
+        .await
+        .unwrap();
+
+    // Both streams should receive CLSE
+    let mut clse1_received = false;
+    let mut clse2_received = false;
+
+    while !clse1_received || !clse2_received {
+        let (hdr, _) = read_packet(&mut reader).await.unwrap().unwrap();
+        assert_eq!(hdr.command, Command::Clse);
+        if hdr.arg1 == host_id_1 {
+            clse1_received = true;
+        } else if hdr.arg1 == host_id_2 {
+            clse2_received = true;
+        }
+    }
+
+    server.shutdown();
+}
+
+#[tokio::test]
+async fn test_mock_adbd_host_clse_middle() {
+    let server = MockAdbdServer::bind("127.0.0.1:0").await.unwrap();
+    let addr = server.local_addr();
+
+    let mut client = TcpStream::connect(addr).await.unwrap();
+    let (mut reader, mut writer) = client.split();
+
+    write_packet(
+        &mut writer,
+        Command::Cnxn,
+        A_VERSION,
+        MAX_PAYLOAD as u32,
+        b"host::",
+    )
+    .await
+    .unwrap();
+    let _ = read_packet(&mut reader).await.unwrap();
+
+    // Stream 1 & 2
+    let host_id_1 = 401u32;
+    write_packet(
+        &mut writer,
+        Command::Open,
+        host_id_1,
+        0,
+        b"shell,v2,raw:cat\0",
+    )
+    .await
+    .unwrap();
+    let (okay1, _) = read_packet(&mut reader).await.unwrap().unwrap();
+    let mock_id_1 = okay1.arg0;
+
+    let host_id_2 = 402u32;
+    write_packet(
+        &mut writer,
+        Command::Open,
+        host_id_2,
+        0,
+        b"shell,v2,raw:cat\0",
+    )
+    .await
+    .unwrap();
+    let (okay2, _) = read_packet(&mut reader).await.unwrap().unwrap();
+    let mock_id_2 = okay2.arg0;
+
+    // Send CLSE for Stream 1 in the middle
+    write_packet(&mut writer, Command::Clse, host_id_1, mock_id_1, &[])
+        .await
+        .unwrap();
+
+    // Stream 2 should continue working without issue
+    let stdin2 = ShellPacket::new(ShellPacketId::Stdin, b"still active".to_vec());
+    write_packet(
+        &mut writer,
+        Command::Wrte,
+        host_id_2,
+        mock_id_2,
+        &stdin2.encode_to_vec(),
+    )
+    .await
+    .unwrap();
+
+    let mut decoder2 = ShellDecoder::new();
+    let mut got_stdout2 = false;
+
+    while !got_stdout2 {
+        let (hdr, payload) = read_packet(&mut reader).await.unwrap().unwrap();
+        if hdr.command == Command::Okay {
+            continue;
+        }
+        assert_eq!(hdr.command, Command::Wrte);
+        assert_eq!(hdr.arg1, host_id_2);
+        decoder2.feed(&payload);
+        let pkt = decoder2.pop_packet().unwrap().unwrap();
+        assert_eq!(pkt.id, ShellPacketId::Stdout);
+        assert_eq!(String::from_utf8_lossy(&pkt.data), "still active");
+        got_stdout2 = true;
+        write_packet(&mut writer, Command::Okay, host_id_2, mock_id_2, &[])
+            .await
+            .unwrap();
+    }
+
+    // Close Stream 2
+    let close2 = ShellPacket::new(ShellPacketId::CloseStdin, vec![]);
+    write_packet(
+        &mut writer,
+        Command::Wrte,
+        host_id_2,
+        mock_id_2,
+        &close2.encode_to_vec(),
+    )
+    .await
+    .unwrap();
+
+    loop {
+        let (hdr, payload) = read_packet(&mut reader).await.unwrap().unwrap();
+        if hdr.command == Command::Okay {
+            continue;
+        }
+        if hdr.command == Command::Wrte && hdr.arg1 == host_id_2 {
+            decoder2.feed(&payload);
+            let pkt = decoder2.pop_packet().unwrap().unwrap();
+            assert_eq!(pkt.id, ShellPacketId::Exit);
+            assert_eq!(pkt.parse_exit_code().unwrap(), 0);
+            write_packet(&mut writer, Command::Okay, host_id_2, mock_id_2, &[])
+                .await
+                .unwrap();
+        } else if hdr.command == Command::Clse && hdr.arg1 == host_id_2 {
+            break;
+        }
+    }
+
+    server.shutdown();
+}
+
+#[tokio::test]
+async fn test_mock_adbd_version_min_and_checksums() {
+    let server = MockAdbdServer::bind("127.0.0.1:0").await.unwrap();
+    let addr = server.local_addr();
+
+    let mut client = TcpStream::connect(addr).await.unwrap();
+    let (mut reader, mut writer) = client.split();
+
+    // Send CNXN with A_VERSION_MIN (0x01000000)
+    write_packet(
+        &mut writer,
+        Command::Cnxn,
+        A_VERSION_MIN,
+        MAX_PAYLOAD as u32,
+        b"host::",
+    )
+    .await
+    .unwrap();
+
+    let (cnxn_hdr, _) = read_packet(&mut reader).await.unwrap().unwrap();
+    assert_eq!(cnxn_hdr.command, Command::Cnxn);
+    assert_eq!(cnxn_hdr.arg0, A_VERSION_MIN);
+
+    // Open shell:echo hello
+    let host_id = 501u32;
+    write_packet(
+        &mut writer,
+        Command::Open,
+        host_id,
+        0,
+        b"shell:echo hello\0",
+    )
+    .await
+    .unwrap();
+
+    // Verify all returned packets have correct checksums calculated for payload
+    let (okay_hdr, _) = read_packet(&mut reader).await.unwrap().unwrap();
+    assert_eq!(okay_hdr.command, Command::Okay);
+    assert_eq!(okay_hdr.data_crc32, 0); // empty payload checksum is 0
+
+    let (wrte_hdr, payload) = read_packet(&mut reader).await.unwrap().unwrap();
+    assert_eq!(wrte_hdr.command, Command::Wrte);
+    let expected_crc: u32 = payload.iter().map(|&b| b as u32).sum();
+    assert_eq!(wrte_hdr.data_crc32, expected_crc);
+
+    // Ack
+    write_packet(&mut writer, Command::Okay, host_id, okay_hdr.arg0, &[])
+        .await
+        .unwrap();
+
+    let (clse_hdr, _) = read_packet(&mut reader).await.unwrap().unwrap();
+    assert_eq!(clse_hdr.command, Command::Clse);
+    assert_eq!(clse_hdr.data_crc32, 0);
+
+    server.shutdown();
+}
+
+#[tokio::test]
+async fn test_mock_adbd_small_max_payload_split() {
+    let server = MockAdbdServer::bind("127.0.0.1:0").await.unwrap();
+    let addr = server.local_addr();
+
+    let mut client = TcpStream::connect(addr).await.unwrap();
+    let (mut reader, mut writer) = client.split();
+
+    // Send CNXN with max payload limit = 16 bytes
+    let small_payload_limit = 16u32;
+    write_packet(
+        &mut writer,
+        Command::Cnxn,
+        A_VERSION,
+        small_payload_limit,
+        b"host::",
+    )
+    .await
+    .unwrap();
+
+    let (cnxn_hdr, _) = read_packet(&mut reader).await.unwrap().unwrap();
+    assert_eq!(cnxn_hdr.command, Command::Cnxn);
+    assert_eq!(cnxn_hdr.arg1, small_payload_limit);
+
+    // Open shell:echo 12345678901234567890 (output: "12345678901234567890\n", 21 bytes)
+    let host_id = 601u32;
+    write_packet(
+        &mut writer,
+        Command::Open,
+        host_id,
+        0,
+        b"shell:echo 12345678901234567890\0",
+    )
+    .await
+    .unwrap();
+
+    let (okay_hdr, _) = read_packet(&mut reader).await.unwrap().unwrap();
+    let mock_id = okay_hdr.arg0;
+
+    let mut combined_output = Vec::new();
+
+    loop {
+        let (hdr, payload) = read_packet(&mut reader).await.unwrap().unwrap();
+        if hdr.command == Command::Wrte {
+            assert!(
+                hdr.data_length <= small_payload_limit,
+                "WRTE data length {} exceeded limit {}",
+                hdr.data_length,
+                small_payload_limit
+            );
+            combined_output.extend_from_slice(&payload);
+            write_packet(&mut writer, Command::Okay, host_id, mock_id, &[])
+                .await
+                .unwrap();
+        } else if hdr.command == Command::Clse {
+            break;
+        }
+    }
+
+    assert_eq!(
+        String::from_utf8_lossy(&combined_output),
+        "12345678901234567890\n"
+    );
+
+    server.shutdown();
+}
+
+#[tokio::test]
+async fn test_mock_adbd_shutdown_cleanup() {
+    let server = MockAdbdServer::bind("127.0.0.1:0").await.unwrap();
+    let addr = server.local_addr();
+
+    let mut client = TcpStream::connect(addr).await.unwrap();
+    let (mut reader, mut writer) = client.split();
+
+    write_packet(
+        &mut writer,
+        Command::Cnxn,
+        A_VERSION,
+        MAX_PAYLOAD as u32,
+        b"host::",
+    )
+    .await
+    .unwrap();
+
+    let (cnxn_hdr, _) = read_packet(&mut reader).await.unwrap().unwrap();
+    assert_eq!(cnxn_hdr.command, Command::Cnxn);
+
+    // Shutdown server
+    server.shutdown();
+
+    // Existing client read should result in EOF / connection reset
+    let res = read_packet(&mut reader).await;
+    assert!(
+        res.is_err() || res.unwrap().is_none(),
+        "Expected connection closed on shutdown"
+    );
+
+    // New connection attempt should fail
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    let new_conn = TcpStream::connect(addr).await;
+    if let Ok(mut stream) = new_conn {
+        let res = read_packet(&mut stream).await;
+        assert!(res.is_err() || res.unwrap().is_none());
+    }
 }

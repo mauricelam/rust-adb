@@ -1,14 +1,20 @@
 use adb_proto::{
-    negotiate_max_payload, Banner, Command, Feature, Features, Header, ShellDecoder, ShellPacket,
-    ShellPacketId, A_VERSION, MAX_PAYLOAD,
+    negotiate_max_payload, negotiate_version, Banner, Command, Feature, Features, Header,
+    ShellDecoder, ShellPacket, ShellPacketId, A_VERSION, A_VERSION_SKIP_CHECKSUM, MAX_PAYLOAD,
 };
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 use std::net::SocketAddr;
 use std::sync::atomic::{AtomicU32, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::task::JoinHandle;
+
+fn mock_log(msg: &str) {
+    if std::env::var_os("MOCK_ADBD_LOG").is_some() {
+        eprintln!("[mock-adbd] {msg}");
+    }
+}
 
 #[derive(Debug, Clone)]
 pub struct MockAdbdOptions {
@@ -25,7 +31,8 @@ impl Default for MockAdbdOptions {
 
 pub struct MockAdbdServer {
     local_addr: SocketAddr,
-    handle: JoinHandle<()>,
+    accept_handle: JoinHandle<()>,
+    tasks: Arc<Mutex<Vec<JoinHandle<()>>>>,
 }
 
 impl MockAdbdServer {
@@ -36,17 +43,28 @@ impl MockAdbdServer {
     pub async fn bind_with_options(addr: &str, options: MockAdbdOptions) -> std::io::Result<Self> {
         let listener = TcpListener::bind(addr).await?;
         let local_addr = listener.local_addr()?;
+        let tasks = Arc::new(Mutex::new(Vec::new()));
 
-        let handle = tokio::spawn(async move {
+        let tasks_clone = tasks.clone();
+        let accept_handle = tokio::spawn(async move {
             while let Ok((stream, _)) = listener.accept().await {
                 let options = options.clone();
-                tokio::spawn(async move {
-                    let _ = handle_connection_with_options(stream, options).await;
+                let handle = tokio::spawn(async move {
+                    if let Err(e) = handle_connection_with_options(stream, options).await {
+                        mock_log(&format!("Connection error: {e}"));
+                    }
                 });
+                if let Ok(mut guard) = tasks_clone.lock() {
+                    guard.push(handle);
+                }
             }
         });
 
-        Ok(Self { local_addr, handle })
+        Ok(Self {
+            local_addr,
+            accept_handle,
+            tasks,
+        })
     }
 
     pub fn local_addr(&self) -> SocketAddr {
@@ -54,7 +72,12 @@ impl MockAdbdServer {
     }
 
     pub fn shutdown(self) {
-        self.handle.abort();
+        self.accept_handle.abort();
+        if let Ok(mut guard) = self.tasks.lock() {
+            for handle in guard.drain(..) {
+                handle.abort();
+            }
+        }
     }
 }
 
@@ -90,7 +113,23 @@ pub async fn write_packet<W: AsyncWrite + Unpin>(
     arg1: u32,
     payload: &[u8],
 ) -> std::io::Result<()> {
-    let header = Header::new(command, arg0, arg1, payload.len() as u32, 0);
+    write_packet_versioned(writer, command, arg0, arg1, payload, A_VERSION).await
+}
+
+pub async fn write_packet_versioned<W: AsyncWrite + Unpin>(
+    writer: &mut W,
+    command: Command,
+    arg0: u32,
+    arg1: u32,
+    payload: &[u8],
+    version: u32,
+) -> std::io::Result<()> {
+    let crc = if version < A_VERSION_SKIP_CHECKSUM {
+        payload.iter().map(|&b| b as u32).sum()
+    } else {
+        0
+    };
+    let header = Header::new(command, arg0, arg1, payload.len() as u32, crc);
     writer.write_all(&header.encode()).await?;
     if !payload.is_empty() {
         writer.write_all(payload).await?;
@@ -99,30 +138,12 @@ pub async fn write_packet<W: AsyncWrite + Unpin>(
     Ok(())
 }
 
-fn parse_echo_command(cmd: &str) -> Option<String> {
-    let raw_text = if cmd == "echo" {
+fn parse_text_command(cmd: &str, prefix: &str) -> Option<String> {
+    let raw_text = if cmd == prefix {
         ""
     } else {
-        cmd.strip_prefix("echo ")?
-    };
-
-    let text = raw_text.trim();
-    let text = if (text.starts_with('"') && text.ends_with('"') && text.len() >= 2)
-        || (text.starts_with('\'') && text.ends_with('\'') && text.len() >= 2)
-    {
-        &text[1..text.len() - 1]
-    } else {
-        text
-    };
-
-    Some(format!("{text}\n"))
-}
-
-fn parse_stderr_command(cmd: &str) -> Option<String> {
-    let raw_text = if cmd == "stderr" {
-        ""
-    } else {
-        cmd.strip_prefix("stderr ")?
+        let p = format!("{prefix} ");
+        cmd.strip_prefix(&p)?
     };
 
     let text = raw_text.trim();
@@ -150,6 +171,32 @@ fn parse_exit_command(cmd: &str) -> Option<u8> {
         .or_else(|| arg.parse::<u32>().ok().map(|n| (n % 256) as u8))
 }
 
+fn format_winsz_payload(data: &[u8]) -> Vec<u8> {
+    let text = String::from_utf8_lossy(data)
+        .trim_end_matches('\0')
+        .to_string();
+    ShellPacket::new(
+        ShellPacketId::Stdout,
+        format!("WINSZ {text}\n").into_bytes(),
+    )
+    .encode_to_vec()
+}
+
+enum StreamKind {
+    ShellV1,
+    ShellV2NonCat { decoder: ShellDecoder, is_pty: bool },
+    ShellV2Cat { decoder: ShellDecoder, is_pty: bool },
+}
+
+struct StreamState {
+    mock_local_id: u32,
+    host_local_id: u32,
+    kind: StreamKind,
+    write_in_flight: bool,
+    pending_writes: VecDeque<Vec<u8>>,
+    close_pending: bool,
+}
+
 pub async fn handle_connection(stream: TcpStream) -> std::io::Result<()> {
     handle_connection_with_options(stream, MockAdbdOptions::default()).await
 }
@@ -169,12 +216,18 @@ pub async fn handle_connection_with_options(
                 }
             }
             Ok(None) => return Ok(()),
-            Err(_) => return Ok(()),
+            Err(e) => {
+                mock_log(&format!("Read error during handshake: {e}"));
+                return Ok(());
+            }
         }
     };
 
+    let host_version = host_cnxn.0.arg0;
     let host_max_payload = host_cnxn.0.arg1 as usize;
-    let max_payload = negotiate_max_payload(host_max_payload, MAX_PAYLOAD);
+
+    let negotiated_version = negotiate_version(host_version, A_VERSION);
+    let negotiated_max_payload = negotiate_max_payload(host_max_payload, MAX_PAYLOAD);
 
     let mut features = Features::new();
     if options.enable_shell_v2 {
@@ -194,27 +247,33 @@ pub async fn handle_connection_with_options(
     };
     let banner_bytes = banner.to_bytes();
 
-    if write_packet(
+    if write_packet_versioned(
         &mut writer,
         Command::Cnxn,
-        A_VERSION,
-        max_payload as u32,
+        negotiated_version,
+        negotiated_max_payload as u32,
         &banner_bytes,
+        negotiated_version,
     )
     .await
     .is_err()
     {
+        mock_log("Failed to send CNXN reply");
         return Ok(());
     }
 
-    let next_stream_id = Arc::new(AtomicU32::new(1));
+    let next_stream_id = AtomicU32::new(1);
+    let mut streams: HashMap<u32, StreamState> = HashMap::new();
 
     // 2. Stream loop
     loop {
         let (header, payload) = match read_packet(&mut reader).await {
             Ok(Some(pkt)) => pkt,
             Ok(None) => break,
-            Err(_) => break,
+            Err(e) => {
+                mock_log(&format!("Connection read error: {e}"));
+                break;
+            }
         };
 
         match header.command {
@@ -236,443 +295,338 @@ pub async fn handle_connection_with_options(
                         let is_pty = args.contains(&"pty");
                         let term_val = args.iter().find_map(|a| a.strip_prefix("TERM="));
 
-                        if write_packet(
+                        if write_packet_versioned(
                             &mut writer,
                             Command::Okay,
                             mock_local_id,
                             host_local_id,
                             &[],
+                            negotiated_version,
                         )
                         .await
                         .is_err()
                         {
+                            mock_log("Failed to write OKAY for OPEN");
                             break;
                         }
 
-                        if handle_shell_v2_command(
-                            &mut reader,
+                        if cmd_str == "cat" {
+                            streams.insert(
+                                mock_local_id,
+                                StreamState {
+                                    mock_local_id,
+                                    host_local_id,
+                                    kind: StreamKind::ShellV2Cat {
+                                        decoder: ShellDecoder::new(),
+                                        is_pty,
+                                    },
+                                    write_in_flight: false,
+                                    pending_writes: VecDeque::new(),
+                                    close_pending: false,
+                                },
+                            );
+                        } else {
+                            let (output_pkt, exit_code) = if let Some(echo_text) =
+                                parse_text_command(cmd_str, "echo")
+                            {
+                                (
+                                    Some(ShellPacket::new(
+                                        ShellPacketId::Stdout,
+                                        echo_text.into_bytes(),
+                                    )),
+                                    0,
+                                )
+                            } else if let Some(stderr_text) = parse_text_command(cmd_str, "stderr")
+                            {
+                                (
+                                    Some(ShellPacket::new(
+                                        ShellPacketId::Stderr,
+                                        stderr_text.into_bytes(),
+                                    )),
+                                    0,
+                                )
+                            } else if let Some(code) = parse_exit_command(cmd_str) {
+                                (None, code)
+                            } else if cmd_str == "env-term" {
+                                let term_text = format!("{}\n", term_val.unwrap_or("unset"));
+                                (
+                                    Some(ShellPacket::new(
+                                        ShellPacketId::Stdout,
+                                        term_text.into_bytes(),
+                                    )),
+                                    0,
+                                )
+                            } else {
+                                (
+                                    Some(ShellPacket::new(
+                                        ShellPacketId::Stderr,
+                                        b"mock-adbd: unsupported command\n".to_vec(),
+                                    )),
+                                    127,
+                                )
+                            };
+
+                            let mut pending_writes = VecDeque::new();
+                            if let Some(pkt) = output_pkt {
+                                pending_writes.push_back(pkt.encode_to_vec());
+                            }
+                            pending_writes
+                                .push_back(ShellPacket::exit_code(exit_code).encode_to_vec());
+
+                            streams.insert(
+                                mock_local_id,
+                                StreamState {
+                                    mock_local_id,
+                                    host_local_id,
+                                    kind: StreamKind::ShellV2NonCat {
+                                        decoder: ShellDecoder::new(),
+                                        is_pty,
+                                    },
+                                    write_in_flight: false,
+                                    pending_writes,
+                                    close_pending: true,
+                                },
+                            );
+                        }
+                    } else {
+                        // Refuse non-v2 shell, prefix with CLSE
+                        let _ = write_packet_versioned(
                             &mut writer,
-                            mock_local_id,
+                            Command::Clse,
+                            0,
                             host_local_id,
-                            cmd_str,
-                            is_pty,
-                            term_val,
+                            &[],
+                            negotiated_version,
                         )
-                        .await
-                        .is_err()
-                        {
-                            break;
-                        }
-                        continue;
+                        .await;
                     }
-                }
-
-                if let Some(cmd) = service.strip_prefix("shell:") {
+                } else if let Some(cmd) = service.strip_prefix("shell:") {
                     let mock_local_id = next_stream_id.fetch_add(1, Ordering::SeqCst);
 
-                    // Accept stream
-                    if write_packet(
+                    if write_packet_versioned(
                         &mut writer,
                         Command::Okay,
                         mock_local_id,
                         host_local_id,
                         &[],
+                        negotiated_version,
                     )
                     .await
                     .is_err()
                     {
+                        mock_log("Failed to write OKAY for shell: OPEN");
                         break;
                     }
 
-                    // Process shell command
-                    let output = parse_echo_command(cmd);
-
+                    let output = parse_text_command(cmd, "echo");
                     let response_payload = match output {
                         Some(text) => text.into_bytes(),
                         None => b"mock-adbd: unsupported command\n".to_vec(),
                     };
 
-                    // Send WRTE
-                    if write_packet(
+                    let mut pending_writes = VecDeque::new();
+                    pending_writes.push_back(response_payload);
+
+                    streams.insert(
+                        mock_local_id,
+                        StreamState {
+                            mock_local_id,
+                            host_local_id,
+                            kind: StreamKind::ShellV1,
+                            write_in_flight: false,
+                            pending_writes,
+                            close_pending: true,
+                        },
+                    );
+                } else {
+                    // Refuse unknown service with CLSE(0, host_local_id)
+                    let _ = write_packet_versioned(
                         &mut writer,
-                        Command::Wrte,
+                        Command::Clse,
+                        0,
+                        host_local_id,
+                        &[],
+                        negotiated_version,
+                    )
+                    .await;
+                }
+            }
+            Command::Wrte => {
+                let mock_local_id = header.arg1;
+                let host_local_id = header.arg0;
+
+                if let Some(stream_state) = streams.get_mut(&mock_local_id) {
+                    if write_packet_versioned(
+                        &mut writer,
+                        Command::Okay,
                         mock_local_id,
                         host_local_id,
-                        &response_payload,
+                        &[],
+                        negotiated_version,
                     )
                     .await
                     .is_err()
                     {
+                        mock_log("Failed to write OKAY response to host WRTE");
                         break;
                     }
 
-                    // Wait for OKAY from host (1-WRTE-in-flight rule)
-                    let mut got_okay = false;
-                    while !got_okay {
-                        match read_packet(&mut reader).await {
-                            Ok(Some((ack_header, _))) => {
-                                if ack_header.command == Command::Okay
-                                    && ack_header.arg0 == host_local_id
-                                    && ack_header.arg1 == mock_local_id
-                                {
-                                    got_okay = true;
+                    match &mut stream_state.kind {
+                        StreamKind::ShellV1 => {}
+                        StreamKind::ShellV2NonCat { decoder, is_pty } => {
+                            decoder.feed(&payload);
+                            while let Ok(Some(pkt)) = decoder.pop_packet() {
+                                if pkt.id == ShellPacketId::WindowSizeChange && *is_pty {
+                                    let winsz_bytes = format_winsz_payload(&pkt.data);
+                                    if stream_state.pending_writes.len() > 1 {
+                                        stream_state.pending_writes.insert(
+                                            stream_state.pending_writes.len() - 1,
+                                            winsz_bytes,
+                                        );
+                                    } else {
+                                        stream_state.pending_writes.push_back(winsz_bytes);
+                                    }
                                 }
                             }
-                            Ok(None) => return Ok(()),
-                            Err(_) => return Ok(()),
+                        }
+                        StreamKind::ShellV2Cat { decoder, is_pty } => {
+                            decoder.feed(&payload);
+                            while let Ok(Some(pkt)) = decoder.pop_packet() {
+                                match pkt.id {
+                                    ShellPacketId::Stdin => {
+                                        let stdout_bytes =
+                                            ShellPacket::new(ShellPacketId::Stdout, pkt.data)
+                                                .encode_to_vec();
+                                        stream_state.pending_writes.push_back(stdout_bytes);
+                                    }
+                                    ShellPacketId::CloseStdin => {
+                                        let exit_bytes = ShellPacket::exit_code(0).encode_to_vec();
+                                        stream_state.pending_writes.push_back(exit_bytes);
+                                        stream_state.close_pending = true;
+                                    }
+                                    ShellPacketId::WindowSizeChange if *is_pty => {
+                                        let winsz_bytes = format_winsz_payload(&pkt.data);
+                                        stream_state.pending_writes.push_back(winsz_bytes);
+                                    }
+                                    _ => {}
+                                }
+                            }
                         }
                     }
-
-                    // Send CLSE
-                    if write_packet(
+                } else {
+                    mock_log(&format!(
+                        "WRTE received for unknown stream id {mock_local_id}"
+                    ));
+                    let _ = write_packet_versioned(
+                        &mut writer,
+                        Command::Clse,
+                        0,
+                        host_local_id,
+                        &[],
+                        negotiated_version,
+                    )
+                    .await;
+                }
+            }
+            Command::Okay => {
+                let mock_local_id = header.arg1;
+                if let Some(stream_state) = streams.get_mut(&mock_local_id) {
+                    stream_state.write_in_flight = false;
+                } else {
+                    mock_log(&format!(
+                        "OKAY received for unknown stream id {mock_local_id}"
+                    ));
+                }
+            }
+            Command::Clse => {
+                let mock_local_id = header.arg1;
+                streams.remove(&mock_local_id);
+            }
+            _ => {
+                mock_log(&format!("Unexpected packet command: {:?}", header.command));
+                let mock_local_id = header.arg1;
+                let host_local_id = header.arg0;
+                if streams.contains_key(&mock_local_id) {
+                    streams.remove(&mock_local_id);
+                    let _ = write_packet_versioned(
                         &mut writer,
                         Command::Clse,
                         mock_local_id,
                         host_local_id,
                         &[],
+                        negotiated_version,
                     )
-                    .await
-                    .is_err()
-                    {
-                        break;
-                    }
+                    .await;
                 } else {
-                    // Refuse unknown service with CLSE(0, host_local_id)
-                    if write_packet(&mut writer, Command::Clse, 0, host_local_id, &[])
-                        .await
-                        .is_err()
-                    {
-                        break;
-                    }
-                }
-            }
-            Command::Clse => {
-                // Host requested close
-            }
-            _ => {
-                // Ignore other packets
-            }
-        }
-    }
-
-    Ok(())
-}
-
-struct StreamCtx<'a, R, W> {
-    reader: &'a mut R,
-    writer: &'a mut W,
-    mock_local_id: u32,
-    host_local_id: u32,
-    is_pty: bool,
-}
-
-impl<'a, R, W> StreamCtx<'a, R, W>
-where
-    R: AsyncRead + Unpin,
-    W: AsyncWrite + Unpin,
-{
-    async fn send_shell_packet_and_wait_okay(
-        &mut self,
-        packet: &ShellPacket,
-        decoder: &mut ShellDecoder,
-        pending_winsz: &mut VecDeque<ShellPacket>,
-    ) -> std::io::Result<bool> {
-        let encoded = match packet.encode_to_vec_checked() {
-            Ok(bytes) => bytes,
-            Err(_) => return Ok(false),
-        };
-
-        if write_packet(
-            self.writer,
-            Command::Wrte,
-            self.mock_local_id,
-            self.host_local_id,
-            &encoded,
-        )
-        .await
-        .is_err()
-        {
-            return Ok(false);
-        }
-
-        loop {
-            let (header, payload) = match read_packet(self.reader).await {
-                Ok(Some(pkt)) => pkt,
-                _ => return Ok(false),
-            };
-
-            match header.command {
-                Command::Okay => {
-                    if header.arg0 == self.host_local_id && header.arg1 == self.mock_local_id {
-                        return Ok(true);
-                    }
-                }
-                Command::Wrte => {
-                    if header.arg0 == self.host_local_id && header.arg1 == self.mock_local_id {
-                        if write_packet(
-                            self.writer,
-                            Command::Okay,
-                            self.mock_local_id,
-                            self.host_local_id,
-                            &[],
-                        )
-                        .await
-                        .is_err()
-                        {
-                            return Ok(false);
-                        }
-
-                        decoder.feed(&payload);
-                        loop {
-                            match decoder.pop_packet() {
-                                Ok(Some(pkt))
-                                    if pkt.id == ShellPacketId::WindowSizeChange && self.is_pty =>
-                                {
-                                    let text = String::from_utf8_lossy(&pkt.data)
-                                        .trim_end_matches('\0')
-                                        .to_string();
-                                    let winsz_pkt = ShellPacket::new(
-                                        ShellPacketId::Stdout,
-                                        format!("WINSZ {text}\n").into_bytes(),
-                                    );
-                                    pending_winsz.push_back(winsz_pkt);
-                                }
-                                Ok(Some(_)) => {}
-                                Ok(None) => break,
-                                Err(_) => return Ok(false),
-                            }
-                        }
-                    }
-                }
-                Command::Clse => {
-                    return Ok(false);
-                }
-                _ => {}
-            }
-        }
-    }
-}
-
-async fn handle_shell_v2_cat<R, W>(
-    ctx: &mut StreamCtx<'_, R, W>,
-    decoder: &mut ShellDecoder,
-) -> std::io::Result<()>
-where
-    R: AsyncRead + Unpin,
-    W: AsyncWrite + Unpin,
-{
-    let mut pending_winsz = VecDeque::new();
-    let mut stdin_closed = false;
-
-    while !stdin_closed {
-        while let Some(winsz_pkt) = pending_winsz.pop_front() {
-            if !ctx
-                .send_shell_packet_and_wait_okay(&winsz_pkt, decoder, &mut pending_winsz)
-                .await?
-            {
-                return Ok(());
-            }
-        }
-
-        let (header, payload) = match read_packet(ctx.reader).await {
-            Ok(Some(pkt)) => pkt,
-            _ => return Ok(()),
-        };
-
-        match header.command {
-            Command::Wrte => {
-                if header.arg0 == ctx.host_local_id && header.arg1 == ctx.mock_local_id {
-                    if write_packet(
-                        ctx.writer,
-                        Command::Okay,
-                        ctx.mock_local_id,
-                        ctx.host_local_id,
+                    let _ = write_packet_versioned(
+                        &mut writer,
+                        Command::Clse,
+                        0,
+                        host_local_id,
                         &[],
+                        negotiated_version,
+                    )
+                    .await;
+                }
+            }
+        }
+
+        // Writer Pump: Flush pending writes for streams
+        let mut streams_to_remove = Vec::new();
+        for (mock_local_id, stream_state) in streams.iter_mut() {
+            if !stream_state.write_in_flight {
+                if let Some(front) = stream_state.pending_writes.pop_front() {
+                    let (to_send, remainder) = if front.len() > negotiated_max_payload {
+                        let (head, tail) = front.split_at(negotiated_max_payload);
+                        (head.to_vec(), Some(tail.to_vec()))
+                    } else {
+                        (front, None)
+                    };
+
+                    if let Some(tail) = remainder {
+                        stream_state.pending_writes.push_front(tail);
+                    }
+
+                    if write_packet_versioned(
+                        &mut writer,
+                        Command::Wrte,
+                        stream_state.mock_local_id,
+                        stream_state.host_local_id,
+                        &to_send,
+                        negotiated_version,
                     )
                     .await
                     .is_err()
                     {
+                        mock_log("Failed to send WRTE packet");
                         return Ok(());
                     }
 
-                    decoder.feed(&payload);
-                    loop {
-                        let pkt = match decoder.pop_packet() {
-                            Ok(Some(p)) => p,
-                            Ok(None) => break,
-                            Err(_) => return Ok(()),
-                        };
-
-                        match pkt.id {
-                            ShellPacketId::Stdin => {
-                                let stdout_pkt = ShellPacket::new(ShellPacketId::Stdout, pkt.data);
-                                if !ctx
-                                    .send_shell_packet_and_wait_okay(
-                                        &stdout_pkt,
-                                        decoder,
-                                        &mut pending_winsz,
-                                    )
-                                    .await?
-                                {
-                                    return Ok(());
-                                }
-                            }
-                            ShellPacketId::CloseStdin => {
-                                stdin_closed = true;
-                                break;
-                            }
-                            ShellPacketId::WindowSizeChange if ctx.is_pty => {
-                                let text = String::from_utf8_lossy(&pkt.data)
-                                    .trim_end_matches('\0')
-                                    .to_string();
-                                let winsz_pkt = ShellPacket::new(
-                                    ShellPacketId::Stdout,
-                                    format!("WINSZ {text}\n").into_bytes(),
-                                );
-                                if !ctx
-                                    .send_shell_packet_and_wait_okay(
-                                        &winsz_pkt,
-                                        decoder,
-                                        &mut pending_winsz,
-                                    )
-                                    .await?
-                                {
-                                    return Ok(());
-                                }
-                            }
-                            _ => {}
-                        }
+                    stream_state.write_in_flight = true;
+                } else if stream_state.close_pending {
+                    if write_packet_versioned(
+                        &mut writer,
+                        Command::Clse,
+                        stream_state.mock_local_id,
+                        stream_state.host_local_id,
+                        &[],
+                        negotiated_version,
+                    )
+                    .await
+                    .is_err()
+                    {
+                        mock_log("Failed to send CLSE packet");
+                        return Ok(());
                     }
+                    streams_to_remove.push(*mock_local_id);
                 }
             }
-            Command::Clse => {
-                return Ok(());
-            }
-            _ => {}
+        }
+
+        for id in streams_to_remove {
+            streams.remove(&id);
         }
     }
-
-    while let Some(winsz_pkt) = pending_winsz.pop_front() {
-        if !ctx
-            .send_shell_packet_and_wait_okay(&winsz_pkt, decoder, &mut pending_winsz)
-            .await?
-        {
-            return Ok(());
-        }
-    }
-
-    let exit_pkt = ShellPacket::exit_code(0);
-    let _ = ctx
-        .send_shell_packet_and_wait_okay(&exit_pkt, decoder, &mut pending_winsz)
-        .await?;
-
-    let _ = write_packet(
-        ctx.writer,
-        Command::Clse,
-        ctx.mock_local_id,
-        ctx.host_local_id,
-        &[],
-    )
-    .await;
-
-    Ok(())
-}
-
-async fn handle_shell_v2_command<R, W>(
-    reader: &mut R,
-    writer: &mut W,
-    mock_local_id: u32,
-    host_local_id: u32,
-    cmd: &str,
-    is_pty: bool,
-    term_val: Option<&str>,
-) -> std::io::Result<()>
-where
-    R: AsyncRead + Unpin,
-    W: AsyncWrite + Unpin,
-{
-    let mut decoder = ShellDecoder::new();
-    let mut pending_winsz = VecDeque::new();
-    let mut ctx = StreamCtx {
-        reader,
-        writer,
-        mock_local_id,
-        host_local_id,
-        is_pty,
-    };
-
-    if cmd == "cat" {
-        return handle_shell_v2_cat(&mut ctx, &mut decoder).await;
-    }
-
-    let (output_pkt, exit_code) = if let Some(echo_text) = parse_echo_command(cmd) {
-        (
-            Some(ShellPacket::new(
-                ShellPacketId::Stdout,
-                echo_text.into_bytes(),
-            )),
-            0,
-        )
-    } else if let Some(stderr_text) = parse_stderr_command(cmd) {
-        (
-            Some(ShellPacket::new(
-                ShellPacketId::Stderr,
-                stderr_text.into_bytes(),
-            )),
-            0,
-        )
-    } else if let Some(code) = parse_exit_command(cmd) {
-        (None, code)
-    } else if cmd == "env-term" {
-        let term_text = format!("{}\n", term_val.unwrap_or("unset"));
-        (
-            Some(ShellPacket::new(
-                ShellPacketId::Stdout,
-                term_text.into_bytes(),
-            )),
-            0,
-        )
-    } else {
-        (
-            Some(ShellPacket::new(
-                ShellPacketId::Stderr,
-                b"mock-adbd: unsupported command\n".to_vec(),
-            )),
-            127,
-        )
-    };
-
-    if let Some(pkt) = output_pkt {
-        if !ctx
-            .send_shell_packet_and_wait_okay(&pkt, &mut decoder, &mut pending_winsz)
-            .await?
-        {
-            return Ok(());
-        }
-    }
-
-    while let Some(winsz_pkt) = pending_winsz.pop_front() {
-        if !ctx
-            .send_shell_packet_and_wait_okay(&winsz_pkt, &mut decoder, &mut pending_winsz)
-            .await?
-        {
-            return Ok(());
-        }
-    }
-
-    let exit_pkt = ShellPacket::exit_code(exit_code);
-    let _ = ctx
-        .send_shell_packet_and_wait_okay(&exit_pkt, &mut decoder, &mut pending_winsz)
-        .await?;
-
-    let _ = write_packet(
-        ctx.writer,
-        Command::Clse,
-        ctx.mock_local_id,
-        ctx.host_local_id,
-        &[],
-    )
-    .await;
 
     Ok(())
 }
