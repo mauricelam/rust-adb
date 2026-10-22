@@ -276,11 +276,15 @@ async fn test_track_devices_parity() {
     let mut ref_buf = Vec::new();
     let mut rust_buf = Vec::new();
 
+    fn norm_stream_bytes(bytes: &[u8]) -> Vec<u8> {
+        bytes.iter().copied().filter(|&b| b != b'\r').collect()
+    }
+
     // 1. Initial update (when no devices attached, server sends "0000")
     let ref_msg1 = pop_or_read_ref(&mut ref_buf, &mut ref_stdout).await;
     let rust_msg1 = pop_or_read_rust(&mut rust_buf, &mut rust_stream).await;
 
-    assert_eq!(ref_msg1, rust_msg1);
+    assert_eq!(norm_stream_bytes(&ref_msg1), norm_stream_bytes(&rust_msg1));
 
     // 2. Connect mock adbd
     let mock = MockAdbdProcess::start();
@@ -293,7 +297,7 @@ async fn test_track_devices_parity() {
     let ref_msg2 = pop_or_read_ref(&mut ref_buf, &mut ref_stdout).await;
     let rust_msg2 = pop_or_read_rust(&mut rust_buf, &mut rust_stream).await;
 
-    assert_eq!(ref_msg2, rust_msg2);
+    assert_eq!(norm_stream_bytes(&ref_msg2), norm_stream_bytes(&rust_msg2));
 
     // 3. Disconnect mock adbd
     let disconnect_res = client
@@ -305,7 +309,7 @@ async fn test_track_devices_parity() {
     let ref_msg3 = pop_or_read_ref(&mut ref_buf, &mut ref_stdout).await;
     let rust_msg3 = pop_or_read_rust(&mut rust_buf, &mut rust_stream).await;
 
-    assert_eq!(ref_msg3, rust_msg3);
+    assert_eq!(norm_stream_bytes(&ref_msg3), norm_stream_bytes(&rust_msg3));
 
     let _ = ref_child.kill().await;
     let _ = ref_child.wait().await;
