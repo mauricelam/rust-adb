@@ -66,6 +66,33 @@ impl fmt::Display for SessionError {
     }
 }
 
+impl Clone for SessionError {
+    fn clone(&self) -> Self {
+        match self {
+            SessionError::BadServiceLength(len) => SessionError::BadServiceLength(*len),
+            SessionError::CannotConnect { spec, cause } => SessionError::CannotConnect {
+                spec: spec.clone(),
+                cause: cause.clone(),
+            },
+            SessionError::WriteFailure(err) => {
+                SessionError::WriteFailure(std::io::Error::new(err.kind(), err.to_string()))
+            }
+            SessionError::ReadTransportIdFailed => SessionError::ReadTransportIdFailed,
+            SessionError::ReadStatusFailed(err) => {
+                SessionError::ReadStatusFailed(std::io::Error::new(err.kind(), err.to_string()))
+            }
+            SessionError::ReadStatusLengthFailed(err) => SessionError::ReadStatusLengthFailed(
+                std::io::Error::new(err.kind(), err.to_string()),
+            ),
+            SessionError::ReadStatusMessageFailed(err) => SessionError::ReadStatusMessageFailed(
+                std::io::Error::new(err.kind(), err.to_string()),
+            ),
+            SessionError::InvalidStatus(status) => SessionError::InvalidStatus(*status),
+            SessionError::Fail(reason) => SessionError::Fail(reason.clone()),
+        }
+    }
+}
+
 impl std::error::Error for SessionError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {

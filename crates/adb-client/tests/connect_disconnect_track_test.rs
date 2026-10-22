@@ -1,4 +1,4 @@
-use adb_client::{AdbClient, ClientError, DefaultSessionFactory, ServerAddress, TrackDevicesMode};
+use adb_client::{AdbClient, ClientError, ServerAddress, TrackDevicesMode};
 use compat::TestServer;
 use std::env;
 use std::io::{BufRead, BufReader};
@@ -78,20 +78,17 @@ async fn test_usage_errors() {
         port: 5037,
     };
     let client = AdbClient::new(addr);
-    let session_factory = DefaultSessionFactory;
 
     // connect usage errors
-    let err = client
-        .connect_with_args(&[], &session_factory)
-        .await
-        .unwrap_err();
+    let err = client.connect_with_args(&[]).await.result.unwrap_err();
     assert!(
         matches!(&err, ClientError::InvalidUsage(msg) if msg == "usage: adb connect HOST[:PORT]")
     );
 
     let err = client
-        .connect_with_args(&["a", "b"], &session_factory)
+        .connect_with_args(&["a", "b"])
         .await
+        .result
         .unwrap_err();
     assert!(
         matches!(&err, ClientError::InvalidUsage(msg) if msg == "usage: adb connect HOST[:PORT]")
@@ -99,8 +96,9 @@ async fn test_usage_errors() {
 
     // disconnect usage errors
     let err = client
-        .disconnect_with_args(&["a", "b"], &session_factory)
+        .disconnect_with_args(&["a", "b"])
         .await
+        .result
         .unwrap_err();
     assert!(
         matches!(&err, ClientError::InvalidUsage(msg) if msg == "usage: adb disconnect [HOST[:PORT]]")
@@ -108,7 +106,9 @@ async fn test_usage_errors() {
 
     // track-devices usage errors
     let err = client
-        .track_devices_with_args(&["-l", "--proto-text"], &session_factory)
+        .track_devices_with_args(&["-l", "--proto-text"])
+        .await
+        .result
         .err()
         .unwrap();
     assert!(
@@ -116,7 +116,9 @@ async fn test_usage_errors() {
     );
 
     let err = client
-        .track_devices_with_args(&["--unknown"], &session_factory)
+        .track_devices_with_args(&["--unknown"])
+        .await
+        .result
         .err()
         .unwrap();
     assert!(
@@ -135,21 +137,17 @@ async fn test_differential_connect_disconnect_and_closed_port() {
         port: server1.port,
     };
     let client1 = AdbClient::new(addr1);
-    let session_factory = DefaultSessionFactory;
 
     // 2. Reference client against server2
     let server2 = TestServer::start();
 
     // Verify initial devices on both servers
-    let dev1_before = client1
-        .devices(false, &session_factory, &adb_client::SelfExecLauncher)
-        .await
-        .unwrap();
+    let dev1_before = client1.devices(false).await.result.unwrap();
     let dev2_before = run_client_isolated(&server2, &["devices"]);
     assert_eq!(norm(&dev1_before), norm(&dev2_before.stdout));
 
     // Connect mock address
-    let rust_connect_res = client1.connect(&mock.addr, &session_factory).await;
+    let rust_connect_res = client1.connect(&mock.addr).await.result;
     let ref_connect_res = run_client_isolated(&server2, &["connect", &mock.addr]);
 
     assert!(rust_connect_res.is_ok());
@@ -160,16 +158,13 @@ async fn test_differential_connect_disconnect_and_closed_port() {
     );
 
     // Verify devices after connect
-    let dev1_after = client1
-        .devices(false, &session_factory, &adb_client::SelfExecLauncher)
-        .await
-        .unwrap();
+    let dev1_after = client1.devices(false).await.result.unwrap();
     let dev2_after = run_client_isolated(&server2, &["devices"]);
     assert_eq!(norm(&dev1_after), norm(&dev2_after.stdout));
     assert!(dev1_after.contains(&mock.addr));
 
     // Disconnect mock address
-    let rust_disc_res = client1.disconnect(Some(&mock.addr), &session_factory).await;
+    let rust_disc_res = client1.disconnect(Some(&mock.addr)).await.result;
     let ref_disc_res = run_client_isolated(&server2, &["disconnect", &mock.addr]);
 
     assert!(rust_disc_res.is_ok());
@@ -180,16 +175,13 @@ async fn test_differential_connect_disconnect_and_closed_port() {
     );
 
     // Verify devices after disconnect
-    let dev1_final = client1
-        .devices(false, &session_factory, &adb_client::SelfExecLauncher)
-        .await
-        .unwrap();
+    let dev1_final = client1.devices(false).await.result.unwrap();
     let dev2_final = run_client_isolated(&server2, &["devices"]);
     assert_eq!(norm(&dev1_final), norm(&dev2_final.stdout));
     assert!(!dev1_final.contains(&mock.addr));
 
     // Test disconnect all (disconnect with None)
-    let rust_disc_all = client1.disconnect(None, &session_factory).await;
+    let rust_disc_all = client1.disconnect(None).await.result;
     let ref_disc_all = run_client_isolated(&server2, &["disconnect"]);
     assert!(rust_disc_all.is_ok());
     assert!(ref_disc_all.success());
@@ -200,7 +192,7 @@ async fn test_differential_connect_disconnect_and_closed_port() {
 
     // Test connection to closed port
     let closed_port = "127.0.0.1:1";
-    let rust_closed_res = client1.connect(closed_port, &session_factory).await;
+    let rust_closed_res = client1.connect(closed_port).await.result;
     let ref_closed_res = run_client_isolated(&server2, &["connect", closed_port]);
 
     assert!(rust_closed_res.is_ok());
@@ -219,9 +211,12 @@ async fn test_differential_track_devices() {
         port: server.port,
     };
     let client = AdbClient::new(addr);
-    let session_factory = DefaultSessionFactory;
 
-    let stream = client.track_devices(TrackDevicesMode::Normal, &session_factory);
+    let stream = client
+        .track_devices(TrackDevicesMode::Normal)
+        .await
+        .result
+        .unwrap();
     tokio::pin!(stream);
 
     // Initial update on connection (empty list "0000")
@@ -271,11 +266,14 @@ async fn test_track_devices_drop_closes_connection() {
         port: server.port,
     };
     let client = AdbClient::new(addr);
-    let session_factory = DefaultSessionFactory;
 
     // Stream 1 in inner scope so it is dropped after reading initial update
     {
-        let stream1 = client.track_devices(TrackDevicesMode::Normal, &session_factory);
+        let stream1 = client
+            .track_devices(TrackDevicesMode::Normal)
+            .await
+            .result
+            .unwrap();
         tokio::pin!(stream1);
         let _init1 = tokio::time::timeout(std::time::Duration::from_secs(10), stream1.next())
             .await
@@ -285,7 +283,11 @@ async fn test_track_devices_drop_closes_connection() {
     }
 
     // Stream 2 stays active
-    let stream2 = client.track_devices(TrackDevicesMode::Normal, &session_factory);
+    let stream2 = client
+        .track_devices(TrackDevicesMode::Normal)
+        .await
+        .result
+        .unwrap();
     tokio::pin!(stream2);
 
     let _init2 = tokio::time::timeout(std::time::Duration::from_secs(10), stream2.next())

@@ -1,6 +1,6 @@
 use adb_client::{
-    AdbClient, ClientError, DefaultSessionFactory, DeviceSelection, SelectionError, ServerAddress,
-    SessionError, TransportSelector,
+    AdbClient, ClientError, DeviceSelection, SelectionError, ServerAddress, SessionError,
+    TransportSelector,
 };
 use compat::TestServer;
 use std::collections::HashMap;
@@ -335,12 +335,12 @@ async fn test_differential_no_device() {
         port: server.port,
     };
     let client = AdbClient::new(addr);
-    let session_factory = DefaultSessionFactory;
 
     // 1. host-features when no device connected
     let host_feats_out = client
-        .host_features(&session_factory)
+        .host_features()
         .await
+        .result
         .expect("host_features failed");
     let ref_host_feats = run_client_isolated(&server, &["host-features"]);
     assert!(ref_host_feats.success());
@@ -366,8 +366,9 @@ async fn test_differential_no_device() {
     for (name, selector, ref_args) in selectors {
         // get-state
         let err_state = client
-            .get_state(&selector, &session_factory)
+            .get_state(&selector)
             .await
+            .result
             .expect_err(&format!("get-state should fail for {name}"));
         let ref_state = run_client_isolated(&server, &ref_args);
         assert_eq!(ref_state.exit_code, Some(1));
@@ -382,8 +383,9 @@ async fn test_differential_no_device() {
         serial_ref_args.pop();
         serial_ref_args.push("get-serialno");
         let err_serial = client
-            .get_serialno(&selector, &session_factory)
+            .get_serialno(&selector)
             .await
+            .result
             .expect_err(&format!("get-serialno should fail for {name}"));
         let ref_serial = run_client_isolated(&server, &serial_ref_args);
         assert_eq!(ref_serial.exit_code, Some(1));
@@ -398,8 +400,9 @@ async fn test_differential_no_device() {
         tid_ref_args.pop();
         tid_ref_args.push("transport-id");
         let err_tid = client
-            .transport_id(&selector, &session_factory)
+            .transport_id(&selector)
             .await
+            .result
             .expect_err(&format!("transport-id should fail for {name}"));
         let ref_tid = run_client_isolated(&server, &tid_ref_args);
         assert_eq!(ref_tid.exit_code, Some(1));
@@ -414,8 +417,9 @@ async fn test_differential_no_device() {
         feat_ref_args.pop();
         feat_ref_args.push("features");
         let err_feat = client
-            .features(&selector, &session_factory)
+            .features(&selector)
             .await
+            .result
             .expect_err(&format!("features should fail for {name}"));
         let ref_feat = run_client_isolated(&server, &feat_ref_args);
         assert_eq!(ref_feat.exit_code, Some(1));
@@ -440,12 +444,12 @@ async fn test_differential_one_mock_device() {
         port: server.port,
     };
     let client = AdbClient::new(addr);
-    let session_factory = DefaultSessionFactory;
 
     // 1. host-features
     let host_feats = client
-        .host_features(&session_factory)
+        .host_features()
         .await
+        .result
         .expect("host_features failed");
     let ref_host_feats = run_client_isolated(&server, &["host-features"]);
     assert!(ref_host_feats.success());
@@ -455,24 +459,27 @@ async fn test_differential_one_mock_device() {
     let selector = TransportSelector::Serial(mock.addr.clone());
 
     let state = client
-        .get_state(&selector, &session_factory)
+        .get_state(&selector)
         .await
+        .result
         .expect("get-state failed");
     let ref_state = run_client_isolated(&server, &["-s", &mock.addr, "get-state"]);
     assert!(ref_state.success());
     assert_eq!(norm(&state), norm(&ref_state.stdout));
 
     let serialno = client
-        .get_serialno(&selector, &session_factory)
+        .get_serialno(&selector)
         .await
+        .result
         .expect("get-serialno failed");
     let ref_serialno = run_client_isolated(&server, &["-s", &mock.addr, "get-serialno"]);
     assert!(ref_serialno.success());
     assert_eq!(norm(&serialno), norm(&ref_serialno.stdout));
 
     let feats = client
-        .features(&selector, &session_factory)
+        .features(&selector)
         .await
+        .result
         .expect("features failed");
     let ref_feats = run_client_isolated(&server, &["-s", &mock.addr, "features"]);
     assert!(ref_feats.success());
@@ -480,8 +487,9 @@ async fn test_differential_one_mock_device() {
 
     // 3. transport-id comparison
     let tid_str = client
-        .transport_id(&selector, &session_factory)
+        .transport_id(&selector)
         .await
+        .result
         .expect("transport_id failed");
     let ref_tid = run_client_isolated(&server, &["-s", &mock.addr, "transport-id"]);
     assert!(ref_tid.success());
@@ -496,8 +504,9 @@ async fn test_differential_one_mock_device() {
     // 4. Query using TransportSelector::Id(tid_val)
     let id_selector = TransportSelector::Id(tid_val);
     let state_by_id = client
-        .get_state(&id_selector, &session_factory)
+        .get_state(&id_selector)
         .await
+        .result
         .expect("get-state by id failed");
     let ref_state_by_id = run_client_isolated(&server, &["-t", &tid_val.to_string(), "get-state"]);
     assert!(ref_state_by_id.success());
@@ -517,10 +526,7 @@ async fn test_differential_one_mock_device() {
 
     let ref_env_state = run_client_with_env(&server, &["get-state"], &mock.addr);
     assert!(ref_env_state.success());
-    let client_env_state = client
-        .get_state(&selection.selector, &session_factory)
-        .await
-        .unwrap();
+    let client_env_state = client.get_state(&selection.selector).await.result.unwrap();
     assert_eq!(norm(&client_env_state), norm(&ref_env_state.stdout));
 }
 
@@ -540,12 +546,12 @@ async fn test_differential_two_mock_devices() {
         port: server.port,
     };
     let client = AdbClient::new(addr);
-    let session_factory = DefaultSessionFactory;
 
     // 1. Unambiguous host query host-features succeeds
     let host_feats = client
-        .host_features(&session_factory)
+        .host_features()
         .await
+        .result
         .expect("host_features failed");
     let ref_host_feats = run_client_isolated(&server, &["host-features"]);
     assert!(ref_host_feats.success());
@@ -553,8 +559,9 @@ async fn test_differential_two_mock_devices() {
 
     // 2. Ambiguous default selection without option fails with "more than one device/emulator"
     let err_state = client
-        .get_state(&TransportSelector::Any, &session_factory)
+        .get_state(&TransportSelector::Any)
         .await
+        .result
         .expect_err("ambiguous get-state should fail");
     let ref_err_state = run_client_isolated(&server, &["get-state"]);
     assert_eq!(ref_err_state.exit_code, Some(1));
@@ -567,17 +574,17 @@ async fn test_differential_two_mock_devices() {
     let sel1 = TransportSelector::Serial(mock1.addr.clone());
     let sel2 = TransportSelector::Serial(mock2.addr.clone());
 
-    let serial1 = client.get_serialno(&sel1, &session_factory).await.unwrap();
+    let serial1 = client.get_serialno(&sel1).await.result.unwrap();
     let ref_serial1 = run_client_isolated(&server, &["-s", &mock1.addr, "get-serialno"]);
     assert_eq!(norm(&serial1), norm(&ref_serial1.stdout));
 
-    let serial2 = client.get_serialno(&sel2, &session_factory).await.unwrap();
+    let serial2 = client.get_serialno(&sel2).await.result.unwrap();
     let ref_serial2 = run_client_isolated(&server, &["-s", &mock2.addr, "get-serialno"]);
     assert_eq!(norm(&serial2), norm(&ref_serial2.stdout));
 
     // 4. Transport IDs for both devices
-    let tid1_str = client.transport_id(&sel1, &session_factory).await.unwrap();
-    let tid2_str = client.transport_id(&sel2, &session_factory).await.unwrap();
+    let tid1_str = client.transport_id(&sel1).await.result.unwrap();
+    let tid2_str = client.transport_id(&sel2).await.result.unwrap();
 
     let ref_tid1 = run_client_isolated(&server, &["-s", &mock1.addr, "transport-id"]);
     let ref_tid2 = run_client_isolated(&server, &["-s", &mock2.addr, "transport-id"]);
@@ -593,19 +600,13 @@ async fn test_differential_two_mock_devices() {
     let id_sel1 = TransportSelector::Id(tid1);
     let id_sel2 = TransportSelector::Id(tid2);
 
-    let serial_by_id1 = client
-        .get_serialno(&id_sel1, &session_factory)
-        .await
-        .unwrap();
+    let serial_by_id1 = client.get_serialno(&id_sel1).await.result.unwrap();
     let ref_serial_by_id1 =
         run_client_isolated(&server, &["-t", &tid1.to_string(), "get-serialno"]);
     assert_eq!(norm(&serial_by_id1), norm(&ref_serial_by_id1.stdout));
     assert_eq!(serial_by_id1.trim(), mock1.addr);
 
-    let serial_by_id2 = client
-        .get_serialno(&id_sel2, &session_factory)
-        .await
-        .unwrap();
+    let serial_by_id2 = client.get_serialno(&id_sel2).await.result.unwrap();
     let ref_serial_by_id2 =
         run_client_isolated(&server, &["-t", &tid2.to_string(), "get-serialno"]);
     assert_eq!(norm(&serial_by_id2), norm(&ref_serial_by_id2.stdout));

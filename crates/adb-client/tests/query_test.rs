@@ -1,5 +1,5 @@
 use adb_client::{
-    AdbClient, DefaultSessionFactory, ServerAddress, ServerLauncher, TransportSelector,
+    AdbClient, DefaultSessionFactory, LaunchError, ServerAddress, ServerLauncher, TransportSelector,
 };
 use compat::TestServer;
 use std::env;
@@ -66,8 +66,6 @@ impl Drop for MockAdbdProcess {
     }
 }
 
-use adb_client::LaunchError;
-
 struct DummyLauncher;
 
 impl ServerLauncher for DummyLauncher {
@@ -92,17 +90,19 @@ async fn test_query_no_device() {
         port: server.port,
     };
 
-    let client = AdbClient::new(addr);
-    let session_factory = DefaultSessionFactory;
-    let launcher = DummyLauncher;
+    let client = AdbClient::builder(addr)
+        .session_factory(DefaultSessionFactory)
+        .launcher(DummyLauncher)
+        .build();
 
     // Helper to normalize CRLF for cross-platform process output comparison
     let norm = |s: &str| s.replace("\r\n", "\n");
 
     // 1. adb devices (no device)
     let devices_out = client
-        .devices(false, &session_factory, &launcher)
+        .devices(false)
         .await
+        .result
         .expect("devices query failed");
     let ref_devices_out = server.run_client(&["devices"]);
     assert!(ref_devices_out.success());
@@ -111,8 +111,9 @@ async fn test_query_no_device() {
 
     // 2. adb devices -l (no device)
     let devices_l_out = client
-        .devices(true, &session_factory, &launcher)
+        .devices(true)
         .await
+        .result
         .expect("devices -l query failed");
     let ref_devices_l_out = server.run_client(&["devices", "-l"]);
     assert!(ref_devices_l_out.success());
@@ -121,8 +122,9 @@ async fn test_query_no_device() {
 
     // 3. adb devices with invalid arguments
     let err_arg = client
-        .devices_with_args(&["-x"], &session_factory, &launcher)
+        .devices_with_args(&["-x"])
         .await
+        .result
         .expect_err("invalid args should fail");
     assert_eq!(err_arg.to_string(), "adb devices [-l]");
 
@@ -145,8 +147,9 @@ async fn test_query_no_device() {
 
     // 4. adb get-state (no device)
     let err_state = client
-        .get_state(&TransportSelector::Any, &session_factory)
+        .get_state(&TransportSelector::Any)
         .await
+        .result
         .expect_err("get-state without device should fail");
     assert_eq!(err_state.to_string(), "error: no devices/emulators found");
 
@@ -156,8 +159,9 @@ async fn test_query_no_device() {
 
     // 5. adb get-serialno (no device)
     let err_serial = client
-        .get_serialno(&TransportSelector::Any, &session_factory)
+        .get_serialno(&TransportSelector::Any)
         .await
+        .result
         .expect_err("get-serialno without device should fail");
     assert_eq!(err_serial.to_string(), "error: no devices/emulators found");
 
@@ -170,8 +174,9 @@ async fn test_query_no_device() {
 
     // 6. adb get-devpath (no device)
     let err_devpath = client
-        .get_devpath(&TransportSelector::Any, &session_factory)
+        .get_devpath(&TransportSelector::Any)
         .await
+        .result
         .expect_err("get-devpath without device should fail");
     assert_eq!(err_devpath.to_string(), "error: no devices/emulators found");
 
@@ -201,16 +206,18 @@ async fn test_query_mock_device() {
         port: server.port,
     };
 
-    let client = AdbClient::new(addr);
-    let session_factory = DefaultSessionFactory;
-    let launcher = DummyLauncher;
+    let client = AdbClient::builder(addr)
+        .session_factory(DefaultSessionFactory)
+        .launcher(DummyLauncher)
+        .build();
 
     let norm = |s: &str| s.replace("\r\n", "\n");
 
     // 1. adb devices with connected mock adbd
     let devices_out = client
-        .devices(false, &session_factory, &launcher)
+        .devices(false)
         .await
+        .result
         .expect("devices query failed");
     let ref_devices = server.run_client(&["devices"]);
     assert!(ref_devices.success());
@@ -219,8 +226,9 @@ async fn test_query_mock_device() {
 
     // 2. adb devices -l with connected mock adbd
     let devices_l_out = client
-        .devices(true, &session_factory, &launcher)
+        .devices(true)
         .await
+        .result
         .expect("devices -l query failed");
     let ref_devices_l = server.run_client(&["devices", "-l"]);
     assert!(ref_devices_l.success());
@@ -253,11 +261,9 @@ async fn test_query_mock_device() {
 
     // 3. adb get-state with connected mock adbd
     let state_out = client
-        .get_state(
-            &TransportSelector::Serial(mock.addr.clone()),
-            &session_factory,
-        )
+        .get_state(&TransportSelector::Serial(mock.addr.clone()))
         .await
+        .result
         .expect("get-state failed");
     let ref_state = server.run_client(&["-s", &mock.addr, "get-state"]);
     assert!(ref_state.success());
@@ -266,11 +272,9 @@ async fn test_query_mock_device() {
 
     // 4. adb get-serialno with connected mock adbd
     let serial_out = client
-        .get_serialno(
-            &TransportSelector::Serial(mock.addr.clone()),
-            &session_factory,
-        )
+        .get_serialno(&TransportSelector::Serial(mock.addr.clone()))
         .await
+        .result
         .expect("get-serialno failed");
     let ref_serial = server.run_client(&["-s", &mock.addr, "get-serialno"]);
     assert!(ref_serial.success());
@@ -279,11 +283,9 @@ async fn test_query_mock_device() {
 
     // 5. adb get-devpath with connected mock adbd
     let devpath_out = client
-        .get_devpath(
-            &TransportSelector::Serial(mock.addr.clone()),
-            &session_factory,
-        )
+        .get_devpath(&TransportSelector::Serial(mock.addr.clone()))
         .await
+        .result
         .expect("get-devpath failed");
     let ref_devpath = server.run_client(&["-s", &mock.addr, "get-devpath"]);
     assert!(ref_devpath.success());
