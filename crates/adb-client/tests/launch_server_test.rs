@@ -5,6 +5,7 @@ use adb_client::{
 use std::env;
 use std::net::TcpListener;
 use std::path::PathBuf;
+#[cfg(unix)]
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 fn get_reference_adb_path() -> PathBuf {
@@ -35,10 +36,12 @@ fn get_free_port() -> u16 {
     port
 }
 
+#[cfg(unix)]
 struct KillOnDrop {
     addr: ServerAddress,
 }
 
+#[cfg(unix)]
 impl Drop for KillOnDrop {
     fn drop(&mut self) {
         let addr = self.addr.clone();
@@ -57,10 +60,12 @@ impl Drop for KillOnDrop {
     }
 }
 
+#[cfg(unix)]
 struct MockServer {
     port: u16,
 }
 
+#[cfg(unix)]
 impl MockServer {
     async fn start_with_version(version: u32) -> Self {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -111,6 +116,7 @@ impl MockServer {
     }
 }
 
+#[cfg(unix)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn test_1_and_2_start_server_when_none_running_and_second_start_does_nothing() {
     let port = get_free_port();
@@ -194,6 +200,7 @@ async fn test_3_launcher_failure_produces_failed_to_start_daemon() {
     assert_eq!(events[1].to_string(), "* failed to start daemon");
 }
 
+#[cfg(unix)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn test_4_version_mismatch_kills_fake_server_and_starts_real_one() {
     let fake_server = MockServer::start_with_version(40).await;
@@ -234,4 +241,23 @@ async fn test_4_version_mismatch_kills_fake_server_and_starts_real_one() {
     let ver_str = session.read_string().await.unwrap();
     let ver = u32::from_str_radix(&ver_str, 16).unwrap();
     assert_eq!(ver, ADB_SERVER_VERSION);
+}
+
+#[cfg(not(unix))]
+#[tokio::test]
+async fn test_windows_launcher_returns_unsupported() {
+    use adb_client::ServerLauncher;
+
+    let port = get_free_port();
+    let addr = ServerAddress { host: None, port };
+    let ref_adb = get_reference_adb_path();
+    let launcher = ExternalBinaryLauncher::new(&ref_adb);
+    let res = launcher.launch(&addr.to_spec(), None).await;
+    assert!(res.is_err());
+    match res.unwrap_err() {
+        adb_client::LaunchError::Unsupported(msg) => {
+            assert!(msg.contains("Windows server launching is not supported yet"));
+        }
+        err => panic!("Expected LaunchError::Unsupported, got {:?}", err),
+    }
 }
