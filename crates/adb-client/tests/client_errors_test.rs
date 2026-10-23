@@ -1,12 +1,11 @@
-use adb_client::{
-    ClientError, ClientErrorKind, ClientEvent, LaunchError, SessionError,
-};
+use adb_client::{ClientError, ClientErrorKind, ClientEvent, LaunchError, SessionError};
 use std::io;
 
 #[test]
 fn test_client_error_display_bare() {
     // Session errors wrapped in ClientError display bare without "error:" prefix
-    let fail_err = ClientError::Session(SessionError::Fail("no devices/emulators found".to_string()));
+    let fail_err =
+        ClientError::Session(SessionError::Fail("no devices/emulators found".to_string()));
     assert_eq!(fail_err.to_string(), "no devices/emulators found");
 
     let cannot_conn_session = ClientError::Session(SessionError::CannotConnect {
@@ -44,7 +43,9 @@ fn test_client_error_display_bare() {
     assert_eq!(cannot_conn_daemon.to_string(), "cannot connect to daemon");
 
     let cannot_conn_daemon_with_source = ClientError::CannotConnectDaemon {
-        source: Some(LaunchError::Unsupported("Windows server launching is not supported yet".to_string())),
+        source: Some(LaunchError::Unsupported(
+            "Windows server launching is not supported yet".to_string(),
+        )),
     };
     assert_eq!(
         cannot_conn_daemon_with_source.to_string(),
@@ -52,13 +53,19 @@ fn test_client_error_display_bare() {
     );
 
     let parse_ver = ClientError::CannotParseVersionString("invalid".to_string());
-    assert_eq!(parse_ver.to_string(), "cannot parse version string: invalid");
+    assert_eq!(
+        parse_ver.to_string(),
+        "cannot parse version string: invalid"
+    );
 
     let kill_failed = ClientError::KillFailed("cannot kill".to_string());
     assert_eq!(kill_failed.to_string(), "cannot kill");
 
     let check_ver = ClientError::FailedToCheckVersion("timeout".to_string());
-    assert_eq!(check_ver.to_string(), "failed to check server version: timeout");
+    assert_eq!(
+        check_ver.to_string(),
+        "failed to check server version: timeout"
+    );
 
     let query_failed = ClientError::QueryFailed("no devices/emulators found".to_string());
     assert_eq!(query_failed.to_string(), "no devices/emulators found");
@@ -142,10 +149,7 @@ fn test_client_error_source() {
         source: Some(launch_err),
     };
     assert!(err.source().is_some());
-    assert_eq!(
-        err.source().unwrap().to_string(),
-        "unsupported"
-    );
+    assert_eq!(err.source().unwrap().to_string(), "unsupported");
 
     let err_no_source = ClientError::CannotConnectDaemon { source: None };
     assert!(err_no_source.source().is_none());
@@ -185,7 +189,8 @@ fn test_client_event_display() {
         "cannot connect to daemon at tcp:5037: Connection refused"
     );
 
-    let error_line = ClientEvent::ErrorLine("error: write failure during connection: Broken pipe".to_string());
+    let error_line =
+        ClientEvent::ErrorLine("error: write failure during connection: Broken pipe".to_string());
     assert_eq!(
         error_line.to_string(),
         "error: write failure during connection: Broken pipe"

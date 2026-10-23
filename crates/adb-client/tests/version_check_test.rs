@@ -279,7 +279,10 @@ async fn test_kill_server_fail() {
     assert!(res.is_err());
     let err = res.unwrap_err();
     assert_eq!(err.to_string(), "cannot kill");
-    assert_eq!(events, vec![ClientEvent::ErrorLine("error: cannot kill".into())]);
+    assert_eq!(
+        events,
+        vec![ClientEvent::ErrorLine("error: cannot kill".into())]
+    );
     assert_eq!(events[0].to_string(), "error: cannot kill");
 }
 
