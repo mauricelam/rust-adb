@@ -19,8 +19,7 @@ use base64::Engine;
 use num_bigint_dig::BigUint;
 use num_traits::One;
 use pkcs8::DecodePrivateKey;
-use rsa::pkcs1::EncodeRsaPrivateKey;
-use rsa::pkcs8::EncodePublicKey;
+use rsa::pkcs8::{EncodePrivateKey, EncodePublicKey};
 use rsa::traits::PublicKeyParts;
 use rsa::RsaPrivateKey;
 use sha2::{Digest, Sha256};
@@ -134,28 +133,30 @@ impl KeyStore {
         let user_key_path = match user_dir {
             Some(dir) => {
                 if dir.is_dir() {
-                    dir.join("adbkey")
+                    Some(dir.join("adbkey"))
                 } else if dir.file_name().is_some_and(|name| name == "adbkey")
                     || (dir.extension().is_none() && dir.exists() && dir.is_file())
                 {
-                    dir.to_path_buf()
+                    Some(dir.to_path_buf())
                 } else if !dir.exists() && dir.parent().is_some_and(|p| p.exists()) {
                     if dir.extension().is_some() {
-                        dir.to_path_buf()
+                        Some(dir.to_path_buf())
                     } else {
-                        dir.join("adbkey")
+                        Some(dir.join("adbkey"))
                     }
                 } else {
-                    dir.to_path_buf()
+                    Some(dir.to_path_buf())
                 }
             }
-            None => get_user_key_path(),
+            None => get_user_key_path().ok(),
         };
 
-        if let Ok(key) = load_or_generate(&user_key_path) {
-            let fp = fingerprint(&key);
-            store.keys.insert(fp, key.clone());
-            store.user_key = Some(key);
+        if let Some(user_key_path) = user_key_path {
+            if let Ok(key) = load_or_generate(&user_key_path) {
+                let fp = fingerprint(&key);
+                store.keys.insert(fp, key.clone());
+                store.user_key = Some(key);
+            }
         }
 
         // 2. Resolve vendor keys environment string
@@ -401,53 +402,6 @@ pub fn read_key_file<P: AsRef<Path>>(path: P) -> Result<RsaPrivateKey, String> {
     ))
 }
 
-/// Generate an RSA 2048 private key and save `file` (private) and `file.pub` (public).
-/// Owner-only permissions (0600 on Unix) are enforced on the private key.
-///
-/// Ported from `generate_key` in `original/client/auth.cpp`.
-pub fn generate_key<P: AsRef<Path>>(file: P) -> Result<(), String> {
-    let file = file.as_ref();
-
-    let mut rng = rand::thread_rng();
-    let key = RsaPrivateKey::new(&mut rng, 2048)
-        .map_err(|e| format!("Failed to generate RSA key: {}", e))?;
-
-    let pubkey_str = calculate_public_key(&key)?;
-
-    // Encode private key in PKCS#1 PEM format matching standard OpenSSL/adb keygen
-    let pem = key
-        .to_pkcs1_pem(rsa::pkcs1::LineEnding::LF)
-        .map_err(|e| format!("Failed to encode private key PEM: {}", e))?;
-
-    // Create private key file with owner-only permissions (0600 on Unix)
-    let mut options = OpenOptions::new();
-    options.write(true).create(true).truncate(true);
-
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt;
-        options.mode(0o600);
-    }
-
-    let mut f = options
-        .open(file)
-        .map_err(|e| format!("Failed to open '{}' for writing: {}", file.display(), e))?;
-
-    f.write_all(pem.as_bytes())
-        .map_err(|e| format!("Failed to write key to '{}': {}", file.display(), e))?;
-
-    // Write public key file
-    let pub_path = PathBuf::from(format!("{}.pub", file.display()));
-    fs::write(&pub_path, pubkey_str).map_err(|e| {
-        format!(
-            "Failed to write public key to '{}': {}",
-            pub_path.display(),
-            e
-        )
-    })?;
-
-    Ok(())
-}
 
 /// Load a single key file into memory if not already present.
 ///
@@ -545,37 +499,235 @@ pub fn load_vendor_keys() -> Vec<RsaPrivateKey> {
     keys.values().cloned().collect()
 }
 
+/// Get standard Android home directory path (e.g. `$HOME` on Unix or `%USERPROFILE%` on Windows).
+fn get_homedir_path() -> Result<PathBuf, String> {
+    if let Ok(home) = env::var("HOME") {
+        if !home.trim().is_empty() {
+            return Ok(PathBuf::from(home));
+        }
+    }
+    if let Ok(profile) = env::var("USERPROFILE") {
+        if !profile.trim().is_empty() {
+            return Ok(PathBuf::from(profile));
+        }
+    }
+    Err("Could not determine user home directory (HOME or USERPROFILE not set)".to_string())
+}
+
 /// Get standard Android user directory path (`~/.android`).
+/// Pure getter: does not create directory or fall back to current directory.
 ///
 /// Ported from `adb_get_android_dir_path` in `original/adb_utils.cpp`.
-pub fn adb_get_android_dir_path() -> PathBuf {
-    let home = env::var("HOME")
-        .or_else(|_| env::var("USERPROFILE"))
-        .unwrap_or_else(|_| ".".to_string());
+pub fn adb_get_android_dir_path() -> Result<PathBuf, String> {
+    let home = get_homedir_path()?;
+    Ok(home.join(".android"))
+}
 
-    let android_dir = PathBuf::from(home).join(".android");
-    if !android_dir.exists() {
-        let _ = fs::create_dir_all(&android_dir);
+/// Ensures `.android` directory exists with 0750 permissions on Unix.
+pub fn ensure_android_dir() -> Result<PathBuf, String> {
+    let dir = adb_get_android_dir_path()?;
+    ensure_dir_0750(&dir)?;
+    Ok(dir)
+}
+
+/// Helper to create directory hierarchy with mode 0750 on Unix (matching `adb_mkdir(dir, 0750)`).
+fn ensure_dir_0750(dir: &Path) -> Result<(), String> {
+    if dir.as_os_str().is_empty() || dir.exists() {
+        return Ok(());
     }
-    android_dir
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::DirBuilderExt;
+        let mut builder = fs::DirBuilder::new();
+        builder.recursive(true);
+        builder.mode(0o750);
+        builder
+            .create(dir)
+            .map_err(|e| format!("Failed to create directory '{}': {}", dir.display(), e))?;
+    }
+    #[cfg(not(unix))]
+    {
+        fs::create_dir_all(dir)
+            .map_err(|e| format!("Failed to create directory '{}': {}", dir.display(), e))?;
+    }
+    Ok(())
 }
 
 /// Get standard user key path (`~/.android/adbkey`).
 ///
 /// Ported from `get_user_key_path` in `original/client/auth.cpp`.
-pub fn get_user_key_path() -> PathBuf {
-    adb_get_android_dir_path().join("adbkey")
+pub fn get_user_key_path() -> Result<PathBuf, String> {
+    adb_get_android_dir_path().map(|p| p.join("adbkey"))
+}
+
+/// Generate an RSA 2048 private key and save `file` (private) and `file.pub` (public).
+/// Owner-only permissions (0600 on Unix) are enforced on the private key.
+/// Private key is formatted in PKCS#8 PEM format (`BEGIN PRIVATE KEY`).
+///
+/// If `overwrite` is `false`, fails with an error if `file` already exists.
+/// Uses a temporary file and atomic rename to prevent leaving partial key files on crash/failure.
+pub fn generate_key_opts<P: AsRef<Path>>(file: P, overwrite: bool) -> Result<(), String> {
+    let file = file.as_ref();
+
+    if let Some(parent) = file.parent().filter(|p| !p.as_os_str().is_empty()) {
+        ensure_dir_0750(parent)?;
+    }
+
+    let mut rng = rand::thread_rng();
+    let key = RsaPrivateKey::new(&mut rng, 2048)
+        .map_err(|e| format!("Failed to generate RSA key: {}", e))?;
+
+    let pubkey_str = calculate_public_key(&key)?;
+
+    // Encode private key in PKCS#8 PEM format matching OpenSSL PEM_write_PrivateKey / C++ ADB
+    let pem = key
+        .to_pkcs8_pem(rsa::pkcs8::LineEnding::LF)
+        .map_err(|e| format!("Failed to encode private key PEM: {}", e))?;
+
+    if overwrite {
+        let rand_num: u32 = rand::random();
+        let file_name = file
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("adbkey");
+        let tmp_file = file.with_file_name(format!(".{}.tmp.{}.{}", file_name, std::process::id(), rand_num));
+
+        let mut options = OpenOptions::new();
+        options.write(true).create(true).truncate(true);
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o600);
+        }
+
+        let mut f = options.open(&tmp_file).map_err(|e| {
+            format!(
+                "Failed to open temp file '{}' for writing: {}",
+                tmp_file.display(),
+                e
+            )
+        })?;
+
+        if let Err(e) = f.write_all(pem.as_bytes()) {
+            let _ = fs::remove_file(&tmp_file);
+            return Err(format!(
+                "Failed to write key to '{}': {}",
+                tmp_file.display(),
+                e
+            ));
+        }
+        if let Err(e) = f.sync_all() {
+            let _ = fs::remove_file(&tmp_file);
+            return Err(format!("Failed to sync key file '{}': {}", tmp_file.display(), e));
+        }
+        drop(f);
+
+        if let Err(e) = fs::rename(&tmp_file, file) {
+            let _ = fs::remove_file(&tmp_file);
+            return Err(format!(
+                "Failed to rename temp key file to '{}': {}",
+                file.display(),
+                e
+            ));
+        }
+
+        let pub_path = PathBuf::from(format!("{}.pub", file.display()));
+        let tmp_pub_path = file.with_file_name(format!(".{}.pub.tmp.{}.{}", file_name, std::process::id(), rand_num));
+        if let Err(e) = fs::write(&tmp_pub_path, &pubkey_str) {
+            let _ = fs::remove_file(&tmp_pub_path);
+            return Err(format!(
+                "Failed to write public key to '{}': {}",
+                tmp_pub_path.display(),
+                e
+            ));
+        }
+        let _ = fs::rename(&tmp_pub_path, &pub_path);
+    } else {
+        // Exclusively create new private key file (fails if file already exists)
+        let mut options = OpenOptions::new();
+        options.write(true).create_new(true);
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o600);
+        }
+
+        let mut f = options.open(file).map_err(|e| {
+            format!(
+                "Failed to create key file '{}' (already exists or error): {}",
+                file.display(),
+                e
+            )
+        })?;
+
+        if let Err(e) = f.write_all(pem.as_bytes()) {
+            let _ = fs::remove_file(file);
+            return Err(format!(
+                "Failed to write key to '{}': {}",
+                file.display(),
+                e
+            ));
+        }
+        if let Err(e) = f.sync_all() {
+            let _ = fs::remove_file(file);
+            return Err(format!("Failed to sync key file '{}': {}", file.display(), e));
+        }
+        drop(f);
+
+        let pub_path = PathBuf::from(format!("{}.pub", file.display()));
+        if let Err(e) = fs::write(&pub_path, &pubkey_str) {
+            let _ = fs::remove_file(file);
+            let _ = fs::remove_file(&pub_path);
+            return Err(format!(
+                "Failed to write public key to '{}': {}",
+                pub_path.display(),
+                e
+            ));
+        }
+    }
+
+    Ok(())
+}
+
+/// Generate an RSA 2048 private key and save `file` (private) and `file.pub` (public).
+/// Owner-only permissions (0600 on Unix) are enforced on the private key.
+/// Never overwrites an existing key file (`overwrite = false`).
+///
+/// Ported from `generate_key` in `original/client/auth.cpp`.
+pub fn generate_key<P: AsRef<Path>>(file: P) -> Result<(), String> {
+    generate_key_opts(file, false)
 }
 
 /// Load or generate the default user key at standard location or custom path.
+/// Concurrent-safe: if key generation races with another thread or process, reads the created key.
+///
+/// Note on pre-existing file permissions: Matching C++ ADB (`read_key_file` in `original/client/auth.cpp`),
+/// loading an existing key file with permissions looser than `0600` (such as `0644`) reads the key
+/// without modifying the file's permissions on disk.
 ///
 /// Ported from `load_userkey` in `original/client/auth.cpp`.
 pub fn load_or_generate<P: AsRef<Path>>(path: P) -> Result<RsaPrivateKey, String> {
     let path = path.as_ref();
-    if !path.exists() {
-        generate_key(path)?;
+    if path.exists() {
+        if let Ok(key) = read_key_file(path) {
+            return Ok(key);
+        }
     }
-    read_key_file(path)
+
+    match generate_key_opts(path, false) {
+        Ok(()) => read_key_file(path),
+        Err(_) => {
+            for _ in 0..20 {
+                if let Ok(key) = read_key_file(path) {
+                    return Ok(key);
+                }
+                std::thread::sleep(std::time::Duration::from_millis(50));
+            }
+            read_key_file(path)
+        }
+    }
 }
 
 /// Initialize ADB authentication by loading (or generating) user key and loading vendor keys.
@@ -588,10 +740,11 @@ pub fn adb_auth_init() {
 }
 
 /// Command-line helper to generate key pair at specified filename.
+/// Allows overwriting existing file matching `adb keygen` commandline behavior in C++ ADB.
 ///
 /// Ported from `adb_auth_keygen` in `original/client/auth.cpp`.
 pub fn adb_auth_keygen<P: AsRef<Path>>(filename: P) -> Result<(), String> {
-    generate_key(filename)
+    generate_key_opts(filename, true)
 }
 
 /// Command-line helper to print public key string for a key file.
