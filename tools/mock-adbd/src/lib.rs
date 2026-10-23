@@ -195,6 +195,7 @@ struct StreamState {
     write_in_flight: bool,
     pending_writes: VecDeque<Vec<u8>>,
     close_pending: bool,
+    is_closing: bool,
 }
 
 pub async fn handle_connection(stream: TcpStream) -> std::io::Result<()> {
@@ -323,6 +324,7 @@ pub async fn handle_connection_with_options(
                                     write_in_flight: false,
                                     pending_writes: VecDeque::new(),
                                     close_pending: false,
+                                    is_closing: false,
                                 },
                             );
                         } else {
@@ -334,7 +336,7 @@ pub async fn handle_connection_with_options(
                                         ShellPacketId::Stdout,
                                         echo_text.into_bytes(),
                                     )),
-                                    0,
+                                    Some(0),
                                 )
                             } else if let Some(stderr_text) = parse_text_command(cmd_str, "stderr")
                             {
@@ -343,10 +345,10 @@ pub async fn handle_connection_with_options(
                                         ShellPacketId::Stderr,
                                         stderr_text.into_bytes(),
                                     )),
-                                    0,
+                                    Some(0),
                                 )
                             } else if let Some(code) = parse_exit_command(cmd_str) {
-                                (None, code)
+                                (None, Some(code))
                             } else if cmd_str == "env-term" {
                                 let term_text = format!("{}\n", term_val.unwrap_or("unset"));
                                 (
@@ -354,7 +356,15 @@ pub async fn handle_connection_with_options(
                                         ShellPacketId::Stdout,
                                         term_text.into_bytes(),
                                     )),
-                                    0,
+                                    Some(0),
+                                )
+                            } else if cmd_str == "no-exit-packet" {
+                                (
+                                    Some(ShellPacket::new(
+                                        ShellPacketId::Stdout,
+                                        b"abrupt end\n".to_vec(),
+                                    )),
+                                    None,
                                 )
                             } else {
                                 (
@@ -362,7 +372,7 @@ pub async fn handle_connection_with_options(
                                         ShellPacketId::Stderr,
                                         b"mock-adbd: unsupported command\n".to_vec(),
                                     )),
-                                    127,
+                                    Some(127),
                                 )
                             };
 
@@ -370,8 +380,10 @@ pub async fn handle_connection_with_options(
                             if let Some(pkt) = output_pkt {
                                 pending_writes.push_back(pkt.encode_to_vec());
                             }
-                            pending_writes
-                                .push_back(ShellPacket::exit_code(exit_code).encode_to_vec());
+                            if let Some(code) = exit_code {
+                                pending_writes
+                                    .push_back(ShellPacket::exit_code(code).encode_to_vec());
+                            }
 
                             streams.insert(
                                 mock_local_id,
@@ -385,6 +397,7 @@ pub async fn handle_connection_with_options(
                                     write_in_flight: false,
                                     pending_writes,
                                     close_pending: true,
+                                    is_closing: false,
                                 },
                             );
                         }
@@ -436,6 +449,7 @@ pub async fn handle_connection_with_options(
                             write_in_flight: false,
                             pending_writes,
                             close_pending: true,
+                            is_closing: false,
                         },
                     );
                 } else {
@@ -476,7 +490,9 @@ pub async fn handle_connection_with_options(
                         StreamKind::ShellV2NonCat { decoder, is_pty } => {
                             decoder.feed(&payload);
                             while let Ok(Some(pkt)) = decoder.pop_packet() {
-                                if pkt.id == ShellPacketId::WindowSizeChange && *is_pty {
+                                if pkt.id == ShellPacketId::CloseStdin {
+                                    stream_state.close_pending = true;
+                                } else if pkt.id == ShellPacketId::WindowSizeChange && *is_pty {
                                     let winsz_bytes = format_winsz_payload(&pkt.data);
                                     if stream_state.pending_writes.len() > 1 {
                                         stream_state.pending_writes.insert(
