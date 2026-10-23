@@ -874,16 +874,8 @@ pub async fn handle_connection_with_options(
             }
             Command::Okay => {
                 let mock_local_id = header.arg1;
-                let host_local_id = header.arg0;
                 if let Some(stream_state) = streams.get_mut(&mock_local_id) {
-                    if stream_state.host_local_id == host_local_id {
-                        stream_state.write_in_flight = false;
-                    } else {
-                        let expected = stream_state.host_local_id;
-                        mock_log(&format!(
-                            "OKAY host_local_id mismatch for mock_id {mock_local_id}: expected {expected}, got {host_local_id}"
-                        ));
-                    }
+                    stream_state.write_in_flight = false;
                 } else {
                     mock_log(&format!(
                         "OKAY received for unknown stream id {mock_local_id}"
@@ -892,31 +884,7 @@ pub async fn handle_connection_with_options(
             }
             Command::Clse => {
                 let mock_local_id = header.arg1;
-                let host_local_id = header.arg0;
-
-                if mock_local_id != 0 {
-                    if let Some(stream_state) = streams.get(&mock_local_id) {
-                        if stream_state.host_local_id == host_local_id {
-                            streams.remove(&mock_local_id);
-                        } else {
-                            let expected = stream_state.host_local_id;
-                            mock_log(&format!(
-                                "CLSE host_local_id mismatch for mock_id {mock_local_id}: expected {expected}, got {host_local_id}"
-                            ));
-                        }
-                    }
-                } else {
-                    let matching_id = streams.iter().find_map(|(&id, s)| {
-                        if s.host_local_id == host_local_id {
-                            Some(id)
-                        } else {
-                            None
-                        }
-                    });
-                    if let Some(id) = matching_id {
-                        streams.remove(&id);
-                    }
-                }
+                streams.remove(&mock_local_id);
             }
             _ => {
                 mock_log(&format!("Unexpected packet command: {:?}", header.command));

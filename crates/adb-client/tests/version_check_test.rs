@@ -286,16 +286,20 @@ async fn test_kill_server_fail() {
 #[tokio::test]
 async fn test_adb_client_caching() {
     let server = MockServer::start(FakeVersionMode::Matching, FakeKillMode::Okay).await;
+    let client = AdbClient::new(server.address());
+    let session_factory = DefaultSessionFactory;
     let (launcher, _launched) = MockLauncher::new();
-    let client = AdbClient::builder(server.address())
-        .session_factory(DefaultSessionFactory)
-        .launcher(launcher)
-        .build();
 
-    let outcome1 = client.check_server_version().await;
-    assert!(outcome1.result.is_ok());
+    let mut events1 = Vec::new();
+    let res1 = client
+        .check_server_version(&session_factory, &launcher, &mut events1)
+        .await;
+    assert!(res1.is_ok());
 
-    let outcome2 = client.check_server_version().await;
-    assert!(outcome2.result.is_ok());
-    assert!(outcome2.events.is_empty()); // Cached result, no second check or duplicate events
+    let mut events2 = Vec::new();
+    let res2 = client
+        .check_server_version(&session_factory, &launcher, &mut events2)
+        .await;
+    assert!(res2.is_ok());
+    assert!(events2.is_empty()); // Cached result, no second check or duplicate events
 }
