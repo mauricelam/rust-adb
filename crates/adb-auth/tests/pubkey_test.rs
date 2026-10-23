@@ -174,6 +174,15 @@ fn test_default_comment_resolution() {
     let user = parts[0];
     let host = parts[1];
 
+    assert!(
+        !user.is_empty(),
+        "User in default_comment should not be empty"
+    );
+    assert!(
+        !host.is_empty(),
+        "Host in default_comment should not be empty"
+    );
+
     #[cfg(unix)]
     {
         let whoami = Command::new("whoami").output();
