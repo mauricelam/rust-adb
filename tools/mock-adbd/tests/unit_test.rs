@@ -499,93 +499,92 @@ async fn test_mock_adbd_shell_v2_stderr_and_env_term() {
     )
     .await
     .unwrap();
-        let (wrte_b2, payload_b2) = read_packet(&mut reader).await.unwrap().unwrap();
-        assert_eq!(wrte_b2.command, Command::Wrte);
-        decoder.feed(&payload_b2);
-        let pkt_b2 = decoder.pop_packet().unwrap().unwrap();
-        assert_eq!(pkt_b2.id, ShellPacketId::Exit);
-        assert_eq!(pkt_b2.parse_exit_code().unwrap(), 0);
-        write_packet(&mut writer, Command::Okay, host_id_2, mock_id_2, &[])
-            .await
-            .unwrap();
-
-        let (clse2, _) = read_packet(&mut reader).await.unwrap().unwrap();
-        assert_eq!(clse2.command, Command::Clse);
-
-        // 3. Repeat with `cat` for Stream 3
-        let host_id_3 = 102u32;
-        write_packet(
-            &mut writer,
-            Command::Open,
-            host_id_3,
-            0,
-            b"shell,v2,raw:cat\0",
-        )
+    let (wrte_b2, payload_b2) = read_packet(&mut reader).await.unwrap().unwrap();
+    assert_eq!(wrte_b2.command, Command::Wrte);
+    decoder.feed(&payload_b2);
+    let pkt_b2 = decoder.pop_packet().unwrap().unwrap();
+    assert_eq!(pkt_b2.id, ShellPacketId::Exit);
+    assert_eq!(pkt_b2.parse_exit_code().unwrap(), 0);
+    write_packet(&mut writer, Command::Okay, host_id_2, mock_id_2, &[])
         .await
         .unwrap();
 
-        write_packet(&mut writer, Command::Clse, host_id_2, mock_id_2, &[])
-            .await
-            .unwrap();
+    let (clse2, _) = read_packet(&mut reader).await.unwrap().unwrap();
+    assert_eq!(clse2.command, Command::Clse);
 
-        let (okay3, _) = read_packet(&mut reader).await.unwrap().unwrap();
-        assert_eq!(okay3.command, Command::Okay);
-        let mock_id_3 = okay3.arg0;
+    // 3. Repeat with `cat` for Stream 3
+    let host_id_3 = 102u32;
+    write_packet(
+        &mut writer,
+        Command::Open,
+        host_id_3,
+        0,
+        b"shell,v2,raw:cat\0",
+    )
+    .await
+    .unwrap();
 
-        let stdin = ShellPacket::new(ShellPacketId::Stdin, b"hello cat\n".to_vec());
-        write_packet(
-            &mut writer,
-            Command::Wrte,
-            host_id_3,
-            mock_id_3,
-            &stdin.encode_to_vec(),
-        )
+    write_packet(&mut writer, Command::Clse, host_id_2, mock_id_2, &[])
         .await
         .unwrap();
 
-        let (ack_stdin, _) = read_packet(&mut reader).await.unwrap().unwrap();
-        assert_eq!(ack_stdin.command, Command::Okay);
+    let (okay3, _) = read_packet(&mut reader).await.unwrap().unwrap();
+    assert_eq!(okay3.command, Command::Okay);
+    let mock_id_3 = okay3.arg0;
 
-        let (wrte_cat1, payload_cat1) = read_packet(&mut reader).await.unwrap().unwrap();
-        assert_eq!(wrte_cat1.command, Command::Wrte);
-        decoder.feed(&payload_cat1);
-        let pkt_cat1 = decoder.pop_packet().unwrap().unwrap();
-        assert_eq!(pkt_cat1.id, ShellPacketId::Stdout);
-        assert_eq!(String::from_utf8_lossy(&pkt_cat1.data), "hello cat\n");
-        write_packet(&mut writer, Command::Okay, host_id_3, mock_id_3, &[])
-            .await
-            .unwrap();
+    let stdin = ShellPacket::new(ShellPacketId::Stdin, b"hello cat\n".to_vec());
+    write_packet(
+        &mut writer,
+        Command::Wrte,
+        host_id_3,
+        mock_id_3,
+        &stdin.encode_to_vec(),
+    )
+    .await
+    .unwrap();
 
-        let close_stdin = ShellPacket::new(ShellPacketId::CloseStdin, vec![]);
-        write_packet(
-            &mut writer,
-            Command::Wrte,
-            host_id_3,
-            mock_id_3,
-            &close_stdin.encode_to_vec(),
-        )
+    let (ack_stdin, _) = read_packet(&mut reader).await.unwrap().unwrap();
+    assert_eq!(ack_stdin.command, Command::Okay);
+
+    let (wrte_cat1, payload_cat1) = read_packet(&mut reader).await.unwrap().unwrap();
+    assert_eq!(wrte_cat1.command, Command::Wrte);
+    decoder.feed(&payload_cat1);
+    let pkt_cat1 = decoder.pop_packet().unwrap().unwrap();
+    assert_eq!(pkt_cat1.id, ShellPacketId::Stdout);
+    assert_eq!(String::from_utf8_lossy(&pkt_cat1.data), "hello cat\n");
+    write_packet(&mut writer, Command::Okay, host_id_3, mock_id_3, &[])
         .await
         .unwrap();
 
-        let (ack_close, _) = read_packet(&mut reader).await.unwrap().unwrap();
-        assert_eq!(ack_close.command, Command::Okay);
+    let close_stdin = ShellPacket::new(ShellPacketId::CloseStdin, vec![]);
+    write_packet(
+        &mut writer,
+        Command::Wrte,
+        host_id_3,
+        mock_id_3,
+        &close_stdin.encode_to_vec(),
+    )
+    .await
+    .unwrap();
 
-        let (wrte_cat2, payload_cat2) = read_packet(&mut reader).await.unwrap().unwrap();
-        assert_eq!(wrte_cat2.command, Command::Wrte);
-        decoder.feed(&payload_cat2);
-        let pkt_cat2 = decoder.pop_packet().unwrap().unwrap();
-        assert_eq!(pkt_cat2.id, ShellPacketId::Exit);
-        assert_eq!(pkt_cat2.parse_exit_code().unwrap(), 0);
-        write_packet(&mut writer, Command::Okay, host_id_3, mock_id_3, &[])
-            .await
-            .unwrap();
+    let (ack_close, _) = read_packet(&mut reader).await.unwrap().unwrap();
+    assert_eq!(ack_close.command, Command::Okay);
 
-        let (clse3, _) = read_packet(&mut reader).await.unwrap().unwrap();
-        assert_eq!(clse3.command, Command::Clse);
+    let (wrte_cat2, payload_cat2) = read_packet(&mut reader).await.unwrap().unwrap();
+    assert_eq!(wrte_cat2.command, Command::Wrte);
+    decoder.feed(&payload_cat2);
+    let pkt_cat2 = decoder.pop_packet().unwrap().unwrap();
+    assert_eq!(pkt_cat2.id, ShellPacketId::Exit);
+    assert_eq!(pkt_cat2.parse_exit_code().unwrap(), 0);
+    write_packet(&mut writer, Command::Okay, host_id_3, mock_id_3, &[])
+        .await
+        .unwrap();
 
-        server.shutdown();
-    }
+    let (clse3, _) = read_packet(&mut reader).await.unwrap().unwrap();
+    assert_eq!(clse3.command, Command::Clse);
 
+    server.shutdown();
+}
 
 #[tokio::test]
 async fn test_mock_adbd_banner_features() {
