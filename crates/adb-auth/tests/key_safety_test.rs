@@ -111,8 +111,10 @@ fn test_4_pkcs8_pem_format_and_reference_adb_compatibility() {
     );
 
     // Verify it loads in Rust
-    let _rust_key = adb_auth::read_key_file(&key_path).expect("Rust should load generated PKCS#8 key");
-    let rust_pubkey = adb_auth::adb_auth_pubkey(&key_path).expect("Rust adb_auth_pubkey should succeed");
+    let _rust_key =
+        adb_auth::read_key_file(&key_path).expect("Rust should load generated PKCS#8 key");
+    let rust_pubkey =
+        adb_auth::adb_auth_pubkey(&key_path).expect("Rust adb_auth_pubkey should succeed");
 
     // If reference adb is available, test against it
     let reference_adb = match env::var("ADB_REFERENCE") {
@@ -141,8 +143,7 @@ fn test_4_pkcs8_pem_format_and_reference_adb_compatibility() {
         let rust_b64 = rust_pubkey.split_whitespace().next().unwrap_or("");
         let ref_b64 = ref_pubkey.split_whitespace().next().unwrap_or("");
         assert_eq!(
-            rust_b64,
-            ref_b64,
+            rust_b64, ref_b64,
             "Reference ADB pubkey base64 string must match Rust pubkey base64 string"
         );
     }
@@ -182,7 +183,8 @@ fn test_5_unix_file_permissions_0600_and_preexisting_0644_unchanged() {
 
         // Load the key file
         let _loaded = adb_auth::read_key_file(&existing_key_path).expect("Read key file");
-        let _loaded_or_gen = adb_auth::load_or_generate(&existing_key_path).expect("load_or_generate");
+        let _loaded_or_gen =
+            adb_auth::load_or_generate(&existing_key_path).expect("load_or_generate");
 
         let meta_after = fs::metadata(&existing_key_path).unwrap();
         let mode_after = meta_after.permissions().mode() & 0o777;
@@ -215,7 +217,8 @@ fn test_6_android_dir_creation_permissions_0750() {
                 ("USERPROFILE", Some(fake_home.to_str().unwrap())),
             ],
             || {
-                let android_dir = adb_auth::ensure_android_dir().expect("ensure_android_dir failed");
+                let android_dir =
+                    adb_auth::ensure_android_dir().expect("ensure_android_dir failed");
                 assert!(android_dir.exists(), ".android dir should exist");
 
                 let meta = fs::metadata(&android_dir).unwrap();

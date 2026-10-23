@@ -402,7 +402,6 @@ pub fn read_key_file<P: AsRef<Path>>(path: P) -> Result<RsaPrivateKey, String> {
     ))
 }
 
-
 /// Load a single key file into memory if not already present.
 ///
 /// Ported from `load_key` in `original/client/auth.cpp`.
@@ -590,7 +589,12 @@ pub fn generate_key_opts<P: AsRef<Path>>(file: P, overwrite: bool) -> Result<(),
             .file_name()
             .and_then(|n| n.to_str())
             .unwrap_or("adbkey");
-        let tmp_file = file.with_file_name(format!(".{}.tmp.{}.{}", file_name, std::process::id(), rand_num));
+        let tmp_file = file.with_file_name(format!(
+            ".{}.tmp.{}.{}",
+            file_name,
+            std::process::id(),
+            rand_num
+        ));
 
         let mut options = OpenOptions::new();
         options.write(true).create(true).truncate(true);
@@ -619,7 +623,11 @@ pub fn generate_key_opts<P: AsRef<Path>>(file: P, overwrite: bool) -> Result<(),
         }
         if let Err(e) = f.sync_all() {
             let _ = fs::remove_file(&tmp_file);
-            return Err(format!("Failed to sync key file '{}': {}", tmp_file.display(), e));
+            return Err(format!(
+                "Failed to sync key file '{}': {}",
+                tmp_file.display(),
+                e
+            ));
         }
         drop(f);
 
@@ -633,7 +641,12 @@ pub fn generate_key_opts<P: AsRef<Path>>(file: P, overwrite: bool) -> Result<(),
         }
 
         let pub_path = PathBuf::from(format!("{}.pub", file.display()));
-        let tmp_pub_path = file.with_file_name(format!(".{}.pub.tmp.{}.{}", file_name, std::process::id(), rand_num));
+        let tmp_pub_path = file.with_file_name(format!(
+            ".{}.pub.tmp.{}.{}",
+            file_name,
+            std::process::id(),
+            rand_num
+        ));
         if let Err(e) = fs::write(&tmp_pub_path, &pubkey_str) {
             let _ = fs::remove_file(&tmp_pub_path);
             return Err(format!(
@@ -672,7 +685,11 @@ pub fn generate_key_opts<P: AsRef<Path>>(file: P, overwrite: bool) -> Result<(),
         }
         if let Err(e) = f.sync_all() {
             let _ = fs::remove_file(file);
-            return Err(format!("Failed to sync key file '{}': {}", file.display(), e));
+            return Err(format!(
+                "Failed to sync key file '{}': {}",
+                file.display(),
+                e
+            ));
         }
         drop(f);
 
