@@ -8,8 +8,9 @@ pub mod transport;
 
 pub use client::{
     check_server_version, kill_server, start_server, start_server_with_one_device, AdbClient,
-    ClientError, ClientEvent, DefaultSessionFactory, ExternalBinaryLauncher, LaunchError,
-    SelfExecLauncher, ServerLauncher, SessionFactory, TrackDevicesMode, ADB_SERVER_VERSION,
+    AdbClientBuilder, ClientError, ClientEvent, DefaultSessionFactory, ExternalBinaryLauncher,
+    LaunchError, Outcome, SelfExecLauncher, ServerLauncher, SessionFactory, TrackDevicesMode,
+    ADB_SERVER_VERSION,
 };
 pub use device_selection::{DeviceSelection, SelectionError};
 pub use server_address::{
