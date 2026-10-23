@@ -195,7 +195,6 @@ struct StreamState {
     write_in_flight: bool,
     pending_writes: VecDeque<Vec<u8>>,
     close_pending: bool,
-    is_closing: bool,
 }
 
 pub async fn handle_connection(stream: TcpStream) -> std::io::Result<()> {
@@ -324,7 +323,6 @@ pub async fn handle_connection_with_options(
                                     write_in_flight: false,
                                     pending_writes: VecDeque::new(),
                                     close_pending: false,
-                                    is_closing: false,
                                 },
                             );
                         } else {
@@ -397,7 +395,6 @@ pub async fn handle_connection_with_options(
                                     write_in_flight: false,
                                     pending_writes,
                                     close_pending: true,
-                                    is_closing: false,
                                 },
                             );
                         }
@@ -449,7 +446,6 @@ pub async fn handle_connection_with_options(
                             write_in_flight: false,
                             pending_writes,
                             close_pending: true,
-                            is_closing: false,
                         },
                     );
                 } else {
