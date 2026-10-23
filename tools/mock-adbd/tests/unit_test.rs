@@ -226,7 +226,12 @@ async fn run_harness_test_suite(options: MockAdbdOptions) {
         .env("USERPROFILE", temp_home.path())
         .output()
         .expect("Failed to run adb connect");
-    eprintln!("[HARNESS] adb connect result: status={}, stdout={}, stderr={}", conn_output.status, String::from_utf8_lossy(&conn_output.stdout), String::from_utf8_lossy(&conn_output.stderr));
+    eprintln!(
+        "[HARNESS] adb connect result: status={}, stdout={}, stderr={}",
+        conn_output.status,
+        String::from_utf8_lossy(&conn_output.stdout),
+        String::from_utf8_lossy(&conn_output.stderr)
+    );
 
     assert!(
         conn_output.status.success(),
@@ -266,14 +271,7 @@ async fn run_harness_test_suite(options: MockAdbdOptions) {
 
     // 1. adb ls /data
     let ls_output = ProcessCommand::new(&adb_bin)
-        .args([
-            "-P",
-            &server_port.to_string(),
-            "-s",
-            &serial,
-            "ls",
-            "/data",
-        ])
+        .args(["-P", &server_port.to_string(), "-s", &serial, "ls", "/data"])
         .env("HOME", temp_home.path())
         .env("USERPROFILE", temp_home.path())
         .env("ANDROID_ADB_SERVER_PORT", server_port.to_string())
@@ -332,7 +330,7 @@ async fn run_harness_test_suite(options: MockAdbdOptions) {
     // 3. adb push for each size
     for &sz in &sizes {
         let local_file = temp_home.path().join(format!("in_{sz}.bin"));
-        let push_bytes = vec![( (sz + 5) % 251) as u8; sz];
+        let push_bytes = vec![((sz + 5) % 251) as u8; sz];
         std::fs::write(&local_file, &push_bytes).unwrap();
 
         let remote_path = format!("/data/pushed_{sz}.bin");
@@ -360,8 +358,14 @@ async fn run_harness_test_suite(options: MockAdbdOptions) {
             String::from_utf8_lossy(&push_output.stderr)
         );
 
-        let stored_bytes = server.fs().get_file(&remote_path).expect("Pushed file missing in mock fs");
-        assert_eq!(stored_bytes, push_bytes, "Pushed bytes mismatch for size {sz}");
+        let stored_bytes = server
+            .fs()
+            .get_file(&remote_path)
+            .expect("Pushed file missing in mock fs");
+        assert_eq!(
+            stored_bytes, push_bytes,
+            "Pushed bytes mismatch for size {sz}"
+        );
     }
 
     // 4. adb pull missing file -> fails
@@ -1348,11 +1352,186 @@ async fn test_mock_adbd_sync_lstat_v1_and_stat_v2() {
 
     let (wrte2, payload2) = read_packet(&mut reader).await.unwrap().unwrap();
     assert_eq!(wrte2.command, Command::Wrte);
-    assert_eq!(payload2.len(), 64);
+    assert_eq!(payload2.len(), 72);
     let stat2_id = u32::from_le_bytes(payload2[0..4].try_into().unwrap());
     let error = u32::from_le_bytes(payload2[4..8].try_into().unwrap());
     assert_eq!(stat2_id, adb_proto::ID_STAT_V2);
     assert_eq!(error, 2); // ENOENT wire value = 2
+
+    server.shutdown();
+}
+
+#[tokio::test]
+async fn test_mock_adbd_sync_lstat_v2_recv_v2_send_v2() {
+    let server = MockAdbdServer::bind("127.0.0.1:0").await.unwrap();
+    server.fs().add_dir("/data", 0o040755, 0);
+
+    let mut client = TcpStream::connect(server.local_addr()).await.unwrap();
+    let (mut reader, mut writer) = client.split();
+
+    write_packet(
+        &mut writer,
+        Command::Cnxn,
+        A_VERSION,
+        MAX_PAYLOAD as u32,
+        b"host::",
+    )
+    .await
+    .unwrap();
+    let _ = read_packet(&mut reader).await.unwrap();
+
+    let host_id = 704u32;
+    write_packet(&mut writer, Command::Open, host_id, 0, b"sync:\0")
+        .await
+        .unwrap();
+    let (okay, _) = read_packet(&mut reader).await.unwrap().unwrap();
+    let mock_id = okay.arg0;
+
+    // 1. LSTAT_V2 /data
+    let mut req_lstat = Vec::new();
+    let path_lstat = b"/data";
+    req_lstat.extend_from_slice(&adb_proto::ID_LSTAT_V2.to_le_bytes());
+    req_lstat.extend_from_slice(&(path_lstat.len() as u32).to_le_bytes());
+    req_lstat.extend_from_slice(path_lstat);
+
+    write_packet(&mut writer, Command::Wrte, host_id, mock_id, &req_lstat)
+        .await
+        .unwrap();
+    let (ack, _) = read_packet(&mut reader).await.unwrap().unwrap();
+    assert_eq!(ack.command, Command::Okay);
+
+    let (wrte, payload) = read_packet(&mut reader).await.unwrap().unwrap();
+    assert_eq!(wrte.command, Command::Wrte);
+    assert_eq!(payload.len(), 72);
+    let resp_id = u32::from_le_bytes(payload[0..4].try_into().unwrap());
+    let resp_err = u32::from_le_bytes(payload[4..8].try_into().unwrap());
+    assert_eq!(resp_id, adb_proto::ID_LSTAT_V2);
+    assert_eq!(resp_err, 0);
+
+    write_packet(&mut writer, Command::Okay, host_id, mock_id, &[])
+        .await
+        .unwrap();
+
+    // 2. SEND_V2 /data/v2_file.bin
+    let mut send_v2_req = Vec::new();
+    let path_send = b"/data/v2_file.bin";
+    send_v2_req.extend_from_slice(&adb_proto::ID_SEND_V2.to_le_bytes());
+    send_v2_req.extend_from_slice(&(path_send.len() as u32).to_le_bytes());
+    send_v2_req.extend_from_slice(path_send);
+
+    // Setup block: ID_SEND_V2 (4 bytes), mode 0o100644 (4 bytes), flags 0 (4 bytes)
+    send_v2_req.extend_from_slice(&adb_proto::ID_SEND_V2.to_le_bytes());
+    send_v2_req.extend_from_slice(&(0o100644u32.to_le_bytes()));
+    send_v2_req.extend_from_slice(&(0u32.to_le_bytes()));
+
+    // DATA
+    let data_bytes = b"v2 file payload";
+    send_v2_req.extend_from_slice(&adb_proto::ID_DATA.to_le_bytes());
+    send_v2_req.extend_from_slice(&(data_bytes.len() as u32).to_le_bytes());
+    send_v2_req.extend_from_slice(data_bytes);
+
+    // DONE mtime = 9999
+    send_v2_req.extend_from_slice(&adb_proto::ID_DONE.to_le_bytes());
+    send_v2_req.extend_from_slice(&(9999u32.to_le_bytes()));
+
+    write_packet(&mut writer, Command::Wrte, host_id, mock_id, &send_v2_req)
+        .await
+        .unwrap();
+    let (ack_s2, _) = read_packet(&mut reader).await.unwrap().unwrap();
+    assert_eq!(ack_s2.command, Command::Okay);
+
+    let (wrte_s2, payload_s2) = read_packet(&mut reader).await.unwrap().unwrap();
+    assert_eq!(wrte_s2.command, Command::Wrte);
+    let ok_id = u32::from_le_bytes(payload_s2[0..4].try_into().unwrap());
+    assert_eq!(ok_id, adb_proto::ID_OKAY);
+
+    write_packet(&mut writer, Command::Okay, host_id, mock_id, &[])
+        .await
+        .unwrap();
+
+    assert_eq!(
+        server.fs().get_file("/data/v2_file.bin"),
+        Some(b"v2 file payload".to_vec())
+    );
+
+    // 3. RECV_V2 /data/v2_file.bin
+    let mut recv_v2_req = Vec::new();
+    recv_v2_req.extend_from_slice(&adb_proto::ID_RECV_V2.to_le_bytes());
+    recv_v2_req.extend_from_slice(&(path_send.len() as u32).to_le_bytes());
+    recv_v2_req.extend_from_slice(path_send);
+
+    // Setup block: ID_RECV_V2 (4 bytes), flags 0 (4 bytes)
+    recv_v2_req.extend_from_slice(&adb_proto::ID_RECV_V2.to_le_bytes());
+    recv_v2_req.extend_from_slice(&(0u32.to_le_bytes()));
+
+    write_packet(&mut writer, Command::Wrte, host_id, mock_id, &recv_v2_req)
+        .await
+        .unwrap();
+    let (ack_r2, _) = read_packet(&mut reader).await.unwrap().unwrap();
+    assert_eq!(ack_r2.command, Command::Okay);
+
+    // Read DATA
+    let (wrte_r2_data, payload_r2_data) = read_packet(&mut reader).await.unwrap().unwrap();
+    assert_eq!(wrte_r2_data.command, Command::Wrte);
+    let r2_data_id = u32::from_le_bytes(payload_r2_data[0..4].try_into().unwrap());
+    let r2_data_len = u32::from_le_bytes(payload_r2_data[4..8].try_into().unwrap()) as usize;
+    assert_eq!(r2_data_id, adb_proto::ID_DATA);
+    assert_eq!(&payload_r2_data[8..8 + r2_data_len], b"v2 file payload");
+
+    write_packet(&mut writer, Command::Okay, host_id, mock_id, &[])
+        .await
+        .unwrap();
+
+    // Read DONE
+    let (wrte_r2_done, payload_r2_done) = read_packet(&mut reader).await.unwrap().unwrap();
+    assert_eq!(wrte_r2_done.command, Command::Wrte);
+    let r2_done_id = u32::from_le_bytes(payload_r2_done[0..4].try_into().unwrap());
+    assert_eq!(r2_done_id, adb_proto::ID_DONE);
+
+    write_packet(&mut writer, Command::Okay, host_id, mock_id, &[])
+        .await
+        .unwrap();
+
+    server.shutdown();
+}
+
+#[tokio::test]
+async fn test_mock_adbd_sync_truncated_request_handling() {
+    let server = MockAdbdServer::bind("127.0.0.1:0").await.unwrap();
+
+    let mut client = TcpStream::connect(server.local_addr()).await.unwrap();
+    let (mut reader, mut writer) = client.split();
+
+    write_packet(
+        &mut writer,
+        Command::Cnxn,
+        A_VERSION,
+        MAX_PAYLOAD as u32,
+        b"host::",
+    )
+    .await
+    .unwrap();
+    let _ = read_packet(&mut reader).await.unwrap();
+
+    let host_id = 705u32;
+    write_packet(&mut writer, Command::Open, host_id, 0, b"sync:\0")
+        .await
+        .unwrap();
+    let (okay, _) = read_packet(&mut reader).await.unwrap().unwrap();
+    let mock_id = okay.arg0;
+
+    // Send truncated header (less than 8 bytes) inside a WRTE
+    let trunc_req = vec![0u8; 4]; // Only 4 bytes
+    write_packet(&mut writer, Command::Wrte, host_id, mock_id, &trunc_req)
+        .await
+        .unwrap();
+
+    let (ack, _) = read_packet(&mut reader).await.unwrap().unwrap();
+    assert_eq!(ack.command, Command::Okay);
+
+    // Now abruptly close client stream without panic on mock server side
+    drop(client);
+    tokio::time::sleep(Duration::from_millis(50)).await;
 
     server.shutdown();
 }

@@ -1,8 +1,8 @@
 use adb_proto::{
     negotiate_max_payload, negotiate_version, Banner, Command, Feature, Features, Header,
-    ShellDecoder, ShellPacket, ShellPacketId, A_VERSION, A_VERSION_SKIP_CHECKSUM, MAX_PAYLOAD,
-    ID_DATA, ID_DENT_V1, ID_DENT_V2, ID_DONE, ID_FAIL, ID_LIST_V1, ID_LIST_V2, ID_LSTAT_V1,
-    ID_LSTAT_V2, ID_OKAY, ID_QUIT, ID_RECV_V1, ID_RECV_V2, ID_SEND_V1, ID_SEND_V2, ID_STAT_V2,
+    ShellDecoder, ShellPacket, ShellPacketId, A_VERSION, A_VERSION_SKIP_CHECKSUM, ID_DATA,
+    ID_DENT_V1, ID_DENT_V2, ID_DONE, ID_FAIL, ID_LIST_V1, ID_LIST_V2, ID_LSTAT_V1, ID_LSTAT_V2,
+    ID_OKAY, ID_QUIT, ID_RECV_V1, ID_RECV_V2, ID_SEND_V1, ID_SEND_V2, ID_STAT_V2, MAX_PAYLOAD,
 };
 use std::collections::{HashMap, VecDeque};
 use std::net::SocketAddr;
@@ -108,10 +108,7 @@ impl InMemoryFs {
             },
         );
         Self {
-            inner: Arc::new(Mutex::new(InMemoryFsInner {
-                nodes,
-                next_ino: 2,
-            })),
+            inner: Arc::new(Mutex::new(InMemoryFsInner { nodes, next_ino: 2 })),
         }
     }
 
@@ -230,11 +227,10 @@ impl InMemoryFs {
     pub fn get_file(&self, path: &str) -> Option<Vec<u8>> {
         let norm = normalize_path(path);
         let inner = self.inner.lock().unwrap();
-        match inner.nodes.get(&norm)? {
-            node => match &node.kind {
-                InMemoryNodeKind::File { contents } => Some(contents.clone()),
-                _ => None,
-            },
+        let node = inner.nodes.get(&norm)?;
+        match &node.kind {
+            InMemoryNodeKind::File { contents } => Some(contents.clone()),
+            _ => None,
         }
     }
 
@@ -653,8 +649,7 @@ pub async fn handle_connection_with_options(
                             let (output_pkt, exit_code) = if cmd_str.starts_with("mkdir") {
                                 for arg in cmd_str.split_whitespace().skip(1) {
                                     if !arg.starts_with('-') {
-                                        let clean_path =
-                                            arg.trim_matches('\'').trim_matches('"');
+                                        let clean_path = arg.trim_matches('\'').trim_matches('"');
                                         options.fs.add_dir(clean_path, 0o040755, 0);
                                     }
                                 }
@@ -923,8 +918,7 @@ pub async fn handle_connection_with_options(
         // Writer Pump: Flush pending writes for streams
         let mut streams_to_remove = Vec::new();
         for (mock_local_id, stream_state) in streams.iter_mut() {
-            let is_sync = matches!(stream_state.kind, StreamKind::Sync { .. });
-            if is_sync || !stream_state.write_in_flight {
+            if !stream_state.write_in_flight {
                 if let Some(front) = stream_state.pending_writes.pop_front() {
                     let (to_send, remainder) = if front.len() > negotiated_max_payload {
                         let (head, tail) = front.split_at(negotiated_max_payload);
@@ -952,9 +946,7 @@ pub async fn handle_connection_with_options(
                         return Ok(());
                     }
 
-                    if !is_sync {
-                        stream_state.write_in_flight = true;
-                    }
+                    stream_state.write_in_flight = true;
                 } else if stream_state.close_pending {
                     if write_packet_versioned(
                         &mut writer,
@@ -1001,7 +993,10 @@ fn encode_sync_fail(msg: &str) -> Vec<u8> {
 
 fn parse_send_v1_spec(spec: &str) -> Option<(String, u32)> {
     let (path, mode_str) = spec.rsplit_once(',')?;
-    let mode = if let Some(hex) = mode_str.strip_prefix("0x").or_else(|| mode_str.strip_prefix("0X")) {
+    let mode = if let Some(hex) = mode_str
+        .strip_prefix("0x")
+        .or_else(|| mode_str.strip_prefix("0X"))
+    {
         u32::from_str_radix(hex, 16).ok()?
     } else if mode_str.len() > 1 && mode_str.starts_with('0') {
         u32::from_str_radix(&mode_str[1..], 8).ok()?
@@ -1066,7 +1061,7 @@ fn process_sync_requests(buffer: &mut Vec<u8>, stream_state: &mut StreamState, f
             id if id == ID_STAT_V2 || id == ID_LSTAT_V2 => {
                 buffer.drain(..8 + path_length);
                 let node_opt = fs.get_node(&path);
-                let mut resp = Vec::with_capacity(64);
+                let mut resp = Vec::with_capacity(72);
                 resp.extend_from_slice(&id.to_le_bytes());
                 if let Some(node) = node_opt {
                     resp.extend_from_slice(&0u32.to_le_bytes()); // error = 0
@@ -1082,7 +1077,7 @@ fn process_sync_requests(buffer: &mut Vec<u8>, stream_state: &mut StreamState, f
                     resp.extend_from_slice(&(node.ctime as i64).to_le_bytes());
                 } else {
                     resp.extend_from_slice(&2u32.to_le_bytes()); // wire ENOENT = 2
-                    resp.extend_from_slice(&[0u8; 56]);
+                    resp.extend_from_slice(&[0u8; 64]);
                 }
                 stream_state.pending_writes.push_back(resp);
             }
@@ -1217,9 +1212,9 @@ fn process_sync_requests(buffer: &mut Vec<u8>, stream_state: &mut StreamState, f
                 while offset + 8 <= buffer.len() {
                     let chunk_id =
                         u32::from_le_bytes(buffer[offset..offset + 4].try_into().unwrap());
-                    let chunk_size = u32::from_le_bytes(
-                        buffer[offset + 4..offset + 8].try_into().unwrap(),
-                    ) as usize;
+                    let chunk_size =
+                        u32::from_le_bytes(buffer[offset + 4..offset + 8].try_into().unwrap())
+                            as usize;
 
                     if chunk_id == ID_DATA {
                         if chunk_size > 64 * 1024 {
@@ -1243,6 +1238,8 @@ fn process_sync_requests(buffer: &mut Vec<u8>, stream_state: &mut StreamState, f
                         stream_state
                             .pending_writes
                             .push_back(encode_sync_fail("invalid chunk id in SEND"));
+                        buffer.drain(..offset);
+                        send_complete = false;
                         break;
                     }
                 }
@@ -1298,9 +1295,9 @@ fn process_sync_requests(buffer: &mut Vec<u8>, stream_state: &mut StreamState, f
                 while offset + 8 <= buffer.len() {
                     let chunk_id =
                         u32::from_le_bytes(buffer[offset..offset + 4].try_into().unwrap());
-                    let chunk_size = u32::from_le_bytes(
-                        buffer[offset + 4..offset + 8].try_into().unwrap(),
-                    ) as usize;
+                    let chunk_size =
+                        u32::from_le_bytes(buffer[offset + 4..offset + 8].try_into().unwrap())
+                            as usize;
 
                     if chunk_id == ID_DATA {
                         if chunk_size > 64 * 1024 {
@@ -1324,6 +1321,8 @@ fn process_sync_requests(buffer: &mut Vec<u8>, stream_state: &mut StreamState, f
                         stream_state
                             .pending_writes
                             .push_back(encode_sync_fail("invalid chunk id in SEND_V2"));
+                        buffer.drain(..offset);
+                        send_complete = false;
                         break;
                     }
                 }
