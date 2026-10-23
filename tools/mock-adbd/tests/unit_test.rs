@@ -152,6 +152,7 @@ async fn test_stale_clse_does_not_abort_next_stream() {
         write_packet(&mut writer, Command::Okay, host_id_2, mock_id_2, &[])
             .await
             .unwrap();
+    });
 }
 
 // ------------------- Integration Harness Tests with Reference ADB -------------------
@@ -583,10 +584,8 @@ async fn test_mock_adbd_shell_v2_stderr_and_env_term() {
         assert_eq!(clse3.command, Command::Clse);
 
         server.shutdown();
-    })
-    .await
-    .unwrap();
-}
+    }
+
 
 #[tokio::test]
 async fn test_mock_adbd_banner_features() {
