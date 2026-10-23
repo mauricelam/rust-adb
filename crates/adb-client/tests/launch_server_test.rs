@@ -189,7 +189,7 @@ async fn test_3_launcher_failure_produces_failed_to_start_daemon() {
     assert!(res.is_err());
 
     match res.unwrap_err() {
-        ClientError::CannotConnectDaemon => {}
+        ClientError::CannotConnectDaemon { .. } => {}
         err => panic!("Expected ClientError::CannotConnectDaemon, got {:?}", err),
     }
 

@@ -151,7 +151,7 @@ async fn test_query_no_device() {
         .await
         .result
         .expect_err("get-state without device should fail");
-    assert_eq!(err_state.to_string(), "error: no devices/emulators found");
+    assert_eq!(err_state.to_string(), "no devices/emulators found");
 
     let ref_state = server.run_client(&["get-state"]);
     assert_eq!(ref_state.exit_code, Some(1));
@@ -163,7 +163,7 @@ async fn test_query_no_device() {
         .await
         .result
         .expect_err("get-serialno without device should fail");
-    assert_eq!(err_serial.to_string(), "error: no devices/emulators found");
+    assert_eq!(err_serial.to_string(), "no devices/emulators found");
 
     let ref_serial = server.run_client(&["get-serialno"]);
     assert_eq!(ref_serial.exit_code, Some(1));
@@ -178,7 +178,7 @@ async fn test_query_no_device() {
         .await
         .result
         .expect_err("get-devpath without device should fail");
-    assert_eq!(err_devpath.to_string(), "error: no devices/emulators found");
+    assert_eq!(err_devpath.to_string(), "no devices/emulators found");
 
     let ref_devpath = server.run_client(&["get-devpath"]);
     assert_eq!(ref_devpath.exit_code, Some(1));

@@ -29,6 +29,17 @@ impl TrackDevicesMode {
 /// Expected ADB server version matching C++ `ADB_SERVER_VERSION` in `original/adb.h`.
 pub const ADB_SERVER_VERSION: u32 = 41;
 
+/// Classification of client errors.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ClientErrorKind {
+    Server,
+    Connection,
+    Protocol,
+    Usage,
+    Version,
+    Launch,
+}
+
 /// Events reported by client operations (e.g. version checks, server startup, kill).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ClientEvent {
@@ -36,7 +47,7 @@ pub enum ClientEvent {
     DaemonNotRunning { spec: String },
     CannotStartRemote,
     CannotConnectDaemon { spec: String, cause: String },
-    Error(String),
+    ErrorLine(String),
     FailedToStartDaemon,
     DaemonStarted,
 }
@@ -59,12 +70,8 @@ impl std::fmt::Display for ClientEvent {
             ClientEvent::CannotConnectDaemon { spec, cause } => {
                 write!(f, "cannot connect to daemon at {spec}: {cause}")
             }
-            ClientEvent::Error(msg) => {
-                if msg.starts_with("error:") || msg.starts_with("cannot connect") {
-                    write!(f, "{msg}")
-                } else {
-                    write!(f, "error: {msg}")
-                }
+            ClientEvent::ErrorLine(msg) => {
+                write!(f, "{msg}")
             }
             ClientEvent::FailedToStartDaemon => {
                 write!(f, "* failed to start daemon")
@@ -88,7 +95,7 @@ pub struct Outcome<T> {
 pub enum ClientError {
     Session(SessionError),
     CannotConnect { spec: String, cause: String },
-    CannotConnectDaemon,
+    CannotConnectDaemon { source: Option<LaunchError> },
     CannotParseVersionString(String),
     KillFailed(String),
     FailedToCheckVersion(String),
@@ -96,26 +103,46 @@ pub enum ClientError {
     InvalidUsage(String),
 }
 
+impl ClientError {
+    /// Returns the classification category of this client error.
+    pub fn kind(&self) -> ClientErrorKind {
+        match self {
+            ClientError::Session(err) => match err {
+                SessionError::CannotConnect { .. } => ClientErrorKind::Connection,
+                SessionError::Fail(_) => ClientErrorKind::Server,
+                SessionError::BadServiceLength(_)
+                | SessionError::WriteFailure(_)
+                | SessionError::ReadTransportIdFailed
+                | SessionError::ReadStatusFailed(_)
+                | SessionError::ReadStatusLengthFailed(_)
+                | SessionError::ReadStatusMessageFailed(_)
+                | SessionError::InvalidStatus(_) => ClientErrorKind::Protocol,
+            },
+            ClientError::CannotConnect { .. } => ClientErrorKind::Connection,
+            ClientError::CannotConnectDaemon { source } => {
+                if source.is_some() {
+                    ClientErrorKind::Launch
+                } else {
+                    ClientErrorKind::Connection
+                }
+            }
+            ClientError::CannotParseVersionString(_) => ClientErrorKind::Version,
+            ClientError::KillFailed(_) => ClientErrorKind::Server,
+            ClientError::FailedToCheckVersion(_) => ClientErrorKind::Server,
+            ClientError::QueryFailed(_) => ClientErrorKind::Server,
+            ClientError::InvalidUsage(_) => ClientErrorKind::Usage,
+        }
+    }
+}
+
 impl std::fmt::Display for ClientError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            ClientError::Session(err) => {
-                let msg = err.to_string();
-                if msg.starts_with("error:")
-                    || msg.starts_with("cannot connect")
-                    || msg.starts_with("protocol fault")
-                    || msg.starts_with("bad service")
-                    || msg.starts_with("write failure")
-                {
-                    write!(f, "{msg}")
-                } else {
-                    write!(f, "error: {msg}")
-                }
-            }
+            ClientError::Session(err) => write!(f, "{err}"),
             ClientError::CannotConnect { spec, cause } => {
                 write!(f, "cannot connect to daemon at {spec}: {cause}")
             }
-            ClientError::CannotConnectDaemon => {
+            ClientError::CannotConnectDaemon { .. } => {
                 write!(f, "cannot connect to daemon")
             }
             ClientError::CannotParseVersionString(ver) => {
@@ -125,13 +152,7 @@ impl std::fmt::Display for ClientError {
             ClientError::FailedToCheckVersion(err) => {
                 write!(f, "failed to check server version: {err}")
             }
-            ClientError::QueryFailed(msg) => {
-                if msg.starts_with("error:") {
-                    write!(f, "{msg}")
-                } else {
-                    write!(f, "error: {msg}")
-                }
-            }
+            ClientError::QueryFailed(msg) => write!(f, "{msg}"),
             ClientError::InvalidUsage(msg) => write!(f, "{msg}"),
         }
     }
@@ -141,6 +162,7 @@ impl std::error::Error for ClientError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
             ClientError::Session(err) => Some(err),
+            ClientError::CannotConnectDaemon { source: Some(err) } => Some(err),
             _ => None,
         }
     }
@@ -158,6 +180,18 @@ pub enum LaunchError {
     Io(std::io::Error),
     FailedToReadAck(String),
     Unsupported(String),
+}
+
+impl Clone for LaunchError {
+    fn clone(&self) -> Self {
+        match self {
+            LaunchError::Io(err) => {
+                LaunchError::Io(std::io::Error::new(err.kind(), err.to_string()))
+            }
+            LaunchError::FailedToReadAck(msg) => LaunchError::FailedToReadAck(msg.clone()),
+            LaunchError::Unsupported(msg) => LaunchError::Unsupported(msg.clone()),
+        }
+    }
 }
 
 impl std::fmt::Display for LaunchError {
@@ -363,7 +397,7 @@ pub async fn kill_server(
 
     if let Err(err) = session.send_service("host:kill").await {
         let msg = format!("write failure during connection: {err}");
-        events.push(ClientEvent::Error(msg.clone()));
+        events.push(ClientEvent::ErrorLine(format!("error: {msg}")));
         return Err(ClientError::KillFailed(msg));
     }
 
@@ -373,12 +407,12 @@ pub async fn kill_server(
             Ok(())
         }
         Err(SessionError::Fail(reason)) => {
-            events.push(ClientEvent::Error(reason.clone()));
+            events.push(ClientEvent::ErrorLine(format!("error: {reason}")));
             Err(ClientError::KillFailed(reason))
         }
         Err(_) => {
             let msg = "failed to read response from server".to_string();
-            events.push(ClientEvent::Error(msg.clone()));
+            events.push(ClientEvent::ErrorLine(format!("error: {msg}")));
             Err(ClientError::KillFailed(msg))
         }
     }
@@ -407,9 +441,9 @@ pub async fn start_server_with_one_device(
             events.push(ClientEvent::DaemonStarted);
             Ok(())
         }
-        Err(_err) => {
+        Err(err) => {
             events.push(ClientEvent::FailedToStartDaemon);
-            Err(ClientError::CannotConnectDaemon)
+            Err(ClientError::CannotConnectDaemon { source: Some(err) })
         }
     }
 }
