@@ -91,7 +91,7 @@ impl HostAuth {
                     actions.push(AuthAction::ReportEstablished);
 
                     // Ported from send_auth_publickey in original/client/auth.cpp:
-                    // Check if public key string length < MAX_PAYLOAD_V1 (262144 bytes)
+                    // Check if public key string length < MAX_PAYLOAD_V1 (4096 bytes)
                     if self.user_pubkey.len() < MAX_PAYLOAD_V1 {
                         let mut payload = self.user_pubkey.as_bytes().to_vec();
                         // adbd expects a null-terminated string.

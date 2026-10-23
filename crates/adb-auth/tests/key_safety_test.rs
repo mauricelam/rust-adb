@@ -45,10 +45,10 @@ fn test_2_concurrent_load_or_generate_creates_one_key_and_returns_same_key() {
     }
 
     assert_eq!(keys.len(), 8);
-    let fp0 = adb_auth::fingerprint(&keys[0]);
+    let fp0 = adb_auth::fingerprint(&keys[0]).unwrap();
     for key in &keys[1..] {
         assert_eq!(
-            adb_auth::fingerprint(key),
+            adb_auth::fingerprint(key).unwrap(),
             fp0,
             "All threads must return the same key"
         );

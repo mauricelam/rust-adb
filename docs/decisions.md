@@ -45,7 +45,12 @@
 - Pinned upstream ADB revision: Android SDK Platform-tools 36.0.2 (Build 14143358)
 - Mutation kill-rate threshold: 100% (3/3 mutants killed, 0 survived in baseline task 0.10/0.11)
 
-## 9. C++ Build Source for Mutation Testing
+## 9. Key Comment Resolution in adb-auth
+
+**Decision:** `default_comment()` resolves the host name and login name by checking standard environment variables (`HOSTNAME`/`LOGNAME`/`USER` on Unix, `COMPUTERNAME`/`USERNAME` on Windows) and falling back to OS C/Win32 APIs (`gethostname`, `getlogin_r` on Unix via `libc`; `GetComputerNameW`, `GetUserNameW` on Windows) when environment variables are not set or not exported.
+**Reason:** Unexported shell variables like `HOSTNAME` in non-interactive subshells previously caused default comments to resolve as `unknown@unknown`. Using OS identity APIs mirrors C++ ADB (`GetLoginNameUTF8` and `GetHostNameUTF8` in `sysdeps/env.cpp`).
+
+## 10. C++ Build Source for Mutation Testing
 
 **Decision:** Use the vendored `android-tools-cmake` submodule (`37.0.0p1`) rather than building `original/` directly or using external tarballs. Mutants for mutation testing are applied as unified diff patches against `android-tools-cmake/vendor/adb`.
 **Reason:** The standalone C++ build from `android-tools-cmake` builds cleanly outside AOSP, vendors required support libraries, and provides a reproducible target for mutation testing on Linux.
