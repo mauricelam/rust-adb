@@ -1061,7 +1061,8 @@ impl AdbClient {
         }
 
         // 4. Connect to device service
-        let session_res = Session::connect_and_switch(&self.addr, selector, &service_string, false).await;
+        let session_res =
+            Session::connect_and_switch(&self.addr, selector, &service_string, false).await;
         let session = match session_res {
             Ok(s) => s,
             Err(e) => {
@@ -1241,8 +1242,7 @@ impl AdbClient {
                     match reader.read(&mut buf).await {
                         Ok(0) => break,
                         Ok(n) => {
-                            if out.write_all(&buf[..n]).await.is_err()
-                                || out.flush().await.is_err()
+                            if out.write_all(&buf[..n]).await.is_err() || out.flush().await.is_err()
                             {
                                 break;
                             }
@@ -1314,7 +1314,8 @@ impl AdbClient {
         }
         let service_string = format!("exec:{}", cmd_parts.join(" "));
 
-        let session_res = Session::connect_and_switch(&self.addr, selector, &service_string, false).await;
+        let session_res =
+            Session::connect_and_switch(&self.addr, selector, &service_string, false).await;
         let mut session = match session_res {
             Ok(s) => s,
             Err(e) => {
@@ -1374,7 +1375,8 @@ impl AdbClient {
         }
         let service_string = format!("exec:{}", cmd_parts.join(" "));
 
-        let session_res = Session::connect_and_switch(&self.addr, selector, &service_string, false).await;
+        let session_res =
+            Session::connect_and_switch(&self.addr, selector, &service_string, false).await;
         let mut session = match session_res {
             Ok(s) => s,
             Err(e) => {

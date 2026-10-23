@@ -120,8 +120,14 @@ async fn test_shell_echo_hello_parity() {
     let ref_out = server.run_client(&["-s", &mock.addr, "shell", "echo", "hello"]);
 
     assert_eq!(rust_status, ref_out.exit_code.unwrap_or(-1));
-    assert_eq!(norm(&String::from_utf8_lossy(&stdout)), norm(&ref_out.stdout));
-    assert_eq!(norm(&String::from_utf8_lossy(&stderr)), norm(&ref_out.stderr));
+    assert_eq!(
+        norm(&String::from_utf8_lossy(&stdout)),
+        norm(&ref_out.stdout)
+    );
+    assert_eq!(
+        norm(&String::from_utf8_lossy(&stderr)),
+        norm(&ref_out.stderr)
+    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -190,8 +196,14 @@ async fn test_shell_stderr_v2_parity() {
 
     assert_eq!(rust_status, 0);
     assert_eq!(rust_status, ref_out.exit_code.unwrap_or(-1));
-    assert_eq!(norm(&String::from_utf8_lossy(&stdout)), norm(&ref_out.stdout));
-    assert_eq!(norm(&String::from_utf8_lossy(&stderr)), norm(&ref_out.stderr));
+    assert_eq!(
+        norm(&String::from_utf8_lossy(&stdout)),
+        norm(&ref_out.stdout)
+    );
+    assert_eq!(
+        norm(&String::from_utf8_lossy(&stderr)),
+        norm(&ref_out.stderr)
+    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -225,7 +237,10 @@ async fn test_shell_piped_stdin_cat_parity() {
 
     let rust_status = outcome.result.unwrap();
     assert_eq!(rust_status, 0);
-    assert_eq!(norm(&String::from_utf8_lossy(&stdout)), "piped stdin content\n");
+    assert_eq!(
+        norm(&String::from_utf8_lossy(&stdout)),
+        "piped stdin content\n"
+    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -299,7 +314,9 @@ async fn test_shell_flag_x_refusal_parity() {
     let err = outcome.result.unwrap_err();
     let ref_out = server.run_client(&["-s", &mock.addr, "shell", "-x", "-T", "echo", "hello"]);
 
-    assert!(matches!(&err, ClientError::InvalidUsage(msg) if msg == "error: -x only supports allocating a pty"));
+    assert!(
+        matches!(&err, ClientError::InvalidUsage(msg) if msg == "error: -x only supports allocating a pty")
+    );
     assert_eq!(norm(err.to_string().trim()), norm(ref_out.stderr.trim()));
 }
 
@@ -336,7 +353,9 @@ async fn test_shell_device_without_shell_v2_refusal_parity() {
     let err = outcome.result.unwrap_err();
     let ref_out = server.run_client(&["-s", &mock.addr, "shell", "-T", "echo", "hello"]);
 
-    assert!(matches!(&err, ClientError::InvalidUsage(msg) if msg == "error: device only supports allocating a pty"));
+    assert!(
+        matches!(&err, ClientError::InvalidUsage(msg) if msg == "error: device only supports allocating a pty")
+    );
     assert_eq!(norm(err.to_string().trim()), norm(ref_out.stderr.trim()));
 }
 
@@ -372,7 +391,9 @@ async fn test_shell_command_too_long_refusal() {
         .await;
 
     let err = outcome.result.unwrap_err();
-    assert!(matches!(&err, ClientError::InvalidUsage(msg) if msg == "error: -x only supports allocating a pty" || msg == "error: shell command too long"));
+    assert!(
+        matches!(&err, ClientError::InvalidUsage(msg) if msg == "error: -x only supports allocating a pty" || msg == "error: shell command too long")
+    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -429,7 +450,10 @@ async fn test_exec_out_parity() {
 
     assert_eq!(exec_out_res.result.unwrap(), 0);
     let ref_out = server.run_client(&["-s", &mock.addr, "exec-out", "echo", "exec hello"]);
-    assert_eq!(norm(&String::from_utf8_lossy(&stdout)), norm(&ref_out.stdout));
+    assert_eq!(
+        norm(&String::from_utf8_lossy(&stdout)),
+        norm(&ref_out.stdout)
+    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
