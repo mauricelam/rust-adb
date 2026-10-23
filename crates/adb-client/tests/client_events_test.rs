@@ -308,7 +308,7 @@ async fn test_launcher_failure_preserves_events() {
 
         let outcome = execute_op(&client, op).await;
         assert!(
-            matches!(outcome.result, Err(ClientError::CannotConnectDaemon)),
+            matches!(outcome.result, Err(ClientError::CannotConnectDaemon { .. })),
             "Expected CannotConnectDaemon, got {:?}",
             outcome.result
         );

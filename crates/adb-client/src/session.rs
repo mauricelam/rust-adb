@@ -1,5 +1,8 @@
 use crate::server_address::ServerAddress;
 use crate::transport::TransportSelector;
+use adb_proto::smart_socket::{
+    parse_protocol_string, parse_reply, ProtocolString, SmartSocketError, SmartSocketReply,
+};
 use adb_proto::MAX_PAYLOAD;
 use std::fmt;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -109,12 +112,16 @@ impl std::error::Error for SessionError {
 #[derive(Debug)]
 pub struct Session {
     stream: TcpStream,
+    read_buf: Vec<u8>,
 }
 
 impl Session {
     /// Creates a new `Session` wrapping an existing `TcpStream`.
     pub fn new(stream: TcpStream) -> Self {
-        Self { stream }
+        Self {
+            stream,
+            read_buf: Vec::new(),
+        }
     }
 
     /// Connects to the ADB server at the given address.
@@ -132,7 +139,12 @@ impl Session {
         let mut last_err = None;
         for i in 0..5 {
             match TcpStream::connect((host, addr.port)).await {
-                Ok(stream) => return Ok(Self { stream }),
+                Ok(stream) => {
+                    return Ok(Self {
+                        stream,
+                        read_buf: Vec::new(),
+                    })
+                }
                 Err(err) => {
                     let retryable = matches!(
                         err.kind(),
@@ -221,88 +233,99 @@ impl Session {
 
     /// Reads smart-socket status response (`OKAY` or `FAIL` + length-prefixed reason).
     ///
-    /// Ports `adb_status()` from C++ `adb_client.cpp`.
+    /// Ports `adb_status()` from C++ `adb_client.cpp` on top of `adb_proto::parse_reply`.
     pub async fn read_status(&mut self) -> Result<(), SessionError> {
-        let mut status_buf = [0u8; 4];
-        if let Err(err) = self.stream.read_exact(&mut status_buf).await {
-            return Err(SessionError::ReadStatusFailed(err));
-        }
-
-        if &status_buf == b"OKAY" {
-            return Ok(());
-        }
-
-        if &status_buf != b"FAIL" {
-            return Err(SessionError::InvalidStatus(status_buf));
-        }
-
-        // FAIL case: read 4-hex length
-        let mut len_buf = [0u8; 4];
-        if let Err(err) = self.stream.read_exact(&mut len_buf).await {
-            return Err(SessionError::ReadStatusLengthFailed(err));
-        }
-
-        let len_str = std::str::from_utf8(&len_buf).map_err(|_| {
-            SessionError::ReadStatusLengthFailed(std::io::Error::new(
-                std::io::ErrorKind::InvalidData,
-                "invalid hex length",
-            ))
-        })?;
-
-        let len = usize::from_str_radix(len_str, 16).map_err(|_| {
-            SessionError::ReadStatusLengthFailed(std::io::Error::new(
-                std::io::ErrorKind::InvalidData,
-                "invalid hex length",
-            ))
-        })?;
-
-        let mut reason_buf = vec![0u8; len];
-        if len > 0 {
-            if let Err(err) = self.stream.read_exact(&mut reason_buf).await {
-                return Err(SessionError::ReadStatusMessageFailed(err));
+        loop {
+            match parse_reply(&self.read_buf) {
+                Ok((SmartSocketReply::Okay, consumed)) => {
+                    self.read_buf.drain(..consumed);
+                    return Ok(());
+                }
+                Ok((SmartSocketReply::Fail(reason), consumed)) => {
+                    self.read_buf.drain(..consumed);
+                    return Err(SessionError::Fail(reason));
+                }
+                Ok((SmartSocketReply::Incomplete, _)) => {
+                    let mut byte = [0u8; 1];
+                    if let Err(err) = self.stream.read_exact(&mut byte).await {
+                        if self.read_buf.is_empty() {
+                            return Err(SessionError::ReadStatusFailed(err));
+                        } else if self.read_buf.starts_with(b"FAIL") && self.read_buf.len() < 8 {
+                            return Err(SessionError::ReadStatusLengthFailed(err));
+                        } else if self.read_buf.starts_with(b"FAIL") {
+                            return Err(SessionError::ReadStatusMessageFailed(err));
+                        } else {
+                            return Err(SessionError::ReadStatusFailed(err));
+                        }
+                    }
+                    self.read_buf.push(byte[0]);
+                }
+                Err(SmartSocketError::InvalidStatus(status)) => {
+                    self.read_buf.clear();
+                    return Err(SessionError::InvalidStatus(status));
+                }
+                Err(SmartSocketError::InvalidHexLength(_)) => {
+                    self.read_buf.clear();
+                    return Err(SessionError::ReadStatusLengthFailed(std::io::Error::new(
+                        std::io::ErrorKind::InvalidData,
+                        "invalid hex length",
+                    )));
+                }
+                Err(SmartSocketError::InvalidUtf8(err)) => {
+                    self.read_buf.clear();
+                    return Err(SessionError::ReadStatusMessageFailed(std::io::Error::new(
+                        std::io::ErrorKind::InvalidData,
+                        err,
+                    )));
+                }
+                Err(SmartSocketError::RequestTooLong(_)) => unreachable!(),
             }
         }
-
-        let reason = String::from_utf8_lossy(&reason_buf).into_owned();
-        Err(SessionError::Fail(reason))
     }
 
     /// Reads a 4-hex-length prefixed string response after `OKAY`.
     ///
-    /// Ports `ReadProtocolString` from C++ `adb_io.cpp`.
+    /// Ports `ReadProtocolString` from C++ `adb_io.cpp` on top of `adb_proto::parse_protocol_string`.
     pub async fn read_string(&mut self) -> Result<String, SessionError> {
-        let mut len_buf = [0u8; 4];
-        if let Err(err) = self.stream.read_exact(&mut len_buf).await {
-            return Err(SessionError::ReadStatusLengthFailed(err));
-        }
-
-        let len_str = std::str::from_utf8(&len_buf).map_err(|_| {
-            SessionError::ReadStatusLengthFailed(std::io::Error::new(
-                std::io::ErrorKind::InvalidData,
-                "invalid hex length",
-            ))
-        })?;
-
-        let len = usize::from_str_radix(len_str, 16).map_err(|_| {
-            SessionError::ReadStatusLengthFailed(std::io::Error::new(
-                std::io::ErrorKind::InvalidData,
-                "invalid hex length",
-            ))
-        })?;
-
-        let mut payload_buf = vec![0u8; len];
-        if len > 0 {
-            if let Err(err) = self.stream.read_exact(&mut payload_buf).await {
-                return Err(SessionError::ReadStatusMessageFailed(err));
+        loop {
+            match parse_protocol_string(&self.read_buf) {
+                Ok((ProtocolString::Complete(payload), consumed)) => {
+                    self.read_buf.drain(..consumed);
+                    return Ok(payload);
+                }
+                Ok((ProtocolString::Incomplete, _)) => {
+                    let mut byte = [0u8; 1];
+                    if let Err(err) = self.stream.read_exact(&mut byte).await {
+                        if self.read_buf.len() < 4 {
+                            return Err(SessionError::ReadStatusLengthFailed(err));
+                        } else {
+                            return Err(SessionError::ReadStatusMessageFailed(err));
+                        }
+                    }
+                    self.read_buf.push(byte[0]);
+                }
+                Err(SmartSocketError::InvalidHexLength(_)) => {
+                    self.read_buf.clear();
+                    return Err(SessionError::ReadStatusLengthFailed(std::io::Error::new(
+                        std::io::ErrorKind::InvalidData,
+                        "invalid hex length",
+                    )));
+                }
+                Err(SmartSocketError::InvalidUtf8(err)) => {
+                    self.read_buf.clear();
+                    return Err(SessionError::ReadStatusMessageFailed(std::io::Error::new(
+                        std::io::ErrorKind::InvalidData,
+                        err,
+                    )));
+                }
+                Err(_) => unreachable!(),
             }
         }
-
-        Ok(String::from_utf8_lossy(&payload_buf).into_owned())
     }
 
     /// Reads all remaining bytes until socket is closed by server (orderly shutdown).
     pub async fn read_to_close(&mut self) -> Result<Vec<u8>, SessionError> {
-        let mut buf = Vec::new();
+        let mut buf = std::mem::take(&mut self.read_buf);
         self.stream
             .read_to_end(&mut buf)
             .await
