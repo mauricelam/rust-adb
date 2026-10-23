@@ -150,85 +150,81 @@ fn test_4_pkcs8_pem_format_and_reference_adb_compatibility() {
 }
 
 #[test]
+#[cfg(not(unix))]
 fn test_5_unix_file_permissions_0600_and_preexisting_0644_unchanged() {
-    if cfg!(windows) {
-        eprintln!("Skipping test_5 on Windows: file mode bits (0600/0644) are Unix-specific");
-        return;
-    }
-
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-
-        let temp_dir = TempDir::new().unwrap();
-        let key_path = temp_dir.path().join("perm_key");
-
-        adb_auth::generate_key(&key_path).expect("Failed to generate key");
-
-        let meta = fs::metadata(&key_path).unwrap();
-        let mode = meta.permissions().mode() & 0o777;
-        assert_eq!(
-            mode, 0o600,
-            "Generated key file mode must be 0600 on Unix, got {:o}",
-            mode
-        );
-
-        // Test that loading an existing key with 0644 permissions does NOT alter file permissions
-        let existing_key_path = temp_dir.path().join("loose_key");
-        adb_auth::generate_key(&existing_key_path).expect("Failed to generate key");
-
-        let mut perms = fs::metadata(&existing_key_path).unwrap().permissions();
-        perms.set_mode(0o644);
-        fs::set_permissions(&existing_key_path, perms).unwrap();
-
-        // Load the key file
-        let _loaded = adb_auth::read_key_file(&existing_key_path).expect("Read key file");
-        let _loaded_or_gen =
-            adb_auth::load_or_generate(&existing_key_path).expect("load_or_generate");
-
-        let meta_after = fs::metadata(&existing_key_path).unwrap();
-        let mode_after = meta_after.permissions().mode() & 0o777;
-        assert_eq!(
-            mode_after, 0o644,
-            "Loading an existing key file with 0644 mode must not alter its permissions, got {:o}",
-            mode_after
-        );
-    }
+    eprintln!("Skipping test_5 on non-Unix: file mode bits (0600/0644) are Unix-specific");
 }
 
 #[test]
+#[cfg(unix)]
+fn test_5_unix_file_permissions_0600_and_preexisting_0644_unchanged() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let temp_dir = TempDir::new().unwrap();
+    let key_path = temp_dir.path().join("perm_key");
+
+    adb_auth::generate_key(&key_path).expect("Failed to generate key");
+
+    let meta = fs::metadata(&key_path).unwrap();
+    let mode = meta.permissions().mode() & 0o777;
+    assert_eq!(
+        mode, 0o600,
+        "Generated key file mode must be 0600 on Unix, got {:o}",
+        mode
+    );
+
+    // Test that loading an existing key with 0644 permissions does NOT alter file permissions
+    let existing_key_path = temp_dir.path().join("loose_key");
+    adb_auth::generate_key(&existing_key_path).expect("Failed to generate key");
+
+    let mut perms = fs::metadata(&existing_key_path).unwrap().permissions();
+    perms.set_mode(0o644);
+    fs::set_permissions(&existing_key_path, perms).unwrap();
+
+    // Load the key file
+    let _loaded = adb_auth::read_key_file(&existing_key_path).expect("Read key file");
+    let _loaded_or_gen = adb_auth::load_or_generate(&existing_key_path).expect("load_or_generate");
+
+    let meta_after = fs::metadata(&existing_key_path).unwrap();
+    let mode_after = meta_after.permissions().mode() & 0o777;
+    assert_eq!(
+        mode_after, 0o644,
+        "Loading an existing key file with 0644 mode must not alter its permissions, got {:o}",
+        mode_after
+    );
+}
+
+#[test]
+#[cfg(not(unix))]
 fn test_6_android_dir_creation_permissions_0750() {
-    if cfg!(windows) {
-        eprintln!("Skipping test_6 on Windows: directory mode bits (0750) are Unix-specific");
-        return;
-    }
+    eprintln!("Skipping test_6 on non-Unix: directory mode bits (0750) are Unix-specific");
+}
 
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
+#[test]
+#[cfg(unix)]
+fn test_6_android_dir_creation_permissions_0750() {
+    use std::os::unix::fs::PermissionsExt;
 
-        let temp_dir = TempDir::new().unwrap();
-        let fake_home = temp_dir.path().join("home_user");
-        fs::create_dir(&fake_home).unwrap();
+    let temp_dir = TempDir::new().unwrap();
+    let fake_home = temp_dir.path().join("home_user");
+    fs::create_dir(&fake_home).unwrap();
 
-        temp_env::with_vars(
-            [
-                ("HOME", Some(fake_home.to_str().unwrap())),
-                ("USERPROFILE", Some(fake_home.to_str().unwrap())),
-            ],
-            || {
-                let android_dir =
-                    adb_auth::ensure_android_dir().expect("ensure_android_dir failed");
-                assert!(android_dir.exists(), ".android dir should exist");
+    temp_env::with_vars(
+        [
+            ("HOME", Some(fake_home.to_str().unwrap())),
+            ("USERPROFILE", Some(fake_home.to_str().unwrap())),
+        ],
+        || {
+            let android_dir = adb_auth::ensure_android_dir().expect("ensure_android_dir failed");
+            assert!(android_dir.exists(), ".android dir should exist");
 
-                let meta = fs::metadata(&android_dir).unwrap();
-                let mode = meta.permissions().mode() & 0o777;
-                assert_eq!(
-                    mode, 0o750,
-                    ".android directory permission mode on Unix must be 0750, got {:o}",
-                    mode
-                );
-            },
-        );
-    }
+            let meta = fs::metadata(&android_dir).unwrap();
+            let mode = meta.permissions().mode() & 0o777;
+            assert_eq!(
+                mode, 0o750,
+                ".android directory permission mode on Unix must be 0750, got {:o}",
+                mode
+            );
+        },
+    );
 }
