@@ -158,8 +158,9 @@ impl TestServer {
 
         let mut child = cmd.spawn().expect("Failed to start ADB server process");
 
+        // Wait up to 5 seconds for the server socket to accept connections
         let start_time = Instant::now();
-        let timeout = get_cmd_timeout();
+        let timeout = Duration::from_secs(5);
         let mut ready = false;
 
         while start_time.elapsed() < timeout {
@@ -174,19 +175,8 @@ impl TestServer {
         }
 
         if !ready {
-            #[cfg(unix)]
-            {
-                let pgid = child.id() as i32;
-                unsafe {
-                    libc::kill(-pgid, libc::SIGKILL);
-                }
-            }
             let _ = child.kill();
-            let _ = child.wait();
-            panic!(
-                "Timed out after {:?} waiting for ADB server to listen on port {port}",
-                timeout
-            );
+            panic!("Timed out waiting for ADB server to listen on port {port}");
         }
 
         TestServer {
@@ -204,7 +194,14 @@ impl TestServer {
         cmd.args(args);
         set_isolated_env(&mut cmd, self.home_dir.path(), self.port);
 
-        execute_cmd_with_timeout(cmd, args)
+        let output = cmd.output().expect("Failed to execute ADB client command");
+
+        TestOutput {
+            stdout: String::from_utf8_lossy(&output.stdout).to_string(),
+            stderr: String::from_utf8_lossy(&output.stderr).to_string(),
+            exit_code: output.status.code(),
+            status: output.status,
+        }
     }
 
     /// Sends a smart-socket request formatted as `4-hex-digit-len + service_name`,
@@ -310,112 +307,13 @@ pub fn run_client_with_config(config: &Config, args: &[&str]) -> TestOutput {
     cmd.args(args);
     set_isolated_env(&mut cmd, temp_dir.path(), port);
 
-    execute_cmd_with_timeout(cmd, args)
-}
-
-pub fn get_cmd_timeout() -> Duration {
-    env::var("COMPAT_CMD_TIMEOUT_SECS")
-        .ok()
-        .and_then(|v| v.parse::<u64>().ok())
-        .map(Duration::from_secs)
-        .unwrap_or(Duration::from_secs(60))
-}
-
-fn execute_cmd_with_timeout(mut cmd: Command, args_display: &[&str]) -> TestOutput {
-    cmd.stdout(std::process::Stdio::piped());
-    cmd.stderr(std::process::Stdio::piped());
-
-    #[cfg(unix)]
-    unsafe {
-        use std::os::unix::process::CommandExt;
-        cmd.pre_exec(|| {
-            libc::setpgid(0, 0);
-            Ok(())
-        });
-    }
-
-    let mut child = cmd.spawn().expect("Failed to execute ADB client command");
-
-    let stdout = child.stdout.take().expect("Failed to open stdout");
-    let stderr = child.stderr.take().expect("Failed to open stderr");
-
-    let stdout_buf = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
-    let stderr_buf = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
-
-    let stdout_clone = stdout_buf.clone();
-    let stdout_thread = thread::spawn(move || {
-        let mut reader = stdout;
-        let mut buf = [0u8; 1024];
-        while let Ok(n) = reader.read(&mut buf) {
-            if n == 0 {
-                break;
-            }
-            if let Ok(mut lock) = stdout_clone.lock() {
-                lock.extend_from_slice(&buf[..n]);
-            }
-        }
-    });
-
-    let stderr_clone = stderr_buf.clone();
-    let stderr_thread = thread::spawn(move || {
-        let mut reader = stderr;
-        let mut buf = [0u8; 1024];
-        while let Ok(n) = reader.read(&mut buf) {
-            if n == 0 {
-                break;
-            }
-            if let Ok(mut lock) = stderr_clone.lock() {
-                lock.extend_from_slice(&buf[..n]);
-            }
-        }
-    });
-
-    let start = Instant::now();
-    let timeout = get_cmd_timeout();
-
-    let status = loop {
-        match child.try_wait() {
-            Ok(Some(status)) => break status,
-            Ok(None) => {
-                if start.elapsed() >= timeout {
-                    #[cfg(unix)]
-                    {
-                        let pgid = child.id() as i32;
-                        unsafe {
-                            libc::kill(-pgid, libc::SIGKILL);
-                        }
-                    }
-                    let _ = child.kill();
-                    let _ = child.wait();
-
-                    let _ = stdout_thread.join();
-                    let _ = stderr_thread.join();
-
-                    let out_str = String::from_utf8_lossy(&stdout_buf.lock().unwrap()).to_string();
-                    let err_str = String::from_utf8_lossy(&stderr_buf.lock().unwrap()).to_string();
-
-                    panic!(
-                        "Command timed out after {:?}.\nArguments: {:?}\nCaptured stdout:\n{}\nCaptured stderr:\n{}",
-                        timeout, args_display, out_str, err_str
-                    );
-                }
-                thread::sleep(Duration::from_millis(50));
-            }
-            Err(e) => panic!("Error waiting for child process: {e}"),
-        }
-    };
-
-    let _ = stdout_thread.join();
-    let _ = stderr_thread.join();
-
-    let stdout = String::from_utf8_lossy(&stdout_buf.lock().unwrap()).to_string();
-    let stderr = String::from_utf8_lossy(&stderr_buf.lock().unwrap()).to_string();
+    let output = cmd.output().expect("Failed to execute ADB client command");
 
     TestOutput {
-        stdout,
-        stderr,
-        exit_code: status.code(),
-        status,
+        stdout: String::from_utf8_lossy(&output.stdout).to_string(),
+        stderr: String::from_utf8_lossy(&output.stderr).to_string(),
+        exit_code: output.status.code(),
+        status: output.status,
     }
 }
 

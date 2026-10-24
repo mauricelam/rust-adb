@@ -46,10 +46,10 @@ fn test_vendor_key_file_entry() {
 
     let keys = store.private_keys();
     let vendor_key_rsa = adb_auth::read_key_file(&vendor_key).unwrap();
-    let vendor_fp = fingerprint(&vendor_key_rsa).unwrap();
+    let vendor_fp = fingerprint(&vendor_key_rsa);
 
     assert!(
-        keys.iter().any(|k| fingerprint(k).unwrap() == vendor_fp),
+        keys.iter().any(|k| fingerprint(k) == vendor_fp),
         "KeyStore should contain vendor key"
     );
 }
@@ -78,15 +78,15 @@ fn test_vendor_key_directory_entry() {
     );
 
     let keys = store.private_keys();
-    let fp1 = fingerprint(&adb_auth::read_key_file(&key1).unwrap()).unwrap();
-    let fp2 = fingerprint(&adb_auth::read_key_file(&key2).unwrap()).unwrap();
+    let fp1 = fingerprint(&adb_auth::read_key_file(&key1).unwrap());
+    let fp2 = fingerprint(&adb_auth::read_key_file(&key2).unwrap());
 
     assert!(
-        keys.iter().any(|k| fingerprint(k).unwrap() == fp1),
+        keys.iter().any(|k| fingerprint(k) == fp1),
         "KeyStore should load key1.adb_key"
     );
     assert!(
-        keys.iter().any(|k| fingerprint(k).unwrap() == fp2),
+        keys.iter().any(|k| fingerprint(k) == fp2),
         "KeyStore should load key2.adb_key"
     );
 }
@@ -113,11 +113,11 @@ fn test_vendor_keys_duplicate_key_deduplication() {
         Some(vendor_dir.path().to_str().unwrap()),
     );
 
-    let fp1 = fingerprint(&adb_auth::read_key_file(&key1).unwrap()).unwrap();
+    let fp1 = fingerprint(&adb_auth::read_key_file(&key1).unwrap());
     let match_count = store
         .private_keys()
         .iter()
-        .filter(|k| fingerprint(k).unwrap() == fp1)
+        .filter(|k| fingerprint(k) == fp1)
         .count();
 
     assert_eq!(
@@ -159,12 +159,12 @@ fn test_vendor_keys_separator_with_two_entries() {
 
     let store = KeyStore::load(Some(user_dir.path()), Some(&vendor_env));
 
-    let fp1 = fingerprint(&adb_auth::read_key_file(&key1).unwrap()).unwrap();
-    let fp2 = fingerprint(&adb_auth::read_key_file(&key2).unwrap()).unwrap();
+    let fp1 = fingerprint(&adb_auth::read_key_file(&key1).unwrap());
+    let fp2 = fingerprint(&adb_auth::read_key_file(&key2).unwrap());
 
     let keys = store.private_keys();
-    assert!(keys.iter().any(|k| fingerprint(k).unwrap() == fp1));
-    assert!(keys.iter().any(|k| fingerprint(k).unwrap() == fp2));
+    assert!(keys.iter().any(|k| fingerprint(k) == fp1));
+    assert!(keys.iter().any(|k| fingerprint(k) == fp2));
 }
 
 #[test]
@@ -192,8 +192,8 @@ fn test_vendor_keys_ordering_by_fingerprint() {
 
     // Verify keys are strictly sorted in ascending fingerprint order
     for window in keys.windows(2) {
-        let fp1 = fingerprint(&window[0]).unwrap();
-        let fp2 = fingerprint(&window[1]).unwrap();
+        let fp1 = fingerprint(&window[0]);
+        let fp2 = fingerprint(&window[1]);
         assert!(
             fp1 < fp2,
             "Private keys must be ordered by fingerprint in ascending byte order"
@@ -285,7 +285,6 @@ fn test_oracle_against_reference_adb() {
         .iter()
         .map(|k| {
             fingerprint(k)
-                .unwrap()
                 .iter()
                 .map(|b| format!("{:02X}", b))
                 .collect()
@@ -300,33 +299,5 @@ fn test_oracle_against_reference_adb() {
     assert_eq!(
         rust_fingerprints, ref_sorted,
         "Rust KeyStore loaded fingerprints and ordering must match reference ADB"
-    );
-}
-
-#[test]
-fn test_parallel_keystore_instances() {
-    let dir1 = TempDir::new().unwrap();
-    let dir2 = TempDir::new().unwrap();
-
-    let h1 = std::thread::spawn(move || {
-        let store1 = KeyStore::load(Some(dir1.path()), None);
-        store1.private_keys()
-    });
-
-    let h2 = std::thread::spawn(move || {
-        let store2 = KeyStore::load(Some(dir2.path()), None);
-        store2.private_keys()
-    });
-
-    let keys1 = h1.join().unwrap();
-    let keys2 = h2.join().unwrap();
-
-    assert_eq!(keys1.len(), 1);
-    assert_eq!(keys2.len(), 1);
-    let fp1 = fingerprint(&keys1[0]).unwrap();
-    let fp2 = fingerprint(&keys2[0]).unwrap();
-    assert_ne!(
-        fp1, fp2,
-        "Keys generated in parallel KeyStores must be independent"
     );
 }

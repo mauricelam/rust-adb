@@ -1,6 +1,10 @@
+use std::collections::VecDeque;
 use std::fmt;
 
-pub use crate::limits::MAX_PAYLOAD;
+/// Maximum payload size supported by shell v2 protocol packets.
+///
+/// Ports `MAX_PAYLOAD` from `original/adb.h` and `ShellProtocol::kBufferSize` from `original/shell_protocol.h`.
+pub const MAX_PAYLOAD: usize = 1024 * 1024;
 
 /// Shell packet identifier corresponding to shell protocol stream IDs.
 ///
@@ -216,19 +220,26 @@ impl ShellPacket {
         })
     }
 
+    /// Encodes packet to a `Vec<u8>`.
+    ///
+    /// Unchecked for payload length limits; see [`encode_to_vec_checked`](Self::encode_to_vec_checked).
+    pub fn encode_to_vec(&self) -> Vec<u8> {
+        let mut buf = Vec::with_capacity(Self::HEADER_SIZE + self.data.len());
+        buf.push(self.id as u8);
+        buf.extend_from_slice(&(self.data.len() as u32).to_le_bytes());
+        buf.extend_from_slice(&self.data);
+        buf
+    }
+
     /// Encodes packet to a `Vec<u8>`, returning [`ShellEncodeError::PayloadTooLarge`] if `data.len() > MAX_PAYLOAD`.
-    pub fn encode(&self) -> Result<Vec<u8>, ShellEncodeError> {
+    pub fn encode_to_vec_checked(&self) -> Result<Vec<u8>, ShellEncodeError> {
         if self.data.len() > MAX_PAYLOAD {
             return Err(ShellEncodeError::PayloadTooLarge {
                 length: self.data.len(),
                 max: MAX_PAYLOAD,
             });
         }
-        let mut buf = Vec::with_capacity(Self::HEADER_SIZE + self.data.len());
-        buf.push(self.id as u8);
-        buf.extend_from_slice(&(self.data.len() as u32).to_le_bytes());
-        buf.extend_from_slice(&self.data);
-        Ok(buf)
+        Ok(self.encode_to_vec())
     }
 }
 
@@ -238,31 +249,20 @@ impl ShellPacket {
 /// Ports stream decoding logic from `original/shell_service_protocol.cpp`.
 #[derive(Debug, Default)]
 pub struct ShellDecoder {
-    buffer: Vec<u8>,
-    read_pos: usize,
-    error: Option<ShellDecodeError>,
+    buffer: VecDeque<u8>,
 }
 
 impl ShellDecoder {
     /// Creates a new, empty [`ShellDecoder`].
     pub fn new() -> Self {
         Self {
-            buffer: Vec::new(),
-            read_pos: 0,
-            error: None,
+            buffer: VecDeque::new(),
         }
     }
 
     /// Feeds incoming byte data into the decoder buffer.
     pub fn feed(&mut self, chunk: &[u8]) {
-        if self.read_pos > 0 && self.read_pos == self.buffer.len() {
-            self.buffer.clear();
-            self.read_pos = 0;
-        } else if self.read_pos > 64 * 1024 && self.read_pos * 2 >= self.buffer.len() {
-            self.buffer.drain(..self.read_pos);
-            self.read_pos = 0;
-        }
-        self.buffer.extend_from_slice(chunk);
+        self.buffer.extend(chunk);
     }
 
     /// Attempts to extract the next complete [`ShellPacket`] from buffered data.
@@ -270,53 +270,38 @@ impl ShellDecoder {
     /// Returns `Ok(Some(packet))` if a full packet was parsed.
     /// Returns `Ok(None)` if more input bytes are needed.
     /// Returns `Err(ShellDecodeError)` if the packet header is invalid or payload size exceeds [`MAX_PAYLOAD`].
-    /// Sticky: once an error occurs, subsequent calls return the same error until [`clear`](Self::clear) is called.
     pub fn pop_packet(&mut self) -> Result<Option<ShellPacket>, ShellDecodeError> {
-        if let Some(ref err) = self.error {
-            return Err(err.clone());
-        }
-
-        let unread = &self.buffer[self.read_pos..];
-        if unread.len() < ShellPacket::HEADER_SIZE {
+        if self.buffer.len() < ShellPacket::HEADER_SIZE {
             return Ok(None);
         }
 
-        let id_byte = unread[0];
-        let payload_len = u32::from_le_bytes(unread[1..5].try_into().unwrap()) as usize;
+        let id_byte = self.buffer[0];
+        let mut len_bytes = [0u8; 4];
+        for (i, b) in self.buffer.iter().skip(1).take(4).enumerate() {
+            len_bytes[i] = *b;
+        }
+        let payload_len = u32::from_le_bytes(len_bytes) as usize;
 
         if payload_len > MAX_PAYLOAD {
-            let err = ShellDecodeError::PayloadTooLarge {
+            return Err(ShellDecodeError::PayloadTooLarge {
                 length: payload_len,
                 max: MAX_PAYLOAD,
-            };
-            self.error = Some(err.clone());
-            return Err(err);
+            });
         }
 
-        let packet_id = match ShellPacketId::try_from(id_byte) {
-            Ok(id) => id,
-            Err(id) => {
-                let err = ShellDecodeError::UnknownPacketId(id);
-                self.error = Some(err.clone());
-                return Err(err);
-            }
-        };
+        let packet_id =
+            ShellPacketId::try_from(id_byte).map_err(ShellDecodeError::UnknownPacketId)?;
 
         let total_packet_size = ShellPacket::HEADER_SIZE + payload_len;
-        if unread.len() < total_packet_size {
+        if self.buffer.len() < total_packet_size {
             return Ok(None);
         }
 
-        // Complete packet is buffered! Copy payload using a contiguous slice copy.
-        let payload_start = self.read_pos + ShellPacket::HEADER_SIZE;
-        let payload_end = payload_start + payload_len;
-        let data = self.buffer[payload_start..payload_end].to_vec();
-
-        self.read_pos += total_packet_size;
-
-        if self.read_pos == self.buffer.len() {
-            self.buffer.clear();
-            self.read_pos = 0;
+        // We have a full packet! Pop header and payload.
+        self.buffer.drain(..ShellPacket::HEADER_SIZE);
+        let mut data = vec![0u8; payload_len];
+        for byte in data.iter_mut() {
+            *byte = self.buffer.pop_front().unwrap();
         }
 
         Ok(Some(ShellPacket {
@@ -325,10 +310,8 @@ impl ShellDecoder {
         }))
     }
 
-    /// Clears the decoder buffer and any recorded sticky error.
+    /// Clears the decoder buffer.
     pub fn clear(&mut self) {
         self.buffer.clear();
-        self.read_pos = 0;
-        self.error = None;
     }
 }

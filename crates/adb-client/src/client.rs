@@ -1,9 +1,8 @@
 use crate::server_address::ServerAddress;
-use crate::session::{Session, SessionConfig, SessionError};
+use crate::session::{Session, SessionError};
 use crate::transport::{format_host_command, TransportSelector};
 use std::future::Future;
 use std::pin::Pin;
-use std::sync::Arc;
 
 /// Mode selector for `track-devices` service variants.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -29,32 +28,6 @@ impl TrackDevicesMode {
 /// Expected ADB server version matching C++ `ADB_SERVER_VERSION` in `original/adb.h`.
 pub const ADB_SERVER_VERSION: u32 = 41;
 
-/// Configuration for launching an ADB server process.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct LaunchConfig {
-    pub ack_timeout: std::time::Duration,
-}
-
-impl Default for LaunchConfig {
-    fn default() -> Self {
-        Self {
-            ack_timeout: std::time::Duration::from_secs(15),
-        }
-    }
-}
-
-/// Classification of client errors.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ClientErrorKind {
-    Server,
-    Connection,
-    Protocol,
-    Usage,
-    Version,
-    Launch,
-    Timeout,
-}
-
 /// Events reported by client operations (e.g. version checks, server startup, kill).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ClientEvent {
@@ -62,7 +35,7 @@ pub enum ClientEvent {
     DaemonNotRunning { spec: String },
     CannotStartRemote,
     CannotConnectDaemon { spec: String, cause: String },
-    ErrorLine(String),
+    Error(String),
     FailedToStartDaemon,
     DaemonStarted,
 }
@@ -85,8 +58,12 @@ impl std::fmt::Display for ClientEvent {
             ClientEvent::CannotConnectDaemon { spec, cause } => {
                 write!(f, "cannot connect to daemon at {spec}: {cause}")
             }
-            ClientEvent::ErrorLine(msg) => {
-                write!(f, "{msg}")
+            ClientEvent::Error(msg) => {
+                if msg.starts_with("error:") || msg.starts_with("cannot connect") {
+                    write!(f, "{msg}")
+                } else {
+                    write!(f, "error: {msg}")
+                }
             }
             ClientEvent::FailedToStartDaemon => {
                 write!(f, "* failed to start daemon")
@@ -98,71 +75,39 @@ impl std::fmt::Display for ClientEvent {
     }
 }
 
-/// Result of an `AdbClient` operation paired with events emitted during version check or daemon management.
-#[derive(Debug)]
-pub struct Outcome<T> {
-    pub result: Result<T, ClientError>,
-    pub events: Vec<ClientEvent>,
-}
-
 /// Errors that can occur during high-level client operations.
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub enum ClientError {
     Session(SessionError),
     CannotConnect { spec: String, cause: String },
-    CannotConnectDaemon { source: Option<LaunchError> },
+    CannotConnectDaemon,
     CannotParseVersionString(String),
     KillFailed(String),
     FailedToCheckVersion(String),
     QueryFailed(String),
     InvalidUsage(String),
-    Timeout,
-}
-
-impl ClientError {
-    /// Returns the classification category of this client error.
-    pub fn kind(&self) -> ClientErrorKind {
-        match self {
-            ClientError::Session(err) => match err {
-                SessionError::CannotConnect { .. } => ClientErrorKind::Connection,
-                SessionError::Fail(_) => ClientErrorKind::Server,
-                SessionError::Timeout => ClientErrorKind::Timeout,
-                SessionError::BadServiceLength(_)
-                | SessionError::WriteFailure(_)
-                | SessionError::ReadTransportIdFailed
-                | SessionError::ReadStatusFailed(_)
-                | SessionError::ReadStatusLengthFailed(_)
-                | SessionError::ReadStatusMessageFailed(_)
-                | SessionError::InvalidStatus(_) => ClientErrorKind::Protocol,
-            },
-            ClientError::CannotConnect { .. } => ClientErrorKind::Connection,
-            ClientError::CannotConnectDaemon { source } => {
-                if let Some(LaunchError::Timeout(_)) = source {
-                    ClientErrorKind::Timeout
-                } else if source.is_some() {
-                    ClientErrorKind::Launch
-                } else {
-                    ClientErrorKind::Connection
-                }
-            }
-            ClientError::CannotParseVersionString(_) => ClientErrorKind::Version,
-            ClientError::KillFailed(_) => ClientErrorKind::Server,
-            ClientError::FailedToCheckVersion(_) => ClientErrorKind::Server,
-            ClientError::QueryFailed(_) => ClientErrorKind::Server,
-            ClientError::InvalidUsage(_) => ClientErrorKind::Usage,
-            ClientError::Timeout => ClientErrorKind::Timeout,
-        }
-    }
 }
 
 impl std::fmt::Display for ClientError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            ClientError::Session(err) => write!(f, "{err}"),
+            ClientError::Session(err) => {
+                let msg = err.to_string();
+                if msg.starts_with("error:")
+                    || msg.starts_with("cannot connect")
+                    || msg.starts_with("protocol fault")
+                    || msg.starts_with("bad service")
+                    || msg.starts_with("write failure")
+                {
+                    write!(f, "{msg}")
+                } else {
+                    write!(f, "error: {msg}")
+                }
+            }
             ClientError::CannotConnect { spec, cause } => {
                 write!(f, "cannot connect to daemon at {spec}: {cause}")
             }
-            ClientError::CannotConnectDaemon { .. } => {
+            ClientError::CannotConnectDaemon => {
                 write!(f, "cannot connect to daemon")
             }
             ClientError::CannotParseVersionString(ver) => {
@@ -172,9 +117,14 @@ impl std::fmt::Display for ClientError {
             ClientError::FailedToCheckVersion(err) => {
                 write!(f, "failed to check server version: {err}")
             }
-            ClientError::QueryFailed(msg) => write!(f, "{msg}"),
+            ClientError::QueryFailed(msg) => {
+                if msg.starts_with("error:") {
+                    write!(f, "{msg}")
+                } else {
+                    write!(f, "error: {msg}")
+                }
+            }
             ClientError::InvalidUsage(msg) => write!(f, "{msg}"),
-            ClientError::Timeout => write!(f, "timeout"),
         }
     }
 }
@@ -183,7 +133,6 @@ impl std::error::Error for ClientError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
             ClientError::Session(err) => Some(err),
-            ClientError::CannotConnectDaemon { source: Some(err) } => Some(err),
             _ => None,
         }
     }
@@ -201,20 +150,6 @@ pub enum LaunchError {
     Io(std::io::Error),
     FailedToReadAck(String),
     Unsupported(String),
-    Timeout(String),
-}
-
-impl Clone for LaunchError {
-    fn clone(&self) -> Self {
-        match self {
-            LaunchError::Io(err) => {
-                LaunchError::Io(std::io::Error::new(err.kind(), err.to_string()))
-            }
-            LaunchError::FailedToReadAck(msg) => LaunchError::FailedToReadAck(msg.clone()),
-            LaunchError::Unsupported(msg) => LaunchError::Unsupported(msg.clone()),
-            LaunchError::Timeout(msg) => LaunchError::Timeout(msg.clone()),
-        }
-    }
 }
 
 impl std::fmt::Display for LaunchError {
@@ -223,7 +158,6 @@ impl std::fmt::Display for LaunchError {
             LaunchError::Io(err) => write!(f, "IO error: {err}"),
             LaunchError::FailedToReadAck(msg) => write!(f, "{msg}"),
             LaunchError::Unsupported(msg) => write!(f, "{msg}"),
-            LaunchError::Timeout(msg) => write!(f, "{msg}"),
         }
     }
 }
@@ -251,36 +185,15 @@ pub trait SessionFactory: Send + Sync {
     ) -> Pin<Box<dyn Future<Output = Result<Session, SessionError>> + Send + 'a>>;
 }
 
-/// Default implementation of `SessionFactory` using `Session::connect_with_config`.
-pub struct DefaultSessionFactory {
-    config: SessionConfig,
-}
-
-impl DefaultSessionFactory {
-    pub fn new() -> Self {
-        Self {
-            config: SessionConfig::default(),
-        }
-    }
-
-    pub fn with_config(config: SessionConfig) -> Self {
-        Self { config }
-    }
-}
-
-impl Default for DefaultSessionFactory {
-    fn default() -> Self {
-        Self::new()
-    }
-}
+/// Default implementation of `SessionFactory` using `Session::connect`.
+pub struct DefaultSessionFactory;
 
 impl SessionFactory for DefaultSessionFactory {
     fn connect<'a>(
         &'a self,
         addr: &'a ServerAddress,
     ) -> Pin<Box<dyn Future<Output = Result<Session, SessionError>> + Send + 'a>> {
-        let config = self.config;
-        Box::pin(async move { Session::connect_with_config(addr, config).await })
+        Box::pin(async move { Session::connect(addr).await })
     }
 }
 
@@ -295,21 +208,7 @@ pub trait ServerLauncher: Send + Sync {
 
 /// Launches the server process by executing `std::env::current_exe()`.
 #[derive(Debug, Default, Clone, Copy)]
-pub struct SelfExecLauncher {
-    config: LaunchConfig,
-}
-
-impl SelfExecLauncher {
-    pub fn new() -> Self {
-        Self {
-            config: LaunchConfig::default(),
-        }
-    }
-
-    pub fn with_config(config: LaunchConfig) -> Self {
-        Self { config }
-    }
-}
+pub struct SelfExecLauncher;
 
 impl ServerLauncher for SelfExecLauncher {
     fn launch<'a>(
@@ -317,10 +216,9 @@ impl ServerLauncher for SelfExecLauncher {
         spec: &'a str,
         one_device: Option<&'a str>,
     ) -> Pin<Box<dyn Future<Output = Result<(), LaunchError>> + Send + 'a>> {
-        let config = self.config;
         Box::pin(async move {
             let exe = std::env::current_exe()?;
-            launch_binary(&exe, spec, one_device, config).await
+            launch_binary(&exe, spec, one_device).await
         })
     }
 }
@@ -329,22 +227,11 @@ impl ServerLauncher for SelfExecLauncher {
 #[derive(Debug, Clone)]
 pub struct ExternalBinaryLauncher {
     path: std::path::PathBuf,
-    config: LaunchConfig,
 }
 
 impl ExternalBinaryLauncher {
     pub fn new(path: impl Into<std::path::PathBuf>) -> Self {
-        Self {
-            path: path.into(),
-            config: LaunchConfig::default(),
-        }
-    }
-
-    pub fn with_config(path: impl Into<std::path::PathBuf>, config: LaunchConfig) -> Self {
-        Self {
-            path: path.into(),
-            config,
-        }
+        Self { path: path.into() }
     }
 }
 
@@ -354,8 +241,7 @@ impl ServerLauncher for ExternalBinaryLauncher {
         spec: &'a str,
         one_device: Option<&'a str>,
     ) -> Pin<Box<dyn Future<Output = Result<(), LaunchError>> + Send + 'a>> {
-        let config = self.config;
-        Box::pin(async move { launch_binary(&self.path, spec, one_device, config).await })
+        Box::pin(async move { launch_binary(&self.path, spec, one_device).await })
     }
 }
 
@@ -367,10 +253,8 @@ async fn launch_binary(
     path: &std::path::Path,
     spec: &str,
     one_device: Option<&str>,
-    config: LaunchConfig,
 ) -> Result<(), LaunchError> {
     use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
-    use std::process::Stdio;
     use tokio::io::AsyncReadExt;
 
     // Set up a pipe so the child process can acknowledge readiness ("OK\n").
@@ -386,10 +270,7 @@ async fn launch_binary(
     let write_fd_raw = write_fd.as_raw_fd();
 
     let mut cmd = tokio::process::Command::new(path);
-    cmd.stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .arg("-L")
+    cmd.arg("-L")
         .arg(spec)
         .arg("fork-server")
         .arg("server")
@@ -425,20 +306,14 @@ async fn launch_binary(
     let mut async_read = tokio::fs::File::from_std(read_file);
 
     let mut buf = [0u8; 3];
-    let read_res = tokio::time::timeout(config.ack_timeout, async_read.read_exact(&mut buf)).await;
+    let read_res = async_read.read_exact(&mut buf).await;
 
     match read_res {
-        Ok(Ok(3)) if &buf == b"OK\n" => Ok(()),
-        Ok(_) => {
+        Ok(3) if &buf == b"OK\n" => Ok(()),
+        _ => {
             let _ = child.kill().await;
             Err(LaunchError::FailedToReadAck(
                 "could not read ok from ADB Server".to_string(),
-            ))
-        }
-        Err(_) => {
-            let _ = child.kill().await;
-            Err(LaunchError::Timeout(
-                "could not read ok from ADB Server: timed out".to_string(),
             ))
         }
     }
@@ -449,7 +324,6 @@ async fn launch_binary(
     _path: &std::path::Path,
     _spec: &str,
     _one_device: Option<&str>,
-    _config: LaunchConfig,
 ) -> Result<(), LaunchError> {
     Err(LaunchError::Unsupported(
         "Windows server launching is not supported yet".to_string(),
@@ -481,7 +355,7 @@ pub async fn kill_server(
 
     if let Err(err) = session.send_service("host:kill").await {
         let msg = format!("write failure during connection: {err}");
-        events.push(ClientEvent::ErrorLine(format!("error: {msg}")));
+        events.push(ClientEvent::Error(msg.clone()));
         return Err(ClientError::KillFailed(msg));
     }
 
@@ -491,12 +365,12 @@ pub async fn kill_server(
             Ok(())
         }
         Err(SessionError::Fail(reason)) => {
-            events.push(ClientEvent::ErrorLine(format!("error: {reason}")));
+            events.push(ClientEvent::Error(reason.clone()));
             Err(ClientError::KillFailed(reason))
         }
         Err(_) => {
             let msg = "failed to read response from server".to_string();
-            events.push(ClientEvent::ErrorLine(format!("error: {msg}")));
+            events.push(ClientEvent::Error(msg.clone()));
             Err(ClientError::KillFailed(msg))
         }
     }
@@ -525,9 +399,9 @@ pub async fn start_server_with_one_device(
             events.push(ClientEvent::DaemonStarted);
             Ok(())
         }
-        Err(err) => {
+        Err(_err) => {
             events.push(ClientEvent::FailedToStartDaemon);
-            Err(ClientError::CannotConnectDaemon { source: Some(err) })
+            Err(ClientError::CannotConnectDaemon)
         }
     }
 }
@@ -597,85 +471,19 @@ pub async fn check_server_version(
     Ok(())
 }
 
-/// Builder for constructing an `AdbClient`.
-pub struct AdbClientBuilder {
-    addr: ServerAddress,
-    session_factory: Option<Arc<dyn SessionFactory>>,
-    launcher: Option<Arc<dyn ServerLauncher>>,
-    session_config: SessionConfig,
-    launch_config: LaunchConfig,
-}
-
-impl AdbClientBuilder {
-    pub fn new(addr: ServerAddress) -> Self {
-        Self {
-            addr,
-            session_factory: None,
-            launcher: None,
-            session_config: SessionConfig::default(),
-            launch_config: LaunchConfig::default(),
-        }
-    }
-
-    pub fn session_factory(mut self, factory: impl SessionFactory + 'static) -> Self {
-        self.session_factory = Some(Arc::new(factory));
-        self
-    }
-
-    pub fn launcher(mut self, launcher: impl ServerLauncher + 'static) -> Self {
-        self.launcher = Some(Arc::new(launcher));
-        self
-    }
-
-    pub fn session_config(mut self, config: SessionConfig) -> Self {
-        self.session_config = config;
-        self
-    }
-
-    pub fn launch_config(mut self, config: LaunchConfig) -> Self {
-        self.launch_config = config;
-        self
-    }
-
-    pub fn build(self) -> AdbClient {
-        let session_factory = self
-            .session_factory
-            .unwrap_or_else(|| Arc::new(DefaultSessionFactory::with_config(self.session_config)));
-        let launcher = self
-            .launcher
-            .unwrap_or_else(|| Arc::new(SelfExecLauncher::with_config(self.launch_config)));
-
-        AdbClient {
-            addr: self.addr,
-            session_factory,
-            launcher,
-            version_checked: tokio::sync::OnceCell::new(),
-        }
-    }
-}
-
-struct VersionCheckState {
-    result: Result<(), ClientError>,
-    events: std::sync::Mutex<Vec<ClientEvent>>,
-}
-
 /// Represents an ADB client instance associated with a server address.
 pub struct AdbClient {
     addr: ServerAddress,
-    session_factory: Arc<dyn SessionFactory>,
-    launcher: Arc<dyn ServerLauncher>,
-    version_checked: tokio::sync::OnceCell<VersionCheckState>,
+    version_checked: tokio::sync::OnceCell<Result<(), String>>,
 }
 
 impl AdbClient {
-    /// Returns a builder for configuring and creating an `AdbClient`.
-    pub fn builder(addr: ServerAddress) -> AdbClientBuilder {
-        AdbClientBuilder::new(addr)
-    }
-
-    /// Creates a new `AdbClient` targeting `addr` with default session factory and launcher.
+    /// Creates a new `AdbClient` targeting `addr`.
     pub fn new(addr: ServerAddress) -> Self {
-        Self::builder(addr).build()
+        Self {
+            addr,
+            version_checked: tokio::sync::OnceCell::new(),
+        }
     }
 
     /// Returns a reference to the server address.
@@ -683,60 +491,64 @@ impl AdbClient {
         &self.addr
     }
 
-    /// Ensures the server is running and version matches before executing host operations.
-    async fn ensure_server(&self) -> Outcome<()> {
-        let state = self
+    /// Checks the server version once per `AdbClient` instance.
+    pub async fn check_server_version(
+        &self,
+        session_factory: &dyn SessionFactory,
+        launcher: &dyn ServerLauncher,
+        events: &mut Vec<ClientEvent>,
+    ) -> Result<(), ClientError> {
+        let res: &Result<(), String> = self
             .version_checked
             .get_or_init(|| async {
                 let mut check_events = Vec::new();
-                let res = check_server_version(
-                    &self.addr,
-                    self.session_factory.as_ref(),
-                    self.launcher.as_ref(),
-                    &mut check_events,
-                )
-                .await;
-                VersionCheckState {
-                    result: res,
-                    events: std::sync::Mutex::new(check_events),
+                let res =
+                    check_server_version(&self.addr, session_factory, launcher, &mut check_events)
+                        .await;
+                events.extend(check_events);
+                match res {
+                    Ok(()) => Ok(()),
+                    Err(e) => Err(e.to_string()),
                 }
             })
             .await;
 
-        let events = {
-            let mut guard = state.events.lock().unwrap();
-            std::mem::take(&mut *guard)
-        };
-
-        Outcome {
-            result: state.result.clone(),
-            events,
+        match res {
+            Ok(()) => Ok(()),
+            Err(msg) => Err(ClientError::KillFailed(msg.clone())),
         }
     }
 
-    /// Checks the server version once per `AdbClient` instance.
-    pub async fn check_server_version(&self) -> Outcome<()> {
-        self.ensure_server().await
-    }
-
     /// Kills the ADB server for this client instance.
-    pub async fn kill_server(&self) -> Outcome<()> {
-        let mut events = Vec::new();
-        let result = kill_server(&self.addr, self.session_factory.as_ref(), &mut events).await;
-        Outcome { result, events }
+    pub async fn kill_server(
+        &self,
+        session_factory: &dyn SessionFactory,
+        events: &mut Vec<ClientEvent>,
+    ) -> Result<(), ClientError> {
+        kill_server(&self.addr, session_factory, events).await
     }
 
     /// Queries connected devices list (`host:devices` or `host:devices-l`).
     ///
     /// Ports `devices` command handling in `original/client/commandline.cpp`.
     /// Checks server version first, then prepends `"List of devices attached\n"`.
-    pub async fn devices(&self, long: bool) -> Outcome<String> {
-        let outcome = self.ensure_server().await;
-        if let Err(err) = outcome.result {
-            return Outcome {
-                result: Err(err),
-                events: outcome.events,
+    pub async fn devices(
+        &self,
+        long: bool,
+        session_factory: &dyn SessionFactory,
+        launcher: &dyn ServerLauncher,
+    ) -> Result<String, ClientError> {
+        let mut events = Vec::new();
+        if let Err(err) = self
+            .check_server_version(session_factory, launcher, &mut events)
+            .await
+        {
+            let err_str = match &err {
+                ClientError::Session(s_err) => s_err.to_string(),
+                _ => err.to_string(),
             };
+            let err_str = err_str.strip_prefix("error: ").unwrap_or(&err_str);
+            return Err(ClientError::FailedToCheckVersion(err_str.to_string()));
         }
 
         let service = if long {
@@ -745,34 +557,27 @@ impl AdbClient {
             "host:devices"
         };
 
-        let res = async {
-            let mut session = self.session_factory.connect(&self.addr).await?;
-            session.send_service(service).await?;
-            session.read_status().await?;
-            let payload = session.read_string().await?;
-            Ok(format!("List of devices attached\n{payload}\n"))
-        }
-        .await;
+        let mut session = session_factory.connect(&self.addr).await?;
+        session.send_service(service).await?;
+        session.read_status().await?;
+        let payload = session.read_string().await?;
 
-        Outcome {
-            result: res,
-            events: outcome.events,
-        }
+        Ok(format!("List of devices attached\n{payload}\n"))
     }
 
     /// Validates arguments for `devices` and executes query.
-    pub async fn devices_with_args(&self, args: &[&str]) -> Outcome<String> {
+    pub async fn devices_with_args(
+        &self,
+        args: &[&str],
+        session_factory: &dyn SessionFactory,
+        launcher: &dyn ServerLauncher,
+    ) -> Result<String, ClientError> {
         let long = match args {
             [] => false,
             ["-l"] => true,
-            _ => {
-                return Outcome {
-                    result: Err(ClientError::InvalidUsage("adb devices [-l]".to_string())),
-                    events: Vec::new(),
-                };
-            }
+            _ => return Err(ClientError::InvalidUsage("adb devices [-l]".to_string())),
         };
-        self.devices(long).await
+        self.devices(long, session_factory, launcher).await
     }
 
     /// Executes a general host query command formatted with transport selector.
@@ -782,120 +587,97 @@ impl AdbClient {
         &self,
         selector: &TransportSelector,
         command: &str,
-    ) -> Outcome<String> {
-        let outcome = self.ensure_server().await;
-        if let Err(err) = outcome.result {
-            return Outcome {
-                result: Err(err),
-                events: outcome.events,
-            };
-        }
-
+        session_factory: &dyn SessionFactory,
+    ) -> Result<String, ClientError> {
         let service = format_host_command(command, selector);
-        let res = async {
-            let mut session = self.session_factory.connect(&self.addr).await?;
-            session.send_service(&service).await?;
-            session.read_status().await?;
-            let payload = session.read_string().await?;
-            Ok(format!("{payload}\n"))
-        }
-        .await;
-
-        Outcome {
-            result: res,
-            events: outcome.events,
-        }
+        let mut session = session_factory.connect(&self.addr).await?;
+        session.send_service(&service).await?;
+        session.read_status().await?;
+        let payload = session.read_string().await?;
+        Ok(format!("{payload}\n"))
     }
 
     /// Queries the target device state (`get-state`).
-    pub async fn get_state(&self, selector: &TransportSelector) -> Outcome<String> {
-        self.query_command(selector, "get-state").await
+    pub async fn get_state(
+        &self,
+        selector: &TransportSelector,
+        session_factory: &dyn SessionFactory,
+    ) -> Result<String, ClientError> {
+        self.query_command(selector, "get-state", session_factory)
+            .await
     }
 
     /// Queries the target device serial number (`get-serialno`).
-    pub async fn get_serialno(&self, selector: &TransportSelector) -> Outcome<String> {
-        self.query_command(selector, "get-serialno").await
+    pub async fn get_serialno(
+        &self,
+        selector: &TransportSelector,
+        session_factory: &dyn SessionFactory,
+    ) -> Result<String, ClientError> {
+        self.query_command(selector, "get-serialno", session_factory)
+            .await
     }
 
     /// Queries the target device path (`get-devpath`).
-    pub async fn get_devpath(&self, selector: &TransportSelector) -> Outcome<String> {
-        self.query_command(selector, "get-devpath").await
+    pub async fn get_devpath(
+        &self,
+        selector: &TransportSelector,
+        session_factory: &dyn SessionFactory,
+    ) -> Result<String, ClientError> {
+        self.query_command(selector, "get-devpath", session_factory)
+            .await
     }
 
     /// Queries the target device transport ID (`transport-id`).
     ///
     /// Asks `host:features` with a forced device transport switch, returning the decimal transport ID.
     /// Ports `transport-id` handling from `original/client/commandline.cpp`.
-    pub async fn transport_id(&self, selector: &TransportSelector) -> Outcome<String> {
-        let outcome = self.ensure_server().await;
-        if let Err(err) = outcome.result {
-            return Outcome {
-                result: Err(err),
-                events: outcome.events,
-            };
-        }
-
-        let res = async {
-            let mut session = self.session_factory.connect(&self.addr).await?;
-            let transport_id = session.select_transport(selector).await?.unwrap_or(0);
-            session.send_service("host:features").await?;
-            session.read_status().await?;
-            Ok(format!("{transport_id}\n"))
-        }
-        .await;
-
-        Outcome {
-            result: res,
-            events: outcome.events,
-        }
+    pub async fn transport_id(
+        &self,
+        selector: &TransportSelector,
+        session_factory: &dyn SessionFactory,
+    ) -> Result<String, ClientError> {
+        let mut session = session_factory.connect(&self.addr).await?;
+        let transport_id = session.select_transport(selector).await?.unwrap_or(0);
+        session.send_service("host:features").await?;
+        session.read_status().await?;
+        Ok(format!("{transport_id}\n"))
     }
 
     /// Queries target device features and filters against client supported features (`features`).
     ///
     /// Ports `features` handling from `original/client/commandline.cpp`.
-    pub async fn features(&self, selector: &TransportSelector) -> Outcome<String> {
-        let outcome = self.ensure_server().await;
-        if let Err(err) = outcome.result {
-            return Outcome {
-                result: Err(err),
-                events: outcome.events,
-            };
-        }
-
+    pub async fn features(
+        &self,
+        selector: &TransportSelector,
+        session_factory: &dyn SessionFactory,
+    ) -> Result<String, ClientError> {
         let service = format_host_command("features", selector);
-        let res = async {
-            let mut session = self.session_factory.connect(&self.addr).await?;
-            session.send_service(&service).await?;
-            session.read_status().await?;
-            let payload = session.read_string().await?;
+        let mut session = session_factory.connect(&self.addr).await?;
+        session.send_service(&service).await?;
+        session.read_status().await?;
+        let payload = session.read_string().await?;
 
-            let device_features = adb_proto::Features::parse(&payload);
-            let burst = std::env::var("ADB_BURST_MODE").is_ok_and(|v| v == "1");
-            let options = adb_proto::FeatureOptions { delayed_ack: burst };
-            let client_features = adb_proto::client_supported_features(&options);
+        let device_features = adb_proto::Features::parse(&payload);
+        let client_features = adb_proto::supported_features();
 
-            let mut output = String::new();
-            for feature in device_features.items() {
-                if client_features.contains(feature) {
-                    output.push_str(feature.as_str());
-                    output.push('\n');
-                }
+        let mut output = String::new();
+        for feature in device_features.items() {
+            if client_features.contains(feature) {
+                output.push_str(feature.as_str());
+                output.push('\n');
             }
-            Ok(output)
         }
-        .await;
-
-        Outcome {
-            result: res,
-            events: outcome.events,
-        }
+        Ok(output)
     }
 
     /// Queries server host features (`host-features`).
     ///
     /// Ports `host-features` handling from `original/client/commandline.cpp`.
-    pub async fn host_features(&self) -> Outcome<String> {
-        self.query_command(&TransportSelector::Any, "host-features")
+    pub async fn host_features(
+        &self,
+        session_factory: &dyn SessionFactory,
+    ) -> Result<String, ClientError> {
+        self.query_command(&TransportSelector::Any, "host-features", session_factory)
             .await
     }
 
@@ -903,41 +685,30 @@ impl AdbClient {
     ///
     /// Ports `connect` command handling from `original/client/commandline.cpp`.
     /// Returns reply text on success. Returns error on failure or query refusal.
-    pub async fn connect(&self, target: &str) -> Outcome<String> {
-        let outcome = self.ensure_server().await;
-        if let Err(err) = outcome.result {
-            return Outcome {
-                result: Err(err),
-                events: outcome.events,
-            };
-        }
-
+    pub async fn connect(
+        &self,
+        target: &str,
+        session_factory: &dyn SessionFactory,
+    ) -> Result<String, ClientError> {
         let service = format!("host:connect:{target}");
-        let res = async {
-            let mut session = self.session_factory.connect(&self.addr).await?;
-            session.send_service(&service).await?;
-            session.read_status().await?;
-            let payload = session.read_string().await?;
-            Ok(payload)
-        }
-        .await;
-
-        Outcome {
-            result: res,
-            events: outcome.events,
-        }
+        let mut session = session_factory.connect(&self.addr).await?;
+        session.send_service(&service).await?;
+        session.read_status().await?;
+        let payload = session.read_string().await?;
+        Ok(payload)
     }
 
     /// Validates arguments for `connect` and executes command.
-    pub async fn connect_with_args(&self, args: &[&str]) -> Outcome<String> {
+    pub async fn connect_with_args(
+        &self,
+        args: &[&str],
+        session_factory: &dyn SessionFactory,
+    ) -> Result<String, ClientError> {
         match args {
-            [target] => self.connect(target).await,
-            _ => Outcome {
-                result: Err(ClientError::InvalidUsage(
-                    "usage: adb connect HOST[:PORT]".to_string(),
-                )),
-                events: Vec::new(),
-            },
+            [target] => self.connect(target, session_factory).await,
+            _ => Err(ClientError::InvalidUsage(
+                "usage: adb connect HOST[:PORT]".to_string(),
+            )),
         }
     }
 
@@ -945,42 +716,31 @@ impl AdbClient {
     ///
     /// Ports `disconnect` command handling from `original/client/commandline.cpp`.
     /// If `target` is `None`, disconnects all TCP/IP devices.
-    pub async fn disconnect(&self, target: Option<&str>) -> Outcome<String> {
-        let outcome = self.ensure_server().await;
-        if let Err(err) = outcome.result {
-            return Outcome {
-                result: Err(err),
-                events: outcome.events,
-            };
-        }
-
+    pub async fn disconnect(
+        &self,
+        target: Option<&str>,
+        session_factory: &dyn SessionFactory,
+    ) -> Result<String, ClientError> {
         let service = format!("host:disconnect:{}", target.unwrap_or(""));
-        let res = async {
-            let mut session = self.session_factory.connect(&self.addr).await?;
-            session.send_service(&service).await?;
-            session.read_status().await?;
-            let payload = session.read_string().await?;
-            Ok(payload)
-        }
-        .await;
-
-        Outcome {
-            result: res,
-            events: outcome.events,
-        }
+        let mut session = session_factory.connect(&self.addr).await?;
+        session.send_service(&service).await?;
+        session.read_status().await?;
+        let payload = session.read_string().await?;
+        Ok(payload)
     }
 
     /// Validates arguments for `disconnect` and executes command.
-    pub async fn disconnect_with_args(&self, args: &[&str]) -> Outcome<String> {
+    pub async fn disconnect_with_args(
+        &self,
+        args: &[&str],
+        session_factory: &dyn SessionFactory,
+    ) -> Result<String, ClientError> {
         match args {
-            [] => self.disconnect(None).await,
-            [target] => self.disconnect(Some(target)).await,
-            _ => Outcome {
-                result: Err(ClientError::InvalidUsage(
-                    "usage: adb disconnect [HOST[:PORT]]".to_string(),
-                )),
-                events: Vec::new(),
-            },
+            [] => self.disconnect(None, session_factory).await,
+            [target] => self.disconnect(Some(target), session_factory).await,
+            _ => Err(ClientError::InvalidUsage(
+                "usage: adb disconnect [HOST[:PORT]]".to_string(),
+            )),
         }
     }
 
@@ -988,45 +748,16 @@ impl AdbClient {
     ///
     /// Ports `track-devices` command handling from `original/client/commandline.cpp`.
     /// Returns a stream of raw byte chunks as sent by the server. Dropping the stream closes the socket connection.
-    pub async fn track_devices(
-        &self,
+    pub fn track_devices<'a>(
+        &'a self,
         mode: TrackDevicesMode,
-    ) -> Outcome<Pin<Box<dyn tokio_stream::Stream<Item = Result<bytes::Bytes, ClientError>> + Send>>>
-    {
-        let outcome = self.ensure_server().await;
-        if let Err(err) = outcome.result {
-            return Outcome {
-                result: Err(err),
-                events: outcome.events,
-            };
-        }
+        session_factory: &'a dyn SessionFactory,
+    ) -> impl tokio_stream::Stream<Item = Result<bytes::Bytes, ClientError>> + Send + 'a {
+        async_stream::try_stream! {
+            let mut session = session_factory.connect(&self.addr).await?;
+            session.send_service(mode.service_name()).await?;
+            session.read_status().await?;
 
-        let session_res = self.session_factory.connect(&self.addr).await;
-        let mut session = match session_res {
-            Ok(s) => s,
-            Err(e) => {
-                return Outcome {
-                    result: Err(e.into()),
-                    events: outcome.events,
-                }
-            }
-        };
-
-        if let Err(e) = session.send_service(mode.service_name()).await {
-            return Outcome {
-                result: Err(e.into()),
-                events: outcome.events,
-            };
-        }
-
-        if let Err(e) = session.read_status().await {
-            return Outcome {
-                result: Err(e.into()),
-                events: outcome.events,
-            };
-        }
-
-        let stream = async_stream::try_stream! {
             let mut stream = session.into_inner();
             let mut buf = [0u8; 8192];
             loop {
@@ -1040,34 +771,29 @@ impl AdbClient {
                 }
                 yield bytes::Bytes::copy_from_slice(&buf[..n]);
             }
-        };
-
-        Outcome {
-            result: Ok(Box::pin(stream)),
-            events: outcome.events,
         }
     }
 
     /// Validates arguments for `track-devices` and returns tracking stream.
-    pub async fn track_devices_with_args(
-        &self,
+    pub fn track_devices_with_args<'a>(
+        &'a self,
         args: &[&str],
-    ) -> Outcome<Pin<Box<dyn tokio_stream::Stream<Item = Result<bytes::Bytes, ClientError>> + Send>>>
-    {
+        session_factory: &'a dyn SessionFactory,
+    ) -> Result<
+        impl tokio_stream::Stream<Item = Result<bytes::Bytes, ClientError>> + Send + 'a,
+        ClientError,
+    > {
         let mode = match args {
             [] => TrackDevicesMode::Normal,
             ["-l"] => TrackDevicesMode::Long,
             ["--proto-text"] => TrackDevicesMode::ProtoText,
             ["--proto-binary"] => TrackDevicesMode::ProtoBinary,
             _ => {
-                return Outcome {
-                    result: Err(ClientError::InvalidUsage(
-                        "usage: adb track-devices [-l][--proto-text][--proto-binary]".to_string(),
-                    )),
-                    events: Vec::new(),
-                };
+                return Err(ClientError::InvalidUsage(
+                    "usage: adb track-devices [-l][--proto-text][--proto-binary]".to_string(),
+                ))
             }
         };
-        self.track_devices(mode).await
+        Ok(self.track_devices(mode, session_factory))
     }
 }

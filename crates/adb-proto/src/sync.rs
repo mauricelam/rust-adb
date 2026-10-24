@@ -6,25 +6,55 @@ use std::fmt;
 /// Ports `ID_LSTAT_V1` from `original/file_sync_protocol.h`.
 pub const ID_LSTAT_V1: u32 = u32::from_le_bytes(*b"STAT");
 
+/// `ID_STAT_V2` constant (`MKID('S', 'T', 'A', '2')`).
+///
+/// Ports `ID_STAT_V2` from `original/file_sync_protocol.h`.
+pub const ID_STAT_V2: u32 = u32::from_le_bytes(*b"STA2");
+
+/// `ID_LSTAT_V2` constant (`MKID('L', 'S', 'T', '2')`).
+///
+/// Ports `ID_LSTAT_V2` from `original/file_sync_protocol.h`.
+pub const ID_LSTAT_V2: u32 = u32::from_le_bytes(*b"LST2");
+
 /// `ID_LIST_V1` constant (`MKID('L', 'I', 'S', 'T')`).
 ///
 /// Ports `ID_LIST_V1` from `original/file_sync_protocol.h`.
 pub const ID_LIST_V1: u32 = u32::from_le_bytes(*b"LIST");
+
+/// `ID_LIST_V2` constant (`MKID('L', 'I', 'S', '2')`).
+///
+/// Ports `ID_LIST_V2` from `original/file_sync_protocol.h`.
+pub const ID_LIST_V2: u32 = u32::from_le_bytes(*b"LIS2");
 
 /// `ID_DENT_V1` constant (`MKID('D', 'E', 'N', 'T')`).
 ///
 /// Ports `ID_DENT_V1` from `original/file_sync_protocol.h`.
 pub const ID_DENT_V1: u32 = u32::from_le_bytes(*b"DENT");
 
+/// `ID_DENT_V2` constant (`MKID('D', 'N', 'T', '2')`).
+///
+/// Ports `ID_DENT_V2` from `original/file_sync_protocol.h`.
+pub const ID_DENT_V2: u32 = u32::from_le_bytes(*b"DNT2");
+
 /// `ID_SEND_V1` constant (`MKID('S', 'E', 'N', 'D')`).
 ///
 /// Ports `ID_SEND_V1` from `original/file_sync_protocol.h`.
 pub const ID_SEND_V1: u32 = u32::from_le_bytes(*b"SEND");
 
+/// `ID_SEND_V2` constant (`MKID('S', 'N', 'D', '2')`).
+///
+/// Ports `ID_SEND_V2` from `original/file_sync_protocol.h`.
+pub const ID_SEND_V2: u32 = u32::from_le_bytes(*b"SND2");
+
 /// `ID_RECV_V1` constant (`MKID('R', 'E', 'C', 'V')`).
 ///
 /// Ports `ID_RECV_V1` from `original/file_sync_protocol.h`.
 pub const ID_RECV_V1: u32 = u32::from_le_bytes(*b"RECV");
+
+/// `ID_RECV_V2` constant (`MKID('R', 'C', 'V', '2')`).
+///
+/// Ports `ID_RECV_V2` from `original/file_sync_protocol.h`.
+pub const ID_RECV_V2: u32 = u32::from_le_bytes(*b"RCV2");
 
 /// `ID_DONE` constant (`MKID('D', 'O', 'N', 'E')`).
 ///
