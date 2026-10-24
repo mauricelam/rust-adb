@@ -180,7 +180,8 @@ fn format_winsz_payload(data: &[u8]) -> Vec<u8> {
         ShellPacketId::Stdout,
         format!("WINSZ {text}\n").into_bytes(),
     )
-    .encode_to_vec()
+    .encode()
+    .expect("shell packet encoding failed")
 }
 
 enum StreamKind {
@@ -369,10 +370,14 @@ pub async fn handle_connection_with_options(
 
                             let mut pending_writes = VecDeque::new();
                             if let Some(pkt) = output_pkt {
-                                pending_writes.push_back(pkt.encode_to_vec());
+                                pending_writes
+                                    .push_back(pkt.encode().expect("shell encode failed"));
                             }
-                            pending_writes
-                                .push_back(ShellPacket::exit_code(exit_code).encode_to_vec());
+                            pending_writes.push_back(
+                                ShellPacket::exit_code(exit_code)
+                                    .encode()
+                                    .expect("shell encode failed"),
+                            );
 
                             streams.insert(
                                 mock_local_id,
@@ -497,11 +502,14 @@ pub async fn handle_connection_with_options(
                                     ShellPacketId::Stdin => {
                                         let stdout_bytes =
                                             ShellPacket::new(ShellPacketId::Stdout, pkt.data)
-                                                .encode_to_vec();
+                                                .encode()
+                                                .expect("shell encode failed");
                                         stream_state.pending_writes.push_back(stdout_bytes);
                                     }
                                     ShellPacketId::CloseStdin => {
-                                        let exit_bytes = ShellPacket::exit_code(0).encode_to_vec();
+                                        let exit_bytes = ShellPacket::exit_code(0)
+                                            .encode()
+                                            .expect("shell encode failed");
                                         stream_state.pending_writes.push_back(exit_bytes);
                                         stream_state.close_pending = true;
                                     }
