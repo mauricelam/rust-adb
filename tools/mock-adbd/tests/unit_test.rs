@@ -208,7 +208,7 @@ async fn test_mock_adbd_banner_features() {
 
         let (_, cnxn_payload) = read_packet(&mut reader).await.unwrap().unwrap();
         let banner = Banner::parse(&String::from_utf8_lossy(&cnxn_payload));
-        assert!(banner.features.contains(&Feature::Shell2));
+        assert!(banner.features().contains(&Feature::Shell2));
         server.shutdown();
 
         // Server with enable_shell_v2 = false does not advertise shell_v2
@@ -237,7 +237,7 @@ async fn test_mock_adbd_banner_features() {
 
         let (_, cnxn_payload_no_v2) = read_packet(&mut reader_no_v2).await.unwrap().unwrap();
         let banner_no_v2 = Banner::parse(&String::from_utf8_lossy(&cnxn_payload_no_v2));
-        assert!(!banner_no_v2.features.contains(&Feature::Shell2));
+        assert!(!banner_no_v2.features().contains(&Feature::Shell2));
         server_no_v2.shutdown();
     })
     .await
