@@ -135,7 +135,7 @@ async fn test_stale_clse_does_not_abort_next_stream() {
             Command::Wrte,
             host_id_3,
             mock_id_3,
-            &stdin.encode_to_vec(),
+            &stdin.encode().unwrap(),
         )
         .await
         .unwrap();
@@ -159,7 +159,7 @@ async fn test_stale_clse_does_not_abort_next_stream() {
             Command::Wrte,
             host_id_3,
             mock_id_3,
-            &close_stdin.encode_to_vec(),
+            &close_stdin.encode().unwrap(),
         )
         .await
         .unwrap();
@@ -469,7 +469,7 @@ async fn test_mock_adbd_shell_v2_cat_and_pty_winsz() {
             Command::Wrte,
             host_id,
             mock_id,
-            &winsz_pkt.encode_to_vec(),
+            &winsz_pkt.encode().unwrap(),
         )
         .await
         .unwrap();
@@ -501,7 +501,7 @@ async fn test_mock_adbd_shell_v2_cat_and_pty_winsz() {
             Command::Wrte,
             host_id,
             mock_id,
-            &stdin_pkt.encode_to_vec(),
+            &stdin_pkt.encode().unwrap(),
         )
         .await
         .unwrap();
@@ -526,7 +526,7 @@ async fn test_mock_adbd_shell_v2_cat_and_pty_winsz() {
             Command::Wrte,
             host_id,
             mock_id,
-            &close_stdin_pkt.encode_to_vec(),
+            &close_stdin_pkt.encode().unwrap(),
         )
         .await
         .unwrap();
@@ -683,7 +683,7 @@ async fn test_mock_adbd_concurrent_cat_streams() {
             Command::Wrte,
             host_id_1,
             mock_id_1,
-            &stdin1.encode_to_vec(),
+            &stdin1.encode().unwrap(),
         )
         .await
         .unwrap();
@@ -695,7 +695,7 @@ async fn test_mock_adbd_concurrent_cat_streams() {
             Command::Wrte,
             host_id_2,
             mock_id_2,
-            &stdin2.encode_to_vec(),
+            &stdin2.encode().unwrap(),
         )
         .await
         .unwrap();
@@ -740,7 +740,7 @@ async fn test_mock_adbd_concurrent_cat_streams() {
             Command::Wrte,
             host_id_1,
             mock_id_1,
-            &close1.encode_to_vec(),
+            &close1.encode().unwrap(),
         )
         .await
         .unwrap();
@@ -771,7 +771,7 @@ async fn test_mock_adbd_concurrent_cat_streams() {
             Command::Wrte,
             host_id_2,
             mock_id_2,
-            &close2.encode_to_vec(),
+            &close2.encode().unwrap(),
         )
         .await
         .unwrap();
@@ -951,7 +951,7 @@ async fn test_mock_adbd_host_clse_middle() {
             Command::Wrte,
             host_id_2,
             mock_id_2,
-            &stdin2.encode_to_vec(),
+            &stdin2.encode().unwrap(),
         )
         .await
         .unwrap();
@@ -983,7 +983,7 @@ async fn test_mock_adbd_host_clse_middle() {
             Command::Wrte,
             host_id_2,
             mock_id_2,
-            &close2.encode_to_vec(),
+            &close2.encode().unwrap(),
         )
         .await
         .unwrap();
