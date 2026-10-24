@@ -149,3 +149,61 @@ fn test_5_rejection_of_invalid_keys_and_malformed_input() {
     bad_exp[520..524].copy_from_slice(&17u32.to_le_bytes()); // invalid exponent
     assert!(adb_auth::decode_public_key(&bad_exp).is_err());
 }
+
+#[test]
+fn test_rejection_of_large_exponent() {
+    let mut rng = rand::thread_rng();
+    let priv_key = RsaPrivateKey::new(&mut rng, 2048).unwrap();
+    let n = priv_key.n().clone();
+    let large_e = (num_bigint_dig::BigUint::from(1u64) << 32) + 65537u32;
+    let pub_key = rsa::RsaPublicKey::new(n, large_e).expect("valid RsaPublicKey construction");
+
+    assert!(adb_auth::encode_public_key(&pub_key).is_err());
+}
+
+#[test]
+fn test_default_comment_resolution() {
+    let comment = adb_auth::default_comment();
+    assert!(
+        comment.contains('@'),
+        "default_comment must be of form user@host, got: {}",
+        comment
+    );
+
+    let parts: Vec<&str> = comment.splitn(2, '@').collect();
+    let user = parts[0];
+    let host = parts[1];
+
+    assert!(
+        !user.is_empty(),
+        "User in default_comment should not be empty"
+    );
+    assert!(
+        !host.is_empty(),
+        "Host in default_comment should not be empty"
+    );
+
+    #[cfg(unix)]
+    {
+        let whoami = Command::new("whoami").output();
+        let hostname = Command::new("hostname").output();
+
+        if let (Ok(u_out), Ok(h_out)) = (whoami, hostname) {
+            let sys_user = String::from_utf8_lossy(&u_out.stdout).trim().to_string();
+            let sys_host = String::from_utf8_lossy(&h_out.stdout).trim().to_string();
+
+            if !sys_user.is_empty() {
+                assert_eq!(
+                    user, sys_user,
+                    "User in default_comment should match OS user"
+                );
+            }
+            if !sys_host.is_empty() {
+                assert_eq!(
+                    host, sys_host,
+                    "Host in default_comment should match OS host"
+                );
+            }
+        }
+    }
+}
