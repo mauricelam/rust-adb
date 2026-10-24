@@ -13,34 +13,42 @@ cargo run -p mock-adbd -- --listen 127.0.0.1:0
 #### Options
 
 - `--listen <ADDR>`: Address to bind and listen on (default: `127.0.0.1:0`).
-- `--no-shell-v2`: Omit advertising the `shell_v2` feature in the connection banner, forcing clients to fall back to the v1 `shell:` protocol.
+- `--no-shell-v2`: Omit advertising the `shell_v2` feature in the connection banner.
+- `--no-stat-v2`: Omit advertising the `stat_v2` feature in the connection banner.
+- `--no-ls-v2`: Omit advertising the `ls_v2` feature in the connection banner.
+- `--no-sendrecv-v2`: Omit advertising the `sendrecv_v2` feature in the connection banner.
+- `--fixed-push-mkdir`: Advertise the `fixed_push_mkdir` feature in the connection banner (default: false).
 
 Upon starting, `mock-adbd` prints its bound IP address and port on the **first line** of stdout (e.g. `127.0.0.1:37413`), allowing test scripts or harnesses to read the dynamically allocated port.
 
 ### In-Process Testing
 
-`mock-adbd` can also be embedded directly in Rust integration tests as a library:
+`mock-adbd` can also be embedded directly in Rust integration tests as a library with an in-memory file tree (`InMemoryFs`):
 
 ```rust
-use mock_adbd::{MockAdbdOptions, MockAdbdServer};
+use mock_adbd::{InMemoryFs, MockAdbdOptions, MockAdbdServer};
 
 #[tokio::test]
-async fn test_something() {
-    let server = MockAdbdServer::bind("127.0.0.1:0").await.unwrap();
-    let addr = server.local_addr();
+async fn test_sync_operations() {
+    let fs = InMemoryFs::new();
+    fs.add_dir("/data", 0o040755, 1000);
+    fs.add_file("/data/hello.txt", b"hello world".to_vec(), 0o100644, 2000);
 
-    // Or disable shell_v2 advertisement:
-    let server_no_v2 = MockAdbdServer::bind_with_options(
+    let server = MockAdbdServer::bind_with_options(
         "127.0.0.1:0",
         MockAdbdOptions {
-            enable_shell_v2: false,
+            fs: fs.clone(),
+            ..Default::default()
         },
     )
     .await
     .unwrap();
 
+    // Inspect files after client pushes or modifies the filesystem:
+    let pushed = server.fs().get_file("/data/hello.txt");
+    assert_eq!(pushed, Some(b"hello world".to_vec()));
+
     server.shutdown();
-    server_no_v2.shutdown();
 }
 ```
 
@@ -54,9 +62,19 @@ When a connection is established, `mock-adbd`:
    - `ro.product.name=mock_device`
    - `ro.product.model=mock_model`
    - `ro.product.device=mock_device`
-3. Advertises the `shell_v2` feature by default (unless `--no-shell-v2` / `enable_shell_v2: false` is configured).
+3. Advertises features by default: `shell_v2`, `stat_v2`, `ls_v2`, `sendrecv_v2` (unless turned off via flags).
 
 ### Supported Services
+
+#### File Sync Service (`sync:`)
+
+The `sync:` service manages file transfers and directory queries backed by `InMemoryFs`:
+
+- **STAT v1 (`STAT`) & STAT v2 (`STA2`, `LST2`)**: returns file metadata (mode, size, mtime) or wire error (`ENOENT = 2` for missing files in v2, zero stat in v1).
+- **LIST v1 (`LIST`) & LIST v2 (`LIS2`)**: lists directory entries in stable sorted order (`DENT` / `DNT2`), terminated by `DONE`.
+- **RECV v1 (`RECV`) & RECV v2 (`RCV2`)**: streams uncompressed file contents in `DATA` chunks of at most 64 KiB, terminated by `DONE` (or `FAIL` if missing/invalid).
+- **SEND v1 (`SEND`) & SEND v2 (`SND2`)**: receives file data chunks and `DONE` with modified time, verifies parent directory existence, updates `InMemoryFs`, and acknowledges with `OKAY` (or `FAIL` on missing parent directory).
+- **QUIT**: terminates the file sync session and closes the stream.
 
 #### Shell V2 Service (`shell,<args>:<command>`)
 
@@ -67,26 +85,18 @@ When `shell_v2` is enabled, service requests matching `shell,<args>:<command>` (
 - **`stderr <text>`**: writes `<text>\n` to stderr (`ShellPacketId::Stderr`) and exits 0.
 - **`cat`**: copies incoming stdin packets (`ShellPacketId::Stdin`) to stdout until `ShellPacketId::CloseStdin` is received, then exits 0.
 - **`env-term`**: writes the value of `TERM=<value>` from service arguments (or `unset\n` if omitted) to stdout and exits 0.
+- **`mkdir <args>`**: creates the specified directories in `InMemoryFs` and exits 0.
 - **PTY Window Size (`pty` in arguments)**: each `ShellPacketId::WindowSizeChange` received is answered by writing `WINSZ <text>\n` to stdout, where `<text>` is the payload without trailing NUL.
 - **Unsupported Shell V2 Commands**: writes `mock-adbd: unsupported command\n` to stderr (`ShellPacketId::Stderr`) and exits with status 127.
-
-Flow control strictly obeys the 1-WRTE-in-flight rule: every outgoing `ShellPacket` is transmitted as an `A_WRTE` message and the next is only sent after receiving `A_OKAY` from the host.
 
 #### Fallback Shell V1 Service (`shell:<cmd>`)
 
 When `shell_v2` is disabled or a standard `shell:<cmd>` request is received:
 
-- **`shell:echo <text>`**:
-  - Accepts stream (`A_OKAY`).
-  - Sends `<text>\n` in a single `A_WRTE` payload.
-  - Waits for host `A_OKAY`.
-  - Sends `A_CLSE` to close the stream.
-- **Other `shell:<cmd>` commands**:
-  - Accepts stream (`A_OKAY`).
-  - Sends `mock-adbd: unsupported command\n` in a single `A_WRTE`.
-  - Waits for host `A_OKAY`.
-  - Sends `A_CLSE`.
+- **`shell:echo <text>`**: accepts stream (`A_OKAY`), sends `<text>\n`, and closes (`A_CLSE`).
+- **`shell:mkdir <args>`**: creates directory in `InMemoryFs` and closes stream.
+- **Other `shell:<cmd>` commands**: sends `mock-adbd: unsupported command\n` and closes stream.
 
 #### Unknown Services
 
-- Refuses any unknown service (not starting with `shell:`) immediately by sending `A_CLSE(0, host_local_id)`.
+- Refuses any unknown service immediately by sending `A_CLSE(0, host_local_id)`.

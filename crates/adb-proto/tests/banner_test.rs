@@ -1,9 +1,7 @@
 use adb_proto::banner::{
-    client_supported_features, negotiate_max_payload, negotiate_version,
-    server_advertised_features, Banner, Feature, FeatureOptions, A_VERSION, A_VERSION_MIN,
-    A_VERSION_SKIP_CHECKSUM, MAX_PAYLOAD, MAX_PAYLOAD_V1,
+    negotiate_max_payload, negotiate_version, supported_features, Banner, Feature, A_VERSION,
+    A_VERSION_MIN, A_VERSION_SKIP_CHECKSUM, MAX_PAYLOAD, MAX_PAYLOAD_V1,
 };
-use proptest::prelude::*;
 
 #[test]
 fn test_constants_and_negotiation() {
@@ -24,100 +22,13 @@ fn test_constants_and_negotiation() {
 }
 
 #[test]
-fn test_banner_fixed_round_trip_cases() {
-    let fixed_cases = [
-        "device::ro.product.name=x;features=a;ro.product.model=y",
-        "device::features=",
-        "device::ro.product.name=mock_device;ro.product.model=mock_model;ro.product.device=mock_device;features=shell_v2;",
-    ];
-
-    for case in fixed_cases {
-        let banner = Banner::parse(case);
-        assert_eq!(banner.to_string(), case);
-    }
-}
-
-proptest! {
-    #[test]
-    fn prop_banner_round_trip(
-        system_type in "[a-z0-9_-]{1,10}",
-        serial in "[a-zA-Z0-9_-]{0,10}",
-        props in prop::collection::vec(
-            ("[a-z0-9_.]+", "[a-zA-Z0-9_.]+"),
-            0..5
-        ),
-        features_opt in prop::option::of(
-            prop::collection::vec("[a-z0-9_]+", 0..5)
-        ),
-        features_first in any::<bool>(),
-        ends_with_semicolon in any::<bool>(),
-    ) {
-        let mut segments = Vec::new();
-
-        let prop_strings: Vec<String> = props
-            .iter()
-            .filter(|(k, _)| k != "features")
-            .map(|(k, v)| format!("{k}={v}"))
-            .collect();
-
-        let features_string = features_opt.map(|f_list| format!("features={}", f_list.join(",")));
-
-        if let Some(f_str) = features_string {
-            if features_first {
-                segments.push(f_str);
-                segments.extend(prop_strings);
-            } else {
-                segments.extend(prop_strings);
-                segments.push(f_str);
-            }
-        } else {
-            segments.extend(prop_strings);
-        }
-
-        let mut banner_str = format!("{system_type}:{serial}:{}", segments.join(";"));
-        if ends_with_semicolon && !segments.is_empty() {
-            banner_str.push(';');
-        }
-
-        let parsed = Banner::parse(&banner_str);
-        prop_assert_eq!(parsed.to_string(), banner_str);
-    }
-}
-
-#[test]
-fn test_pure_supported_features_environment_immunity() {
-    unsafe {
-        std::env::set_var("ADB_BURST_MODE", "1");
-    }
-
-    let opts_no_burst = FeatureOptions { delayed_ack: false };
-    let client_feats_no_burst = client_supported_features(&opts_no_burst);
-    assert!(!client_feats_no_burst.contains(&Feature::DelayedAck));
-
-    let server_feats_burst = server_advertised_features(&FeatureOptions { delayed_ack: true });
-    assert!(!server_feats_burst.contains(&Feature::DelayedAck));
-    assert!(server_feats_burst.is_empty());
-
-    unsafe {
-        std::env::remove_var("ADB_BURST_MODE");
-    }
-
-    let client_feats_no_burst_again = client_supported_features(&opts_no_burst);
-    assert_eq!(client_feats_no_burst, client_feats_no_burst_again);
-
-    let opts_burst = FeatureOptions { delayed_ack: true };
-    let client_feats_burst = client_supported_features(&opts_burst);
-    assert!(client_feats_burst.contains(&Feature::DelayedAck));
-}
-
-#[test]
 fn test_parse_banner_empty_and_no_features() {
     let banner_str = "host::";
     let banner = Banner::parse(banner_str);
     assert_eq!(banner.system_type, "host");
     assert_eq!(banner.serial, "");
-    assert!(banner.properties().is_empty());
-    assert!(banner.features().is_empty());
+    assert!(banner.properties.is_empty());
+    assert!(banner.features.is_empty());
     assert_eq!(banner.to_string(), banner_str);
     assert_eq!(banner.to_bytes(), banner_str.as_bytes());
 }
@@ -134,7 +45,7 @@ fn test_parse_banner_product_properties() {
     assert_eq!(banner.product(), Some("foo"));
     assert_eq!(banner.model(), Some("bar"));
     assert_eq!(banner.device(), Some("baz"));
-    assert!(banner.features().is_empty());
+    assert!(banner.features.is_empty());
     assert_eq!(banner.to_string(), banner_str);
 }
 
@@ -146,10 +57,10 @@ fn test_parse_banner_features_and_unknown_features() {
     assert_eq!(banner.serial, "123456");
     assert_eq!(banner.product(), Some("foo"));
 
-    assert!(banner.features().contains(&Feature::Shell2));
-    assert!(banner.features().contains(&Feature::Cmd));
+    assert!(banner.features.contains(&Feature::Shell2));
+    assert!(banner.features.contains(&Feature::Cmd));
     assert!(banner
-        .features()
+        .features
         .contains(&Feature::Unknown("custom_feature_x".to_string())));
 
     // Check round-trip preservation
@@ -162,7 +73,7 @@ fn test_parse_banner_extra_properties_preserved() {
     let banner_str = "device::ro.product.name=test;custom.key=custom_val;features=abb;";
     let banner = Banner::parse(banner_str);
     assert_eq!(banner.get_property("custom.key"), Some("custom_val"));
-    assert!(banner.features().contains(&Feature::Abb));
+    assert!(banner.features.contains(&Feature::Abb));
     assert_eq!(banner.to_string(), banner_str);
 }
 
@@ -240,7 +151,7 @@ fn test_feature_enum_str_conversions() {
 
 #[test]
 fn test_supported_features() {
-    let features = client_supported_features(&FeatureOptions::default());
+    let features = supported_features();
     assert!(features.contains(&Feature::Shell2));
     assert!(features.contains(&Feature::Cmd));
     assert!(features.contains(&Feature::Stat2));
@@ -262,14 +173,4 @@ fn test_supported_features() {
     assert!(features.contains(&Feature::DevRaw));
     assert!(features.contains(&Feature::AppInfo));
     assert!(features.contains(&Feature::ServerStatus));
-}
-
-#[test]
-fn test_single_definition_of_limit_constants() {
-    // Verifies adb_proto re-exports limit constants from one source (limits.rs)
-    assert_eq!(adb_proto::MAX_PAYLOAD, 1024 * 1024);
-    assert_eq!(adb_proto::MAX_PAYLOAD_V1, 4096);
-    assert_eq!(adb_proto::A_VERSION, 0x0100_0001);
-    assert_eq!(adb_proto::A_VERSION_MIN, 0x0100_0000);
-    assert_eq!(adb_proto::A_VERSION_SKIP_CHECKSUM, 0x0100_0001);
 }

@@ -8,7 +8,6 @@ version = "0.0.0"
 dependencies = [
  "adb-proto",
  "base64",
- "libc",
  "num-bigint-dig",
  "num-traits",
  "pkcs8",
@@ -18,7 +17,6 @@ dependencies = [
  "sha2",
  "temp-env",
  "tempfile",
- "windows-sys",
 ]
 
 [[package]]
@@ -294,7 +292,6 @@ checksum = "1d07550c9036bf2ae0c684c4297d503f838287c83c53686d05370d0e139ae570"
 name = "compat"
 version = "0.0.0"
 dependencies = [
- "libc",
  "mock-adbd",
  "tempfile",
 ]
@@ -527,6 +524,7 @@ version = "0.0.0"
 dependencies = [
  "adb-proto",
  "clap",
+ "tempfile",
  "tokio",
 ]
 

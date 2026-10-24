@@ -53,7 +53,7 @@ fn test_case_2_three_keys_rejecting_signatures_in_order_then_public_key() {
 
     let mut keys = vec![key1, key2, key3];
     // Sort keys by fingerprint ascending byte order matching task 2.1b
-    keys.sort_by_key(|k| fingerprint(k).unwrap());
+    keys.sort_by_key(fingerprint);
 
     let pubkeys: Vec<_> = keys.iter().map(|k| k.to_public_key()).collect();
     let user_pubkey = "test_pubkey_line user@host".to_string();
@@ -177,7 +177,7 @@ fn test_case_4_token_wrong_size_nothing_sent_key_is_consumed() {
     let key2 = rsa::RsaPrivateKey::new(&mut rng, 2048).expect("failed key2");
 
     let mut keys = vec![key1, key2];
-    keys.sort_by_key(|k| fingerprint(k).unwrap());
+    keys.sort_by_key(fingerprint);
     let pubkey2 = keys[1].to_public_key();
 
     let mut host_auth = HostAuth::new(keys, "pubkey user@host".to_string());
@@ -236,7 +236,7 @@ fn test_case_6_new_host_auth_after_reconnect_starts_from_first_key() {
     let key2 = rsa::RsaPrivateKey::new(&mut rng, 2048).expect("failed key2");
 
     let mut keys = [key1, key2];
-    keys.sort_by_key(|k| fingerprint(k).unwrap());
+    keys.sort_by_key(fingerprint);
     let pubkey1 = keys[0].to_public_key();
 
     let store_keys = vec![keys[0].clone(), keys[1].clone()];

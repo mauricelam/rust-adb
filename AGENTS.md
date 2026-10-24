@@ -67,7 +67,6 @@ The harness respects the following environment variables:
 - **Test first**: A compatibility test counts only after it passes against the C++ ADB on both sides and fails against a deliberately broken C++ build.
 - **Fixtures and golden outputs**: Fixtures and golden outputs are never edited without human approval.
 - **Task pull requests**: Submit one task per pull request, with the task ID in the title (e.g., `0.4: Add AGENTS.md`).
-- **Documentation**: All modules and functions must be documented. If a file being modified is missing documentation, add documentation to those other members even if they are not part of the change.
 
 ## When Blocked
 

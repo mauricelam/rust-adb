@@ -119,8 +119,8 @@ fn test_load_or_generate_behavior() {
     // Second call loads existing key without re-generating
     let key2 = adb_auth::load_or_generate(&key_path).expect("Second load_or_generate failed");
     assert_eq!(
-        adb_auth::hash_key(&key1).unwrap(),
-        adb_auth::hash_key(&key2).unwrap(),
+        adb_auth::hash_key(&key1),
+        adb_auth::hash_key(&key2),
         "Keys should match when loaded twice"
     );
 }
@@ -139,6 +139,7 @@ fn test_vendor_keys_parsing_and_loading() {
     let non_adb_key = dir_key_dir.join("ignored.txt");
     fs::write(&non_adb_key, "not a key").unwrap();
 
+    // Set ADB_VENDOR_KEYS
     let env_sep = if cfg!(windows) { ";" } else { ":" };
     let vendor_env = format!(
         "{}{}{}",
@@ -147,13 +148,15 @@ fn test_vendor_keys_parsing_and_loading() {
         dir_key_dir.to_string_lossy()
     );
 
-    let user_dir = temp_dir.path().join("user_home");
+    temp_env::with_var("ADB_VENDOR_KEYS", Some(&vendor_env), || {
+        let vendor_paths = adb_auth::get_vendor_keys();
+        assert_eq!(vendor_paths.len(), 2);
 
-    let store = adb_auth::KeyStore::load(Some(&user_dir), Some(&vendor_env));
-    let keys = store.private_keys();
-    assert_eq!(
-        keys.len(),
-        3,
-        "Should load user key, custom key file, and in_dir key ending in .adb_key"
-    );
+        let keys = adb_auth::load_vendor_keys();
+        assert_eq!(
+            keys.len(),
+            2,
+            "Should load key from file and key from dir ending in .adb_key"
+        );
+    });
 }

@@ -139,7 +139,7 @@ impl ServerLauncher for MockLauncher {
 async fn test_matching_version() {
     let server = MockServer::start(FakeVersionMode::Matching, FakeKillMode::Okay).await;
     let addr = server.address();
-    let session_factory = DefaultSessionFactory::new();
+    let session_factory = DefaultSessionFactory;
     let (launcher, launched) = MockLauncher::new();
     let mut events = Vec::new();
 
@@ -153,7 +153,7 @@ async fn test_matching_version() {
 async fn test_different_version_mismatch() {
     let server = MockServer::start(FakeVersionMode::Different(40), FakeKillMode::Okay).await;
     let addr = server.address();
-    let session_factory = DefaultSessionFactory::new();
+    let session_factory = DefaultSessionFactory;
     let (launcher, launched) = MockLauncher::new();
     let mut events = Vec::new();
 
@@ -181,7 +181,7 @@ async fn test_different_version_mismatch() {
 async fn test_version_zero_from_unknown_host_service() {
     let server = MockServer::start(FakeVersionMode::UnknownHostService, FakeKillMode::Okay).await;
     let addr = server.address();
-    let session_factory = DefaultSessionFactory::new();
+    let session_factory = DefaultSessionFactory;
     let (launcher, launched) = MockLauncher::new();
     let mut events = Vec::new();
 
@@ -209,7 +209,7 @@ async fn test_version_zero_from_unknown_host_service() {
 async fn test_unparsable_payload() {
     let server = MockServer::start(FakeVersionMode::Unparsable, FakeKillMode::Okay).await;
     let addr = server.address();
-    let session_factory = DefaultSessionFactory::new();
+    let session_factory = DefaultSessionFactory;
     let (launcher, launched) = MockLauncher::new();
     let mut events = Vec::new();
 
@@ -226,7 +226,7 @@ async fn test_remote_spec_nothing_listening() {
         host: Some("remote.host.invalid".into()), // is_local() == false
         port: 59997,
     };
-    let session_factory = DefaultSessionFactory::new();
+    let session_factory = DefaultSessionFactory;
     let (launcher, _launched) = MockLauncher::new();
     let mut events = Vec::new();
 
@@ -246,7 +246,7 @@ async fn test_kill_when_nothing_listening() {
         host: None,
         port: 59999,
     };
-    let session_factory = DefaultSessionFactory::new();
+    let session_factory = DefaultSessionFactory;
     let mut events = Vec::new();
 
     let res = kill_server(&addr, &session_factory, &mut events).await;
@@ -272,33 +272,34 @@ async fn test_kill_server_fail() {
     )
     .await;
     let addr = server.address();
-    let session_factory = DefaultSessionFactory::new();
+    let session_factory = DefaultSessionFactory;
     let mut events = Vec::new();
 
     let res = kill_server(&addr, &session_factory, &mut events).await;
     assert!(res.is_err());
     let err = res.unwrap_err();
     assert_eq!(err.to_string(), "cannot kill");
-    assert_eq!(
-        events,
-        vec![ClientEvent::ErrorLine("error: cannot kill".into())]
-    );
+    assert_eq!(events, vec![ClientEvent::Error("cannot kill".into())]);
     assert_eq!(events[0].to_string(), "error: cannot kill");
 }
 
 #[tokio::test]
 async fn test_adb_client_caching() {
     let server = MockServer::start(FakeVersionMode::Matching, FakeKillMode::Okay).await;
+    let client = AdbClient::new(server.address());
+    let session_factory = DefaultSessionFactory;
     let (launcher, _launched) = MockLauncher::new();
-    let client = AdbClient::builder(server.address())
-        .session_factory(DefaultSessionFactory::new())
-        .launcher(launcher)
-        .build();
 
-    let outcome1 = client.check_server_version().await;
-    assert!(outcome1.result.is_ok());
+    let mut events1 = Vec::new();
+    let res1 = client
+        .check_server_version(&session_factory, &launcher, &mut events1)
+        .await;
+    assert!(res1.is_ok());
 
-    let outcome2 = client.check_server_version().await;
-    assert!(outcome2.result.is_ok());
-    assert!(outcome2.events.is_empty()); // Cached result, no second check or duplicate events
+    let mut events2 = Vec::new();
+    let res2 = client
+        .check_server_version(&session_factory, &launcher, &mut events2)
+        .await;
+    assert!(res2.is_ok());
+    assert!(events2.is_empty()); // Cached result, no second check or duplicate events
 }
