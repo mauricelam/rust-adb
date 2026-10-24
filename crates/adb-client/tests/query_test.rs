@@ -91,7 +91,7 @@ async fn test_query_no_device() {
     };
 
     let client = AdbClient::builder(addr)
-        .session_factory(DefaultSessionFactory)
+        .session_factory(DefaultSessionFactory::new())
         .launcher(DummyLauncher)
         .build();
 
@@ -207,7 +207,7 @@ async fn test_query_mock_device() {
     };
 
     let client = AdbClient::builder(addr)
-        .session_factory(DefaultSessionFactory)
+        .session_factory(DefaultSessionFactory::new())
         .launcher(DummyLauncher)
         .build();
 

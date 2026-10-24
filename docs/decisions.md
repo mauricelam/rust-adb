@@ -27,6 +27,8 @@
 
 ### Intentional Differences
 
+- **Client Timeouts and Stream Detachment**: `adb-client` implements configurable connection timeouts (`connect_timeout` default 10s), handshake timeouts for smart-socket status and version reads (`handshake_timeout` default 30s), and server launch acknowledgment timeouts (`ack_timeout` default 15s). Additionally, background server processes are spawned with stdio detached (`null` streams). The C++ client has no client-side timeouts or stream detachment of its own.
+
 ## 6. Test-First Rule
 
 **Decision:** A compatibility test counts only after it has passed against the C++ ADB on both sides and failed against a deliberately broken C++ build.

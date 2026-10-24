@@ -1,5 +1,5 @@
 use crate::server_address::ServerAddress;
-use crate::session::{Session, SessionError};
+use crate::session::{Session, SessionConfig, SessionError};
 use crate::transport::{format_host_command, TransportSelector};
 use std::future::Future;
 use std::pin::Pin;
@@ -29,6 +29,20 @@ impl TrackDevicesMode {
 /// Expected ADB server version matching C++ `ADB_SERVER_VERSION` in `original/adb.h`.
 pub const ADB_SERVER_VERSION: u32 = 41;
 
+/// Configuration for launching an ADB server process.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LaunchConfig {
+    pub ack_timeout: std::time::Duration,
+}
+
+impl Default for LaunchConfig {
+    fn default() -> Self {
+        Self {
+            ack_timeout: std::time::Duration::from_secs(15),
+        }
+    }
+}
+
 /// Classification of client errors.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ClientErrorKind {
@@ -38,6 +52,7 @@ pub enum ClientErrorKind {
     Usage,
     Version,
     Launch,
+    Timeout,
 }
 
 /// Events reported by client operations (e.g. version checks, server startup, kill).
@@ -101,6 +116,7 @@ pub enum ClientError {
     FailedToCheckVersion(String),
     QueryFailed(String),
     InvalidUsage(String),
+    Timeout,
 }
 
 impl ClientError {
@@ -110,6 +126,7 @@ impl ClientError {
             ClientError::Session(err) => match err {
                 SessionError::CannotConnect { .. } => ClientErrorKind::Connection,
                 SessionError::Fail(_) => ClientErrorKind::Server,
+                SessionError::Timeout => ClientErrorKind::Timeout,
                 SessionError::BadServiceLength(_)
                 | SessionError::WriteFailure(_)
                 | SessionError::ReadTransportIdFailed
@@ -120,7 +137,9 @@ impl ClientError {
             },
             ClientError::CannotConnect { .. } => ClientErrorKind::Connection,
             ClientError::CannotConnectDaemon { source } => {
-                if source.is_some() {
+                if let Some(LaunchError::Timeout(_)) = source {
+                    ClientErrorKind::Timeout
+                } else if source.is_some() {
                     ClientErrorKind::Launch
                 } else {
                     ClientErrorKind::Connection
@@ -131,6 +150,7 @@ impl ClientError {
             ClientError::FailedToCheckVersion(_) => ClientErrorKind::Server,
             ClientError::QueryFailed(_) => ClientErrorKind::Server,
             ClientError::InvalidUsage(_) => ClientErrorKind::Usage,
+            ClientError::Timeout => ClientErrorKind::Timeout,
         }
     }
 }
@@ -154,6 +174,7 @@ impl std::fmt::Display for ClientError {
             }
             ClientError::QueryFailed(msg) => write!(f, "{msg}"),
             ClientError::InvalidUsage(msg) => write!(f, "{msg}"),
+            ClientError::Timeout => write!(f, "timeout"),
         }
     }
 }
@@ -180,6 +201,7 @@ pub enum LaunchError {
     Io(std::io::Error),
     FailedToReadAck(String),
     Unsupported(String),
+    Timeout(String),
 }
 
 impl Clone for LaunchError {
@@ -190,6 +212,7 @@ impl Clone for LaunchError {
             }
             LaunchError::FailedToReadAck(msg) => LaunchError::FailedToReadAck(msg.clone()),
             LaunchError::Unsupported(msg) => LaunchError::Unsupported(msg.clone()),
+            LaunchError::Timeout(msg) => LaunchError::Timeout(msg.clone()),
         }
     }
 }
@@ -200,6 +223,7 @@ impl std::fmt::Display for LaunchError {
             LaunchError::Io(err) => write!(f, "IO error: {err}"),
             LaunchError::FailedToReadAck(msg) => write!(f, "{msg}"),
             LaunchError::Unsupported(msg) => write!(f, "{msg}"),
+            LaunchError::Timeout(msg) => write!(f, "{msg}"),
         }
     }
 }
@@ -227,15 +251,36 @@ pub trait SessionFactory: Send + Sync {
     ) -> Pin<Box<dyn Future<Output = Result<Session, SessionError>> + Send + 'a>>;
 }
 
-/// Default implementation of `SessionFactory` using `Session::connect`.
-pub struct DefaultSessionFactory;
+/// Default implementation of `SessionFactory` using `Session::connect_with_config`.
+pub struct DefaultSessionFactory {
+    config: SessionConfig,
+}
+
+impl DefaultSessionFactory {
+    pub fn new() -> Self {
+        Self {
+            config: SessionConfig::default(),
+        }
+    }
+
+    pub fn with_config(config: SessionConfig) -> Self {
+        Self { config }
+    }
+}
+
+impl Default for DefaultSessionFactory {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 
 impl SessionFactory for DefaultSessionFactory {
     fn connect<'a>(
         &'a self,
         addr: &'a ServerAddress,
     ) -> Pin<Box<dyn Future<Output = Result<Session, SessionError>> + Send + 'a>> {
-        Box::pin(async move { Session::connect(addr).await })
+        let config = self.config;
+        Box::pin(async move { Session::connect_with_config(addr, config).await })
     }
 }
 
@@ -250,7 +295,21 @@ pub trait ServerLauncher: Send + Sync {
 
 /// Launches the server process by executing `std::env::current_exe()`.
 #[derive(Debug, Default, Clone, Copy)]
-pub struct SelfExecLauncher;
+pub struct SelfExecLauncher {
+    config: LaunchConfig,
+}
+
+impl SelfExecLauncher {
+    pub fn new() -> Self {
+        Self {
+            config: LaunchConfig::default(),
+        }
+    }
+
+    pub fn with_config(config: LaunchConfig) -> Self {
+        Self { config }
+    }
+}
 
 impl ServerLauncher for SelfExecLauncher {
     fn launch<'a>(
@@ -258,9 +317,10 @@ impl ServerLauncher for SelfExecLauncher {
         spec: &'a str,
         one_device: Option<&'a str>,
     ) -> Pin<Box<dyn Future<Output = Result<(), LaunchError>> + Send + 'a>> {
+        let config = self.config;
         Box::pin(async move {
             let exe = std::env::current_exe()?;
-            launch_binary(&exe, spec, one_device).await
+            launch_binary(&exe, spec, one_device, config).await
         })
     }
 }
@@ -269,11 +329,22 @@ impl ServerLauncher for SelfExecLauncher {
 #[derive(Debug, Clone)]
 pub struct ExternalBinaryLauncher {
     path: std::path::PathBuf,
+    config: LaunchConfig,
 }
 
 impl ExternalBinaryLauncher {
     pub fn new(path: impl Into<std::path::PathBuf>) -> Self {
-        Self { path: path.into() }
+        Self {
+            path: path.into(),
+            config: LaunchConfig::default(),
+        }
+    }
+
+    pub fn with_config(path: impl Into<std::path::PathBuf>, config: LaunchConfig) -> Self {
+        Self {
+            path: path.into(),
+            config,
+        }
     }
 }
 
@@ -283,7 +354,8 @@ impl ServerLauncher for ExternalBinaryLauncher {
         spec: &'a str,
         one_device: Option<&'a str>,
     ) -> Pin<Box<dyn Future<Output = Result<(), LaunchError>> + Send + 'a>> {
-        Box::pin(async move { launch_binary(&self.path, spec, one_device).await })
+        let config = self.config;
+        Box::pin(async move { launch_binary(&self.path, spec, one_device, config).await })
     }
 }
 
@@ -295,8 +367,10 @@ async fn launch_binary(
     path: &std::path::Path,
     spec: &str,
     one_device: Option<&str>,
+    config: LaunchConfig,
 ) -> Result<(), LaunchError> {
     use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
+    use std::process::Stdio;
     use tokio::io::AsyncReadExt;
 
     // Set up a pipe so the child process can acknowledge readiness ("OK\n").
@@ -312,7 +386,10 @@ async fn launch_binary(
     let write_fd_raw = write_fd.as_raw_fd();
 
     let mut cmd = tokio::process::Command::new(path);
-    cmd.arg("-L")
+    cmd.stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .arg("-L")
         .arg(spec)
         .arg("fork-server")
         .arg("server")
@@ -348,14 +425,20 @@ async fn launch_binary(
     let mut async_read = tokio::fs::File::from_std(read_file);
 
     let mut buf = [0u8; 3];
-    let read_res = async_read.read_exact(&mut buf).await;
+    let read_res = tokio::time::timeout(config.ack_timeout, async_read.read_exact(&mut buf)).await;
 
     match read_res {
-        Ok(3) if &buf == b"OK\n" => Ok(()),
-        _ => {
+        Ok(Ok(3)) if &buf == b"OK\n" => Ok(()),
+        Ok(_) => {
             let _ = child.kill().await;
             Err(LaunchError::FailedToReadAck(
                 "could not read ok from ADB Server".to_string(),
+            ))
+        }
+        Err(_) => {
+            let _ = child.kill().await;
+            Err(LaunchError::Timeout(
+                "could not read ok from ADB Server: timed out".to_string(),
             ))
         }
     }
@@ -366,6 +449,7 @@ async fn launch_binary(
     _path: &std::path::Path,
     _spec: &str,
     _one_device: Option<&str>,
+    _config: LaunchConfig,
 ) -> Result<(), LaunchError> {
     Err(LaunchError::Unsupported(
         "Windows server launching is not supported yet".to_string(),
@@ -516,34 +600,55 @@ pub async fn check_server_version(
 /// Builder for constructing an `AdbClient`.
 pub struct AdbClientBuilder {
     addr: ServerAddress,
-    session_factory: Arc<dyn SessionFactory>,
-    launcher: Arc<dyn ServerLauncher>,
+    session_factory: Option<Arc<dyn SessionFactory>>,
+    launcher: Option<Arc<dyn ServerLauncher>>,
+    session_config: SessionConfig,
+    launch_config: LaunchConfig,
 }
 
 impl AdbClientBuilder {
     pub fn new(addr: ServerAddress) -> Self {
         Self {
             addr,
-            session_factory: Arc::new(DefaultSessionFactory),
-            launcher: Arc::new(SelfExecLauncher),
+            session_factory: None,
+            launcher: None,
+            session_config: SessionConfig::default(),
+            launch_config: LaunchConfig::default(),
         }
     }
 
     pub fn session_factory(mut self, factory: impl SessionFactory + 'static) -> Self {
-        self.session_factory = Arc::new(factory);
+        self.session_factory = Some(Arc::new(factory));
         self
     }
 
     pub fn launcher(mut self, launcher: impl ServerLauncher + 'static) -> Self {
-        self.launcher = Arc::new(launcher);
+        self.launcher = Some(Arc::new(launcher));
+        self
+    }
+
+    pub fn session_config(mut self, config: SessionConfig) -> Self {
+        self.session_config = config;
+        self
+    }
+
+    pub fn launch_config(mut self, config: LaunchConfig) -> Self {
+        self.launch_config = config;
         self
     }
 
     pub fn build(self) -> AdbClient {
+        let session_factory = self
+            .session_factory
+            .unwrap_or_else(|| Arc::new(DefaultSessionFactory::with_config(self.session_config)));
+        let launcher = self
+            .launcher
+            .unwrap_or_else(|| Arc::new(SelfExecLauncher::with_config(self.launch_config)));
+
         AdbClient {
             addr: self.addr,
-            session_factory: self.session_factory,
-            launcher: self.launcher,
+            session_factory,
+            launcher,
             version_checked: tokio::sync::OnceCell::new(),
         }
     }

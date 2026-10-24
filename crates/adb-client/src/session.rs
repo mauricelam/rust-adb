@@ -8,6 +8,22 @@ use std::fmt;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 
+/// Configuration for smart-socket sessions (timeouts).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SessionConfig {
+    pub connect_timeout: std::time::Duration,
+    pub handshake_timeout: std::time::Duration,
+}
+
+impl Default for SessionConfig {
+    fn default() -> Self {
+        Self {
+            connect_timeout: std::time::Duration::from_secs(10),
+            handshake_timeout: std::time::Duration::from_secs(30),
+        }
+    }
+}
+
 /// Errors that can occur during an ADB smart-socket session.
 #[derive(Debug)]
 pub enum SessionError {
@@ -29,6 +45,8 @@ pub enum SessionError {
     InvalidStatus([u8; 4]),
     /// Server returned FAIL status with a reason message
     Fail(String),
+    /// Operation timed out
+    Timeout,
 }
 
 impl fmt::Display for SessionError {
@@ -65,6 +83,9 @@ impl fmt::Display for SessionError {
             SessionError::Fail(reason) => {
                 write!(f, "{reason}")
             }
+            SessionError::Timeout => {
+                write!(f, "timeout")
+            }
         }
     }
 }
@@ -92,6 +113,7 @@ impl Clone for SessionError {
             ),
             SessionError::InvalidStatus(status) => SessionError::InvalidStatus(*status),
             SessionError::Fail(reason) => SessionError::Fail(reason.clone()),
+            SessionError::Timeout => SessionError::Timeout,
         }
     }
 }
@@ -113,21 +135,36 @@ impl std::error::Error for SessionError {
 pub struct Session {
     stream: TcpStream,
     read_buf: Vec<u8>,
+    config: SessionConfig,
 }
 
 impl Session {
-    /// Creates a new `Session` wrapping an existing `TcpStream`.
+    /// Creates a new `Session` wrapping an existing `TcpStream` with default configuration.
     pub fn new(stream: TcpStream) -> Self {
+        Self::new_with_config(stream, SessionConfig::default())
+    }
+
+    /// Creates a new `Session` wrapping an existing `TcpStream` with specific configuration.
+    pub fn new_with_config(stream: TcpStream, config: SessionConfig) -> Self {
         Self {
             stream,
             read_buf: Vec::new(),
+            config,
         }
     }
 
-    /// Connects to the ADB server at the given address.
-    ///
-    /// Ports `_adb_connect` socket connection phase.
+    /// Connects to the ADB server at the given address using default configuration.
     pub async fn connect(addr: &ServerAddress) -> Result<Self, SessionError> {
+        Self::connect_with_config(addr, SessionConfig::default()).await
+    }
+
+    /// Connects to the ADB server at the given address using specified `SessionConfig`.
+    ///
+    /// Ports `_adb_connect` socket connection phase with connect timeout.
+    pub async fn connect_with_config(
+        addr: &ServerAddress,
+        config: SessionConfig,
+    ) -> Result<Self, SessionError> {
         let spec = addr.to_spec();
         let host = addr.host.as_deref().unwrap_or("127.0.0.1");
         let host = if host == "localhost" {
@@ -138,35 +175,47 @@ impl Session {
 
         let mut last_err = None;
         for i in 0..5 {
-            match TcpStream::connect((host, addr.port)).await {
-                Ok(stream) => {
+            let conn_res = tokio::time::timeout(
+                config.connect_timeout,
+                TcpStream::connect((host, addr.port)),
+            )
+            .await;
+
+            match conn_res {
+                Ok(Ok(stream)) => {
                     return Ok(Self {
                         stream,
                         read_buf: Vec::new(),
+                        config,
                     })
                 }
-                Err(err) => {
+                Ok(Err(err)) => {
                     let retryable = matches!(
                         err.kind(),
                         std::io::ErrorKind::ConnectionReset
                             | std::io::ErrorKind::ConnectionRefused
                             | std::io::ErrorKind::ConnectionAborted
                     );
-                    last_err = Some(err);
+                    last_err = Some(SessionError::CannotConnect {
+                        spec: spec.clone(),
+                        cause: err.to_string(),
+                    });
                     if retryable && i < 4 {
                         tokio::time::sleep(std::time::Duration::from_millis(20)).await;
                     } else {
                         break;
                     }
                 }
+                Err(_) => {
+                    return Err(SessionError::Timeout);
+                }
             }
         }
 
-        let err = last_err.unwrap();
-        Err(SessionError::CannotConnect {
+        Err(last_err.unwrap_or(SessionError::CannotConnect {
             spec,
-            cause: err.to_string(),
-        })
+            cause: "connection failed".to_string(),
+        }))
     }
 
     /// Selects a device transport on this connection.
@@ -231,10 +280,17 @@ impl Session {
         Ok(())
     }
 
-    /// Reads smart-socket status response (`OKAY` or `FAIL` + length-prefixed reason).
-    ///
-    /// Ports `adb_status()` from C++ `adb_client.cpp` on top of `adb_proto::parse_reply`.
+    /// Reads smart-socket status response (`OKAY` or `FAIL` + length-prefixed reason), subject to handshake timeout.
     pub async fn read_status(&mut self) -> Result<(), SessionError> {
+        let res =
+            tokio::time::timeout(self.config.handshake_timeout, self.read_status_internal()).await;
+        match res {
+            Ok(r) => r,
+            Err(_) => Err(SessionError::Timeout),
+        }
+    }
+
+    async fn read_status_internal(&mut self) -> Result<(), SessionError> {
         loop {
             match parse_reply(&self.read_buf) {
                 Ok((SmartSocketReply::Okay, consumed)) => {
@@ -283,10 +339,17 @@ impl Session {
         }
     }
 
-    /// Reads a 4-hex-length prefixed string response after `OKAY`.
-    ///
-    /// Ports `ReadProtocolString` from C++ `adb_io.cpp` on top of `adb_proto::parse_protocol_string`.
+    /// Reads a 4-hex-length prefixed string response after `OKAY`, subject to handshake timeout.
     pub async fn read_string(&mut self) -> Result<String, SessionError> {
+        let res =
+            tokio::time::timeout(self.config.handshake_timeout, self.read_string_internal()).await;
+        match res {
+            Ok(r) => r,
+            Err(_) => Err(SessionError::Timeout),
+        }
+    }
+
+    async fn read_string_internal(&mut self) -> Result<String, SessionError> {
         loop {
             match parse_protocol_string(&self.read_buf) {
                 Ok((ProtocolString::Complete(payload), consumed)) => {
@@ -341,11 +404,29 @@ impl Session {
         service: &str,
         force_switch: bool,
     ) -> Result<Self, SessionError> {
+        Self::connect_and_switch_with_config(
+            addr,
+            selector,
+            service,
+            force_switch,
+            SessionConfig::default(),
+        )
+        .await
+    }
+
+    /// Convenience helper executing full `_adb_connect` flow with specified `SessionConfig`.
+    pub async fn connect_and_switch_with_config(
+        addr: &ServerAddress,
+        selector: &TransportSelector,
+        service: &str,
+        force_switch: bool,
+        config: SessionConfig,
+    ) -> Result<Self, SessionError> {
         if service.is_empty() || service.len() > MAX_PAYLOAD {
             return Err(SessionError::BadServiceLength(service.len()));
         }
 
-        let mut session = Self::connect(addr).await?;
+        let mut session = Self::connect_with_config(addr, config).await?;
 
         if !service.starts_with("host") || force_switch {
             session.select_transport(selector).await?;
