@@ -1,7 +1,7 @@
 use adb_client::{
     check_server_version, AdbClient, ClientErrorKind, DefaultSessionFactory,
-    ExternalBinaryLauncher, LaunchConfig, LaunchError, ServerAddress, ServerLauncher,
-    SessionConfig, SessionError, SessionFactory, TrackDevicesMode,
+    ExternalBinaryLauncher, ServerAddress, SessionConfig, SessionError, SessionFactory,
+    TrackDevicesMode,
 };
 use std::time::Duration;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -49,6 +49,8 @@ async fn test_smart_socket_server_never_replies_times_out() {
 #[cfg(unix)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn test_launcher_ack_timeout_kills_child_and_fails() {
+    use adb_client::{LaunchConfig, LaunchError, ServerLauncher};
+
     // Rebuild stream_helper example binary
     let status = std::process::Command::new("cargo")
         .args(["build", "--example", "stream_helper", "-p", "adb-client"])
