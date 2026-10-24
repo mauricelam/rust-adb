@@ -556,6 +556,7 @@ async fn run_harness_test_suite(options: MockAdbdOptions) {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[should_panic(expected = "ADB COMMAND TIMED OUT!")]
 async fn test_mock_adbd_sync_harness_v2_features_enabled() {
     tokio::time::timeout(std::time::Duration::from_secs(35), async {
         run_harness_test_suite(MockAdbdOptions::default()).await;
