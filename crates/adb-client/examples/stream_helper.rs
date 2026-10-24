@@ -1,9 +1,15 @@
+#[cfg(unix)]
 use std::env;
+#[cfg(unix)]
 use std::fs;
+#[cfg(unix)]
 use std::path::PathBuf;
+#[cfg(unix)]
 use std::thread;
+#[cfg(unix)]
 use std::time::Duration;
 
+#[cfg(unix)]
 fn pid_file_path() -> PathBuf {
     env::temp_dir().join("stream_helper_fake_server.pid")
 }
