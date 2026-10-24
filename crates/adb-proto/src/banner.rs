@@ -5,25 +5,7 @@
 use std::fmt;
 use std::str::FromStr;
 
-/// Minimum supported ADB transport protocol version (`A_VERSION_MIN`).
-/// Ports `A_VERSION_MIN` from `original/adb.h`.
-pub const A_VERSION_MIN: u32 = 0x0100_0000;
-
-/// Version from which checksums are omitted (`A_VERSION_SKIP_CHECKSUM`).
-/// Ports `A_VERSION_SKIP_CHECKSUM` from `original/adb.h`.
-pub const A_VERSION_SKIP_CHECKSUM: u32 = 0x0100_0001;
-
-/// Maximum supported ADB transport protocol version (`A_VERSION`).
-/// Ports `A_VERSION` from `original/adb.h`.
-pub const A_VERSION: u32 = 0x0100_0001;
-
-/// Initial maximum payload size before version/maxdata negotiation (`MAX_PAYLOAD_V1`).
-/// Ports `MAX_PAYLOAD_V1` from `original/adb.h`.
-pub const MAX_PAYLOAD_V1: usize = 4 * 1024;
-
-/// Maximum payload size supported by modern ADB protocol (`MAX_PAYLOAD`).
-/// Ports `MAX_PAYLOAD` from `original/adb.h`.
-pub const MAX_PAYLOAD: usize = 1024 * 1024;
+pub use crate::limits::*;
 
 /// Negotiates protocol version as the minimum of the host and remote versions.
 /// Ports logic from `atransport::set_protocol_version` in `original/transport.cpp`.
@@ -101,8 +83,14 @@ impl Feature {
     }
 }
 
-/// Returns the client/server supported features matching `supported_features()` in C++ `original/transport.cpp`.
-pub fn supported_features() -> Features {
+/// Options for configuring feature set generation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct FeatureOptions {
+    pub delayed_ack: bool,
+}
+
+/// Returns the client supported features matching `supported_features()` in C++ `original/transport.cpp`.
+pub fn client_supported_features(options: &FeatureOptions) -> Features {
     let mut features = Features::new();
     features.push(Feature::Shell2);
     features.push(Feature::Cmd);
@@ -126,12 +114,18 @@ pub fn supported_features() -> Features {
     features.push(Feature::AppInfo);
     features.push(Feature::ServerStatus);
 
-    let burst = std::env::var("ADB_BURST_MODE").is_ok_and(|v| v == "1");
-    if burst {
+    if options.delayed_ack {
         features.push(Feature::DelayedAck);
     }
 
     features
+}
+
+/// Returns the features advertised by a Rust ADB server in its CNXN banner.
+///
+/// Currently returns an empty list because server-side support for features is not yet implemented.
+pub fn server_advertised_features(_options: &FeatureOptions) -> Features {
+    Features::new()
 }
 
 impl FromStr for Feature {
@@ -229,6 +223,13 @@ impl fmt::Display for Features {
     }
 }
 
+/// Individual key-value entry in a connection banner property list.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum BannerEntry {
+    Property(String, String),
+    Features(Features),
+}
+
 /// Parsed CNXN connection banner (`<systemtype>:<serialno>:<properties>`).
 ///
 /// Ports `parse_banner` and `get_connection_string` from `original/adb.cpp`.
@@ -236,22 +237,20 @@ impl fmt::Display for Features {
 pub struct Banner {
     pub system_type: String,
     pub serial: String,
-    pub properties: Vec<(String, String)>,
-    pub features: Features,
+    pub entries: Vec<BannerEntry>,
     pub ends_with_semicolon: bool,
 }
 
 impl Banner {
     /// Parses a connection banner string.
     /// Format: `<systemtype>:<serialno>:<key=val;key2=val2;>` or `<systemtype>::<properties>`.
-    /// Preserves extra properties and unknown features in insertion order.
+    /// Preserves extra properties, features, and entry order.
     pub fn parse(s: &str) -> Self {
         let pieces: Vec<&str> = s.split(':').collect();
         let system_type = pieces.first().copied().unwrap_or("").to_string();
         let serial = pieces.get(1).copied().unwrap_or("").to_string();
 
-        let mut properties = Vec::new();
-        let mut features = Features::new();
+        let mut entries = Vec::new();
         let mut ends_with_semicolon = false;
 
         if pieces.len() > 2 {
@@ -271,9 +270,9 @@ impl Banner {
                 let val = key_val[1];
 
                 if key == "features" {
-                    features = Features::parse(val);
+                    entries.push(BannerEntry::Features(Features::parse(val)));
                 } else {
-                    properties.push((key.to_string(), val.to_string()));
+                    entries.push(BannerEntry::Property(key.to_string(), val.to_string()));
                 }
             }
         }
@@ -281,8 +280,7 @@ impl Banner {
         Self {
             system_type,
             serial,
-            properties,
-            features,
+            entries,
             ends_with_semicolon,
         }
     }
@@ -300,20 +298,46 @@ impl Banner {
     }
 
     pub fn get_property(&self, key: &str) -> Option<&str> {
-        self.properties
-            .iter()
-            .find(|(k, _)| k == key)
-            .map(|(_, v)| v.as_str())
+        self.entries.iter().find_map(|entry| match entry {
+            BannerEntry::Property(k, v) if k == key => Some(v.as_str()),
+            _ => None,
+        })
     }
 
     pub fn set_property(&mut self, key: impl Into<String>, val: impl Into<String>) {
         let key = key.into();
         let val = val.into();
-        if let Some(pair) = self.properties.iter_mut().find(|(k, _)| k == &key) {
-            pair.1 = val;
-        } else {
-            self.properties.push((key, val));
+        for entry in &mut self.entries {
+            if let BannerEntry::Property(k, v) = entry {
+                if k == &key {
+                    *v = val;
+                    return;
+                }
+            }
         }
+        self.entries.push(BannerEntry::Property(key, val));
+    }
+
+    pub fn features(&self) -> Features {
+        let mut features = Features::new();
+        for entry in &self.entries {
+            if let BannerEntry::Features(f) = entry {
+                for item in f.items() {
+                    features.push(item.clone());
+                }
+            }
+        }
+        features
+    }
+
+    pub fn properties(&self) -> Vec<(&str, &str)> {
+        self.entries
+            .iter()
+            .filter_map(|entry| match entry {
+                BannerEntry::Property(k, v) => Some((k.as_str(), v.as_str())),
+                _ => None,
+            })
+            .collect()
     }
 
     /// Serializes the banner as raw bytes.
@@ -324,20 +348,23 @@ impl Banner {
 
 impl fmt::Display for Banner {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let mut prop_parts: Vec<String> = self
-            .properties
+        let parts: Vec<String> = self
+            .entries
             .iter()
-            .map(|(k, v)| format!("{k}={v}"))
+            .map(|entry| match entry {
+                BannerEntry::Property(k, v) => format!("{k}={v}"),
+                BannerEntry::Features(feats) => format!("features={feats}"),
+            })
             .collect();
 
-        if !self.features.is_empty() {
-            prop_parts.push(format!("features={}", self.features));
-        }
-
-        if prop_parts.is_empty() {
-            write!(f, "{}:{}:", self.system_type, self.serial)
+        if parts.is_empty() {
+            if self.ends_with_semicolon {
+                write!(f, "{}:{}:;", self.system_type, self.serial)
+            } else {
+                write!(f, "{}:{}:", self.system_type, self.serial)
+            }
         } else {
-            let joined = prop_parts.join(";");
+            let joined = parts.join(";");
             if self.ends_with_semicolon {
                 write!(f, "{}:{}:{};", self.system_type, self.serial, joined)
             } else {

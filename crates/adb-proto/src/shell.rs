@@ -1,10 +1,7 @@
 use std::collections::VecDeque;
 use std::fmt;
 
-/// Maximum payload size supported by shell v2 protocol packets.
-///
-/// Ports `MAX_PAYLOAD` from `original/adb.h` and `ShellProtocol::kBufferSize` from `original/shell_protocol.h`.
-pub const MAX_PAYLOAD: usize = 1024 * 1024;
+pub use crate::limits::MAX_PAYLOAD;
 
 /// Shell packet identifier corresponding to shell protocol stream IDs.
 ///

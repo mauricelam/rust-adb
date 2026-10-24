@@ -870,7 +870,9 @@ impl AdbClient {
             let payload = session.read_string().await?;
 
             let device_features = adb_proto::Features::parse(&payload);
-            let client_features = adb_proto::supported_features();
+            let burst = std::env::var("ADB_BURST_MODE").is_ok_and(|v| v == "1");
+            let options = adb_proto::FeatureOptions { delayed_ack: burst };
+            let client_features = adb_proto::client_supported_features(&options);
 
             let mut output = String::new();
             for feature in device_features.items() {

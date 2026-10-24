@@ -1,6 +1,7 @@
 use adb_proto::{
-    negotiate_max_payload, negotiate_version, Banner, Command, Feature, Features, Header,
-    ShellDecoder, ShellPacket, ShellPacketId, A_VERSION, A_VERSION_SKIP_CHECKSUM, MAX_PAYLOAD,
+    negotiate_max_payload, negotiate_version, Banner, BannerEntry, Command, Feature, Features,
+    Header, ShellDecoder, ShellPacket, ShellPacketId, A_VERSION, A_VERSION_SKIP_CHECKSUM,
+    MAX_PAYLOAD,
 };
 use std::collections::{HashMap, VecDeque};
 use std::net::SocketAddr;
@@ -237,12 +238,12 @@ pub async fn handle_connection_with_options(
     let banner = Banner {
         system_type: "device".to_string(),
         serial: "".to_string(),
-        properties: vec![
-            ("ro.product.name".to_string(), "mock_device".to_string()),
-            ("ro.product.model".to_string(), "mock_model".to_string()),
-            ("ro.product.device".to_string(), "mock_device".to_string()),
+        entries: vec![
+            BannerEntry::Property("ro.product.name".to_string(), "mock_device".to_string()),
+            BannerEntry::Property("ro.product.model".to_string(), "mock_model".to_string()),
+            BannerEntry::Property("ro.product.device".to_string(), "mock_device".to_string()),
+            BannerEntry::Features(features),
         ],
-        features,
         ends_with_semicolon: true,
     };
     let banner_bytes = banner.to_bytes();
