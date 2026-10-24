@@ -57,7 +57,7 @@ impl Drop for KillOnDrop {
                 .build()
                 .unwrap();
             rt.block_on(async {
-                let session_factory = DefaultSessionFactory;
+                let session_factory = DefaultSessionFactory::new();
                 let mut events = Vec::new();
                 let _ = kill_server(&addr, &session_factory, &mut events).await;
             });
@@ -136,7 +136,7 @@ async fn test_1_and_2_start_server_when_none_running_and_second_start_does_nothi
     let ref_adb = get_reference_adb_path();
     assert!(ref_adb.exists(), "Reference ADB not found at {:?}", ref_adb);
 
-    let session_factory = DefaultSessionFactory;
+    let session_factory = DefaultSessionFactory::new();
     let launcher = ExternalBinaryLauncher::new(&ref_adb);
     let mut events = Vec::new();
 
@@ -181,7 +181,7 @@ async fn test_3_launcher_failure_produces_failed_to_start_daemon() {
     let port = get_free_port();
     let addr = ServerAddress { host: None, port };
 
-    let session_factory = DefaultSessionFactory;
+    let session_factory = DefaultSessionFactory::new();
     let launcher = ExternalBinaryLauncher::new("/nonexistent/path/to/adb");
     let mut events = Vec::new();
 
@@ -220,7 +220,7 @@ async fn test_4_version_mismatch_kills_fake_server_and_starts_real_one() {
     let ref_adb = get_reference_adb_path();
     assert!(ref_adb.exists(), "Reference ADB not found at {:?}", ref_adb);
 
-    let session_factory = DefaultSessionFactory;
+    let session_factory = DefaultSessionFactory::new();
     let launcher = ExternalBinaryLauncher::new(&ref_adb);
     let mut events = Vec::new();
 

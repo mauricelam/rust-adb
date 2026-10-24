@@ -139,7 +139,7 @@ impl ServerLauncher for MockLauncher {
 async fn test_matching_version() {
     let server = MockServer::start(FakeVersionMode::Matching, FakeKillMode::Okay).await;
     let addr = server.address();
-    let session_factory = DefaultSessionFactory;
+    let session_factory = DefaultSessionFactory::new();
     let (launcher, launched) = MockLauncher::new();
     let mut events = Vec::new();
 
@@ -153,7 +153,7 @@ async fn test_matching_version() {
 async fn test_different_version_mismatch() {
     let server = MockServer::start(FakeVersionMode::Different(40), FakeKillMode::Okay).await;
     let addr = server.address();
-    let session_factory = DefaultSessionFactory;
+    let session_factory = DefaultSessionFactory::new();
     let (launcher, launched) = MockLauncher::new();
     let mut events = Vec::new();
 
@@ -181,7 +181,7 @@ async fn test_different_version_mismatch() {
 async fn test_version_zero_from_unknown_host_service() {
     let server = MockServer::start(FakeVersionMode::UnknownHostService, FakeKillMode::Okay).await;
     let addr = server.address();
-    let session_factory = DefaultSessionFactory;
+    let session_factory = DefaultSessionFactory::new();
     let (launcher, launched) = MockLauncher::new();
     let mut events = Vec::new();
 
@@ -209,7 +209,7 @@ async fn test_version_zero_from_unknown_host_service() {
 async fn test_unparsable_payload() {
     let server = MockServer::start(FakeVersionMode::Unparsable, FakeKillMode::Okay).await;
     let addr = server.address();
-    let session_factory = DefaultSessionFactory;
+    let session_factory = DefaultSessionFactory::new();
     let (launcher, launched) = MockLauncher::new();
     let mut events = Vec::new();
 
@@ -226,7 +226,7 @@ async fn test_remote_spec_nothing_listening() {
         host: Some("remote.host.invalid".into()), // is_local() == false
         port: 59997,
     };
-    let session_factory = DefaultSessionFactory;
+    let session_factory = DefaultSessionFactory::new();
     let (launcher, _launched) = MockLauncher::new();
     let mut events = Vec::new();
 
@@ -246,7 +246,7 @@ async fn test_kill_when_nothing_listening() {
         host: None,
         port: 59999,
     };
-    let session_factory = DefaultSessionFactory;
+    let session_factory = DefaultSessionFactory::new();
     let mut events = Vec::new();
 
     let res = kill_server(&addr, &session_factory, &mut events).await;
@@ -272,7 +272,7 @@ async fn test_kill_server_fail() {
     )
     .await;
     let addr = server.address();
-    let session_factory = DefaultSessionFactory;
+    let session_factory = DefaultSessionFactory::new();
     let mut events = Vec::new();
 
     let res = kill_server(&addr, &session_factory, &mut events).await;
@@ -291,7 +291,7 @@ async fn test_adb_client_caching() {
     let server = MockServer::start(FakeVersionMode::Matching, FakeKillMode::Okay).await;
     let (launcher, _launched) = MockLauncher::new();
     let client = AdbClient::builder(server.address())
-        .session_factory(DefaultSessionFactory)
+        .session_factory(DefaultSessionFactory::new())
         .launcher(launcher)
         .build();
 

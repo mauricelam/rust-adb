@@ -119,7 +119,7 @@ async fn test_differential_check_version_and_kill_server() {
         port: server.port,
     };
 
-    let session_factory = DefaultSessionFactory;
+    let session_factory = DefaultSessionFactory::new();
     let launcher = NoOpLauncher;
     let mut events = Vec::new();
 
