@@ -64,7 +64,13 @@ jobs:
         run: cargo clippy --workspace --all-targets -- -D warnings
 
       - name: Run tests
+        env:
+          ADB_PTY_DEBUG: "1"
         run: cargo test --workspace
+
+      - name: Debug processes on macOS
+        if: always() && runner.os == 'macOS'
+        run: ps -axo pid,stat,wchan,command | grep -E "adb|mock|interactive" || true
 
   compat-baseline:
     name: Compat Baseline (C++ vs C++) (${{ matrix.os }})

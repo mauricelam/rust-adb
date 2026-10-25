@@ -1,5 +1,6 @@
 use crate::server_address::ServerAddress;
 use crate::session::{Session, SessionConfig, SessionError};
+use crate::shell_interactive::PtyMode;
 use crate::transport::{format_host_command, TransportSelector};
 use std::future::Future;
 use std::pin::Pin;
@@ -44,7 +45,7 @@ pub fn escape_arg(s: &str) -> String {
 }
 
 /// Options for device shell execution.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ShellOptions {
     /// -n: Close stdin immediately / do not forward stdin.
     pub close_stdin: bool,
@@ -52,8 +53,25 @@ pub struct ShellOptions {
     pub disable_shell_protocol: bool,
     /// -T: Disable remote PTY allocation (force raw mode).
     pub no_pty: bool,
+    /// -t / -tt / -T PTY mode selection.
+    pub pty_mode: PtyMode,
+    /// -e: Escape character (e.g. '~', None if 'none' or disabled).
+    pub escape_char: Option<char>,
     /// Value for `TERM` environment variable (e.g. `xterm-256color`).
     pub term: Option<String>,
+}
+
+impl Default for ShellOptions {
+    fn default() -> Self {
+        Self {
+            close_stdin: false,
+            disable_shell_protocol: false,
+            no_pty: false,
+            pty_mode: PtyMode::Auto,
+            escape_char: Some('~'),
+            term: None,
+        }
+    }
 }
 
 /// Expected ADB server version matching C++ `ADB_SERVER_VERSION` in `original/adb.h`.
@@ -1114,7 +1132,7 @@ impl AdbClient {
         stderr: Option<W2>,
     ) -> Outcome<i32>
     where
-        R: tokio::io::AsyncRead + Unpin + Send,
+        R: tokio::io::AsyncRead + Unpin + Send + 'static,
         W1: tokio::io::AsyncWrite + Unpin + Send,
         W2: tokio::io::AsyncWrite + Unpin + Send,
     {
@@ -1140,29 +1158,12 @@ impl AdbClient {
         let device_features = adb_proto::Features::parse(&features_str.replace('\n', ","));
         let device_supports_shell2 = device_features.contains(&adb_proto::Feature::Shell2);
 
+        let command = args.join(" ");
+        let is_interactive = command.is_empty();
+
         let use_shell_protocol = device_supports_shell2 && !options.disable_shell_protocol;
 
-        let command = args.join(" ");
-
         if !use_shell_protocol {
-            if options.no_pty {
-                if !device_supports_shell2 {
-                    return Outcome {
-                        result: Err(ClientError::QueryFailed(
-                            "error: device only supports allocating a pty".to_string(),
-                        )),
-                        events: outcome.events,
-                    };
-                } else if options.disable_shell_protocol {
-                    return Outcome {
-                        result: Err(ClientError::QueryFailed(
-                            "error: -x only supports allocating a pty".to_string(),
-                        )),
-                        events: outcome.events,
-                    };
-                }
-            }
-
             let service_string = format!("shell:{command}");
             if service_string.len() > adb_proto::limits::MAX_PAYLOAD_V1 {
                 return Outcome {
@@ -1174,22 +1175,45 @@ impl AdbClient {
             }
         }
 
-        let service_string = if use_shell_protocol {
+        let stdin_isatty = stdin
+            .as_ref()
+            .and_then(|r| crate::shell_interactive::find_tty_fd(r))
+            .is_some();
+
+        let pty_dec = match crate::shell_interactive::determine_pty_allocation(
+            options,
+            is_interactive,
+            stdin_isatty,
+            device_supports_shell2,
+        ) {
+            Ok(dec) => dec,
+            Err(err) => {
+                return Outcome {
+                    result: Err(err),
+                    events: outcome.events,
+                };
+            }
+        };
+
+        let service_string = if pty_dec.use_shell_protocol {
             let mut v2_args = vec!["v2".to_string()];
             if let Some(term) = &options.term {
                 v2_args.push(format!("TERM={term}"));
             }
-            v2_args.push("raw".to_string());
+            if !pty_dec.type_arg.is_empty() {
+                v2_args.push(pty_dec.type_arg.to_string());
+            }
             format!("shell,{}:{}", v2_args.join(","), command)
         } else {
             format!("shell:{command}")
         };
 
+        crate::shell_interactive::log_pty_debug("shell: connecting to server");
         let res = self
             .run_shell_session(
                 selector,
                 &service_string,
-                use_shell_protocol,
+                &pty_dec,
                 options,
                 stdin,
                 stdout,
@@ -1208,23 +1232,43 @@ impl AdbClient {
         &self,
         selector: &TransportSelector,
         service_string: &str,
-        use_shell_protocol: bool,
+        pty_dec: &crate::shell_interactive::PtyDecision,
         options: &ShellOptions,
         stdin: Option<R>,
         mut stdout_writer: Option<W1>,
         mut stderr_writer: Option<W2>,
     ) -> Result<i32, ClientError>
     where
-        R: tokio::io::AsyncRead + Unpin + Send,
+        R: tokio::io::AsyncRead + Unpin + Send + 'static,
         W1: tokio::io::AsyncWrite + Unpin + Send,
         W2: tokio::io::AsyncWrite + Unpin + Send,
     {
         use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
+        if let Some(warning) = &pty_dec.warning {
+            if let Some(ref mut w) = stderr_writer {
+                let _ = w.write_all(warning.as_bytes()).await;
+                let _ = w.flush().await;
+            } else {
+                eprint!("{warning}");
+            }
+        }
+
+        let stdin_tty_fd = stdin
+            .as_ref()
+            .and_then(|r| crate::shell_interactive::find_tty_fd(r));
+
+        let _raw_guard = if pty_dec.raw_stdin {
+            stdin_tty_fd.and_then(crate::shell_interactive::RawTerminalGuard::new)
+        } else {
+            None
+        };
+
         let mut session = self.session_factory.connect(&self.addr).await?;
         session.select_transport(selector).await?;
         session.send_service(service_string).await?;
         session.read_status().await?;
+        crate::shell_interactive::log_pty_debug(&format!("shell: service sent ({service_string})"));
 
         let stream = session.into_inner();
         let (mut read_half, mut write_half) = tokio::io::split(stream);
@@ -1235,9 +1279,67 @@ impl AdbClient {
         let mut read_buf = [0u8; 8192];
         let mut stdin_buf = [0u8; 8192];
 
-        if use_shell_protocol {
+        if pty_dec.use_shell_protocol {
             let mut decoder = adb_proto::ShellDecoder::new();
             let mut exit_code: Option<i32> = None;
+            let mut escape_sm =
+                crate::shell_interactive::EscapeStateMachine::new(if pty_dec.raw_stdin {
+                    options.escape_char
+                } else {
+                    None
+                });
+
+            // Send initial window size if available and requesting PTY
+            if pty_dec.type_arg == "pty" {
+                if let Some(fd) = stdin_tty_fd {
+                    if let Some((r, c, x, y)) = crate::shell_interactive::get_window_size(fd) {
+                        let payload = crate::shell_interactive::format_window_size(r, c, x, y);
+                        let winsz_pkt = adb_proto::ShellPacket::new(
+                            adb_proto::ShellPacketId::WindowSizeChange,
+                            payload,
+                        );
+                        if let Ok(encoded) = winsz_pkt.encode() {
+                            let _ = write_half.write_all(&encoded).await;
+                            let _ = write_half.flush().await;
+                            crate::shell_interactive::log_pty_debug(
+                                "shell: initial window size sent",
+                            );
+                        }
+                    }
+                }
+            }
+
+            // SIGWINCH watcher channel
+            #[cfg(unix)]
+            let (winch_tx, mut winch_rx) = tokio::sync::mpsc::unbounded_channel::<Vec<u8>>();
+            #[cfg(unix)]
+            let sigwinch_task = if pty_dec.type_arg == "pty" {
+                stdin_tty_fd.map(|fd| {
+                    crate::shell_interactive::log_pty_debug("spawning sigwinch_task");
+                    tokio::spawn(async move {
+                        if let Ok(mut sig) = tokio::signal::unix::signal(
+                            tokio::signal::unix::SignalKind::window_change(),
+                        ) {
+                            while sig.recv().await.is_some() {
+                                crate::shell_interactive::log_pty_debug(
+                                    "SIGWINCH signal received in sigwinch_task",
+                                );
+                                if let Some((r, c, x, y)) =
+                                    crate::shell_interactive::get_window_size(fd)
+                                {
+                                    let payload =
+                                        crate::shell_interactive::format_window_size(r, c, x, y);
+                                    if winch_tx.send(payload).is_err() {
+                                        break;
+                                    }
+                                }
+                            }
+                        }
+                    })
+                })
+            } else {
+                None
+            };
 
             if stdin_reader.is_none() || options.close_stdin {
                 let close_pkt =
@@ -1253,6 +1355,7 @@ impl AdbClient {
                 tokio::select! {
                     n_res = read_half.read(&mut read_buf) => {
                         let n = n_res.map_err(|e| ClientError::Session(SessionError::ReadStatusFailed(e)))?;
+                        crate::shell_interactive::log_pty_debug(&format!("select branch read_half: {n} bytes read"));
                         if n == 0 {
                             break;
                         }
@@ -1261,6 +1364,7 @@ impl AdbClient {
                         while let Ok(Some(pkt)) = decoder.pop_packet() {
                             match pkt.id {
                                 adb_proto::ShellPacketId::Stdout => {
+                                    crate::shell_interactive::log_pty_debug(&format!("stdout packet received: {} bytes", pkt.data.len()));
                                     if let Some(ref mut w) = stdout_writer {
                                         if w.write_all(&pkt.data).await.is_err() || w.flush().await.is_err() {
                                             exit_code = Some(128 + 13);
@@ -1269,6 +1373,7 @@ impl AdbClient {
                                     }
                                 }
                                 adb_proto::ShellPacketId::Stderr => {
+                                    crate::shell_interactive::log_pty_debug(&format!("stderr packet received: {} bytes", pkt.data.len()));
                                     if let Some(ref mut w) = stderr_writer {
                                         if w.write_all(&pkt.data).await.is_err() || w.flush().await.is_err() {
                                             exit_code = Some(128 + 13);
@@ -1278,6 +1383,7 @@ impl AdbClient {
                                 }
                                 adb_proto::ShellPacketId::Exit => {
                                     if let Ok(code) = pkt.parse_exit_code() {
+                                        crate::shell_interactive::log_pty_debug(&format!("exit packet received: exit_code={code}"));
                                         exit_code = Some(code as i32);
                                     }
                                 }
@@ -1289,6 +1395,28 @@ impl AdbClient {
                             break;
                         }
                     }
+                    winch_payload = async {
+                        #[cfg(unix)]
+                        {
+                            winch_rx.recv().await
+                        }
+                        #[cfg(not(unix))]
+                        {
+                            std::future::pending::<Option<Vec<u8>>>().await
+                        }
+                    } => {
+                        if let Some(payload) = winch_payload {
+                            crate::shell_interactive::log_pty_debug("select branch winch_payload: window size update sent");
+                            let winsz_pkt = adb_proto::ShellPacket::new(
+                                adb_proto::ShellPacketId::WindowSizeChange,
+                                payload,
+                            );
+                            if let Ok(encoded) = winsz_pkt.encode() {
+                                let _ = write_half.write_all(&encoded).await;
+                                let _ = write_half.flush().await;
+                            }
+                        }
+                    }
                     n_res = async {
                         if let Some(ref mut r) = stdin_reader {
                             r.read(&mut stdin_buf).await
@@ -1298,6 +1426,7 @@ impl AdbClient {
                     }, if !stdin_eof => {
                         match n_res {
                             Ok(0) => {
+                                crate::shell_interactive::log_pty_debug("select branch stdin_reader: EOF (0 bytes)");
                                 stdin_eof = true;
                                 let close_pkt = adb_proto::ShellPacket::new(
                                     adb_proto::ShellPacketId::CloseStdin,
@@ -1309,13 +1438,39 @@ impl AdbClient {
                                 }
                             }
                             Ok(n) => {
-                                let stdin_pkt = adb_proto::ShellPacket::new(
-                                    adb_proto::ShellPacketId::Stdin,
-                                    stdin_buf[..n].to_vec(),
-                                );
-                                if let Ok(encoded) = stdin_pkt.encode() {
-                                    if write_half.write_all(&encoded).await.is_err() || write_half.flush().await.is_err() {
-                                        stdin_eof = true;
+                                crate::shell_interactive::log_pty_debug(&format!("select branch stdin_reader: {n} bytes read"));
+                                let esc_res = escape_sm.process_chunk(&stdin_buf[..n]);
+                                match esc_res {
+                                    crate::shell_interactive::EscapeResult::Output(out_bytes) => {
+                                        if !out_bytes.is_empty() {
+                                            let stdin_pkt = adb_proto::ShellPacket::new(
+                                                adb_proto::ShellPacketId::Stdin,
+                                                out_bytes,
+                                            );
+                                            if let Ok(encoded) = stdin_pkt.encode() {
+                                                if write_half.write_all(&encoded).await.is_err() || write_half.flush().await.is_err() {
+                                                    stdin_eof = true;
+                                                }
+                                            }
+                                        }
+                                    }
+                                    crate::shell_interactive::EscapeResult::Disconnect => {
+                                        crate::shell_interactive::log_pty_debug("shell: disconnect path ~. triggered");
+                                        const DISCONNECTED_MSG: &[u8] = b"\r\n[ disconnected ]\r\n";
+                                        if let Some(ref mut w) = stderr_writer {
+                                            let _ = w.write_all(DISCONNECTED_MSG).await;
+                                            let _ = w.flush().await;
+                                        } else {
+                                            eprint!("\r\n[ disconnected ]\r\n");
+                                        }
+                                        #[cfg(unix)]
+                                        if let Some(task) = sigwinch_task {
+                                            task.abort();
+                                        }
+                                        #[cfg(unix)]
+                                        drop(_raw_guard);
+                                        crate::shell_interactive::log_pty_debug("returning from run_shell_session (disconnect, status 0)");
+                                        return Ok(0);
                                     }
                                 }
                             }
@@ -1327,7 +1482,16 @@ impl AdbClient {
                 }
             }
 
-            Ok(exit_code.unwrap_or(255))
+            #[cfg(unix)]
+            if let Some(task) = sigwinch_task {
+                task.abort();
+            }
+
+            let code = exit_code.unwrap_or(255);
+            crate::shell_interactive::log_pty_debug(&format!(
+                "returning from run_shell_session with code {code}"
+            ));
+            Ok(code)
         } else {
             loop {
                 tokio::select! {
