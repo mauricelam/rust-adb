@@ -581,11 +581,21 @@ impl SyncSession {
 
         let dst = destination.as_ref();
         let dst_str = dst.to_string_lossy().to_string();
+        let dst_bytes = dst_str.as_bytes();
+        let ends_with_sep = !dst_bytes.is_empty()
+            && (dst_bytes.last() == Some(&b'/') || dst_bytes.last() == Some(&b'\\'));
+
+        let stripped_str = dst_str.trim_end_matches(['/', '\\']);
+        let stripped_path = if stripped_str.is_empty() {
+            dst
+        } else {
+            std::path::Path::new(stripped_str)
+        };
 
         let mut dst_exists = true;
         let mut dst_isdir = false;
 
-        match std::fs::metadata(dst) {
+        match std::fs::metadata(stripped_path) {
             Ok(st) => {
                 dst_isdir = st.is_dir();
             }
@@ -620,16 +630,11 @@ impl SyncSession {
                 res.errors
                     .push(format!("target '{dst_str}' is not a directory"));
                 return Ok(res);
-            } else {
-                let dst_bytes = dst_str.as_bytes();
-                let ends_with_sep = !dst_bytes.is_empty()
-                    && (dst_bytes.last() == Some(&b'/') || dst_bytes.last() == Some(&b'\\'));
-                if ends_with_sep && dst_exists {
-                    let mut res = PullResult::default();
-                    res.errors
-                        .push(format!("failed to access '{dst_str}': Not a directory"));
-                    return Ok(res);
-                }
+            } else if ends_with_sep && dst_exists {
+                let mut res = PullResult::default();
+                res.errors
+                    .push(format!("failed to access '{dst_str}': Not a directory"));
+                return Ok(res);
             }
         }
 
