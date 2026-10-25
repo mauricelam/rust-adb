@@ -12,7 +12,20 @@ use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
 use std::path::PathBuf;
 use std::pin::Pin;
 use std::process::{Child, Command, Stdio};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
+
+static STEP_MARKERS: Mutex<Vec<String>> = Mutex::new(Vec::new());
+
+fn record_step(step: &str) {
+    if let Ok(mut markers) = STEP_MARKERS.lock() {
+        markers.push(step.to_string());
+    }
+    if env::var_os("ADB_PTY_DEBUG").is_some() {
+        eprintln!("[STEP MARKER] {step}");
+    }
+}
 
 fn get_mock_adbd_bin() -> PathBuf {
     if let Ok(bin) = env::var("CARGO_BIN_EXE_mock-adbd") {
@@ -123,12 +136,67 @@ fn get_termios(fd_raw: std::os::fd::RawFd) -> libc::termios {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn test_unix_interactive_shell_pty_resize_disconnect() {
+    env::set_var("ADB_PTY_DEBUG", "1");
+
+    let watchdog_done = Arc::new(AtomicBool::new(false));
+    let watchdog_done_clone = watchdog_done.clone();
+    let test_pid = std::process::id();
+
+    let _watchdog_handle = std::thread::spawn(move || {
+        let timeout = Duration::from_secs(60);
+        let poll_interval = Duration::from_millis(100);
+        let start = std::time::Instant::now();
+
+        while start.elapsed() < timeout {
+            if watchdog_done_clone.load(Ordering::Relaxed) {
+                return;
+            }
+            std::thread::sleep(poll_interval);
+        }
+
+        eprintln!("\n================ WATCHDOG TIMEOUT ==================");
+        eprintln!("test_unix_interactive_shell_pty_resize_disconnect has been running for over 60 seconds!");
+        eprintln!("Recorded step markers:");
+        if let Ok(markers) = STEP_MARKERS.lock() {
+            for (i, m) in markers.iter().enumerate() {
+                eprintln!("  {}. {}", i + 1, m);
+            }
+        }
+
+        #[cfg(target_os = "macos")]
+        {
+            eprintln!("\nSampling process stack using `sample`...");
+            let _ = Command::new("sample")
+                .args([test_pid.to_string(), "1".to_string()])
+                .stdout(Stdio::inherit())
+                .stderr(Stdio::inherit())
+                .status();
+        }
+
+        #[cfg(target_os = "linux")]
+        {
+            eprintln!("\nSampling process stack using `eu-stack`...");
+            let _ = Command::new("eu-stack")
+                .args(["-p", &test_pid.to_string()])
+                .stdout(Stdio::inherit())
+                .stderr(Stdio::inherit())
+                .status();
+        }
+
+        eprintln!("Aborting process via std::process::abort()");
+        eprintln!("====================================================\n");
+        std::process::abort();
+    });
+
+    record_step("1. Starting mock-adbd and TestServer");
     let mock = MockAdbdProcess::start(&[]);
     let server = TestServer::start();
 
+    record_step("2. Connecting TestServer to mock-adbd");
     let connect_out = server.run_client(&["connect", &mock.addr]);
     assert!(connect_out.success(), "adb connect failed");
 
+    record_step("3. Building AdbClient and opening PTY");
     let addr = ServerAddress {
         host: Some("127.0.0.1".into()),
         port: server.port,
@@ -141,18 +209,18 @@ async fn test_unix_interactive_shell_pty_resize_disconnect() {
 
     let (master_fd, slave_fd) = open_pty();
 
-    // Initial window size
+    record_step("4. Setting initial window size (30x90)");
     set_window_size(&slave_fd, 30, 90);
 
-    let orig_termios = get_termios(slave_fd.as_raw_fd());
-
     let slave_check_fd = slave_fd.try_clone().unwrap();
+    let orig_termios = get_termios(slave_check_fd.as_raw_fd());
 
     let slave_file_in = tokio::fs::File::from(std::fs::File::from(slave_fd.try_clone().unwrap()));
     let slave_file_out = tokio::fs::File::from(std::fs::File::from(slave_fd));
 
     let serial = mock.addr.clone();
 
+    record_step("5. Spawning client.shell task");
     let shell_task = tokio::spawn(async move {
         client
             .shell(
@@ -166,10 +234,10 @@ async fn test_unix_interactive_shell_pty_resize_disconnect() {
             .await
     });
 
-    // Give shell time to initialize raw mode and send initial window size
+    record_step("6. Sleeping 200ms for shell initialization and raw mode");
     tokio::time::sleep(Duration::from_millis(200)).await;
 
-    // Verify raw terminal mode was applied on slave
+    record_step("7. Verifying raw terminal mode on slave PTY");
     let raw_termios = get_termios(slave_check_fd.as_raw_fd());
     assert_eq!(
         raw_termios.c_lflag & (libc::ICANON | libc::ECHO),
@@ -177,27 +245,29 @@ async fn test_unix_interactive_shell_pty_resize_disconnect() {
         "termios should be in raw mode"
     );
 
-    // Resize PTY and send SIGWINCH
+    record_step("8. Resizing window (45x110) and sending SIGWINCH");
     set_window_size(&master_fd, 45, 110);
     unsafe {
         libc::kill(libc::getpid(), libc::SIGWINCH);
     }
 
+    record_step("9. Sleeping 200ms after SIGWINCH");
     tokio::time::sleep(Duration::from_millis(200)).await;
 
-    // Write disconnect sequence ~. on master end
+    record_step("10. Writing disconnect sequence '~.' to master PTY");
     let mut master_file: std::fs::File = master_fd.into();
     let mut master_reader = master_file.try_clone().unwrap();
 
     master_file.write_all(b"~.").unwrap();
     master_file.flush().unwrap();
 
+    record_step("11. Awaiting shell_task completion");
     let outcome = shell_task.await.unwrap();
     let exit_code = outcome.result.expect("interactive shell failed");
 
     assert_eq!(exit_code, 0);
 
-    // Check termios was restored afterwards
+    record_step("12. Verifying restored termios mode");
     let restored_termios = get_termios(slave_check_fd.as_raw_fd());
     assert_eq!(
         restored_termios.c_lflag & libc::ICANON,
@@ -205,7 +275,7 @@ async fn test_unix_interactive_shell_pty_resize_disconnect() {
         "termios ICANON should be restored"
     );
 
-    // Read master output
+    record_step("13. Reading master output and verifying WINSZ text");
     let mut read_buf = vec![0u8; 1024];
     let mut accumulated = Vec::new();
     unsafe {
@@ -234,4 +304,7 @@ async fn test_unix_interactive_shell_pty_resize_disconnect() {
         out_str.contains("WINSZ 45x110,0x0"),
         "master output should contain resized window size, got: {out_str}"
     );
+
+    record_step("14. Test completed successfully");
+    watchdog_done.store(true, Ordering::Relaxed);
 }
