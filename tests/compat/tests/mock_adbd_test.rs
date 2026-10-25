@@ -5,9 +5,6 @@ use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
 
 fn get_mock_adbd_bin() -> PathBuf {
-    if let Ok(bin) = env::var("CARGO_BIN_EXE_mock-adbd") {
-        return PathBuf::from(bin);
-    }
     let manifest_dir = env::var("CARGO_MANIFEST_DIR").unwrap();
     let root = PathBuf::from(manifest_dir).join("../..");
     let bin_name = if cfg!(target_os = "windows") {
@@ -16,13 +13,11 @@ fn get_mock_adbd_bin() -> PathBuf {
         "mock-adbd"
     };
     let bin_path = root.join("target").join("debug").join(bin_name);
-    if !bin_path.exists() {
-        let status = Command::new("cargo")
-            .args(["build", "-p", "mock-adbd"])
-            .status()
-            .expect("Failed to build mock-adbd binary");
-        assert!(status.success(), "Failed to build mock-adbd");
-    }
+    let status = Command::new("cargo")
+        .args(["build", "-p", "mock-adbd"])
+        .status()
+        .expect("Failed to build mock-adbd binary");
+    assert!(status.success(), "Failed to build mock-adbd");
     bin_path
 }
 
@@ -216,4 +211,180 @@ fn test_mock_adbd_no_shell_v2_fallback() {
         shell_out.stdout,
         shell_out.stderr
     );
+}
+
+#[test]
+fn test_mock_adbd_sync_ls_pull_push() {
+    let mock = MockAdbdProcess::start();
+    let server = TestServer::start();
+
+    let connect_out = server.run_client(&["connect", &mock.addr]);
+    assert!(
+        connect_out.success(),
+        "adb connect failed: stdout: {}, stderr: {}",
+        connect_out.stdout,
+        connect_out.stderr
+    );
+
+    // 1. adb ls /data
+    let ls_out = server.run_client(&["-s", &mock.addr, "ls", "/data"]);
+    assert!(
+        ls_out.success(),
+        "adb ls /data failed: stdout: {}, stderr: {}",
+        ls_out.stdout,
+        ls_out.stderr
+    );
+    assert!(ls_out.stdout.contains("f_0.bin"));
+    assert!(ls_out.stdout.contains("f_1.bin"));
+    assert!(ls_out.stdout.contains("f_65535.bin"));
+    assert!(ls_out.stdout.contains("f_65536.bin"));
+    assert!(ls_out.stdout.contains("f_300k.bin"));
+
+    // 2. adb pull /data/f_*.bin
+    let tmp_dir = tempfile::tempdir().unwrap();
+
+    let test_files = [
+        ("f_0.bin", vec![]),
+        ("f_1.bin", vec![0x42]),
+        ("f_65535.bin", vec![0xAA; 65535]),
+        ("f_65536.bin", vec![0xBB; 65536]),
+        ("f_300k.bin", (0..307200).map(|i| (i % 256) as u8).collect()),
+    ];
+
+    for (filename, expected_bytes) in &test_files {
+        let remote_path = format!("/data/{filename}");
+        let local_path = tmp_dir.path().join(filename);
+
+        let pull_out = server.run_client(&[
+            "-s",
+            &mock.addr,
+            "pull",
+            &remote_path,
+            local_path.to_str().unwrap(),
+        ]);
+        assert!(
+            pull_out.success(),
+            "adb pull {} failed: stdout: {}, stderr: {}",
+            remote_path,
+            pull_out.stdout,
+            pull_out.stderr
+        );
+
+        let pulled_bytes = std::fs::read(&local_path).unwrap();
+        assert_eq!(
+            &pulled_bytes, expected_bytes,
+            "Pulled bytes mismatch for {}",
+            filename
+        );
+    }
+
+    // 3. adb push
+    for (filename, content) in &test_files {
+        let pushed_filename = format!("pushed_{filename}");
+        let local_src = tmp_dir.path().join(&pushed_filename);
+        std::fs::write(&local_src, content).unwrap();
+
+        let remote_dest = format!("/data/{pushed_filename}");
+        let push_out = server.run_client(&[
+            "-s",
+            &mock.addr,
+            "push",
+            local_src.to_str().unwrap(),
+            &remote_dest,
+        ]);
+        assert!(
+            push_out.success(),
+            "adb push {} failed: stdout: {}, stderr: {}",
+            remote_dest,
+            push_out.stdout,
+            push_out.stderr
+        );
+
+        // Pull back pushed file to verify content
+        let verify_local = tmp_dir.path().join(format!("verify_{pushed_filename}"));
+        let re_pull = server.run_client(&[
+            "-s",
+            &mock.addr,
+            "pull",
+            &remote_dest,
+            verify_local.to_str().unwrap(),
+        ]);
+        assert!(re_pull.success());
+        let re_pulled_bytes = std::fs::read(&verify_local).unwrap();
+        assert_eq!(&re_pulled_bytes, content);
+    }
+
+    // 4. Pull missing file
+    let missing_local = tmp_dir.path().join("missing.bin");
+    let missing_pull = server.run_client(&[
+        "-s",
+        &mock.addr,
+        "pull",
+        "/data/nonexistent.bin",
+        missing_local.to_str().unwrap(),
+    ]);
+    assert!(!missing_pull.success());
+    assert!(
+        missing_pull.stdout.contains("No such file or directory")
+            || missing_pull.stderr.contains("No such file or directory")
+            || missing_pull.stdout.contains("does not exist")
+            || missing_pull.stderr.contains("does not exist"),
+        "Expected error text for missing file pull: stdout: {}, stderr: {}",
+        missing_pull.stdout,
+        missing_pull.stderr
+    );
+
+    // 5. Push into missing directory
+    let local_file = tmp_dir.path().join("file.bin");
+    std::fs::write(&local_file, b"test").unwrap();
+    let missing_push = server.run_client(&[
+        "-s",
+        &mock.addr,
+        "push",
+        local_file.to_str().unwrap(),
+        "/nonexistent_dir/file.bin",
+    ]);
+    assert!(!missing_push.success());
+}
+
+#[test]
+fn test_mock_adbd_sync_v1_fallback_options() {
+    let mock =
+        MockAdbdProcess::start_with_args(&["--no-stat-v2", "--no-ls-v2", "--no-sendrecv-v2"]);
+    let server = TestServer::start();
+
+    let connect_out = server.run_client(&["connect", &mock.addr]);
+    assert!(connect_out.success());
+
+    // adb ls /data
+    let ls_out = server.run_client(&["-s", &mock.addr, "ls", "/data"]);
+    assert!(ls_out.success());
+    assert!(ls_out.stdout.contains("f_300k.bin"));
+
+    // adb pull /data/f_300k.bin
+    let tmp_dir = tempfile::tempdir().unwrap();
+    let local_path = tmp_dir.path().join("f_300k.bin");
+    let pull_out = server.run_client(&[
+        "-s",
+        &mock.addr,
+        "pull",
+        "/data/f_300k.bin",
+        local_path.to_str().unwrap(),
+    ]);
+    assert!(pull_out.success());
+    let expected_300k: Vec<u8> = (0..307200).map(|i| (i % 256) as u8).collect();
+    let pulled_bytes = std::fs::read(&local_path).unwrap();
+    assert_eq!(pulled_bytes, expected_300k);
+
+    // adb push
+    let local_src = tmp_dir.path().join("v1_push.bin");
+    std::fs::write(&local_src, b"v1 push content").unwrap();
+    let push_out = server.run_client(&[
+        "-s",
+        &mock.addr,
+        "push",
+        local_src.to_str().unwrap(),
+        "/data/v1_push.bin",
+    ]);
+    assert!(push_out.success());
 }
