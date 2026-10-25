@@ -1,5 +1,5 @@
 use clap::Parser;
-use mock_adbd::{handle_connection_with_options, MockAdbdOptions};
+use mock_adbd::{fs::InMemoryFs, handle_connection_with_options, MockAdbdOptions};
 use tokio::net::TcpListener;
 
 #[derive(Parser, Debug)]
@@ -12,6 +12,22 @@ struct Args {
     /// Disable shell_v2 feature advertisement
     #[arg(long)]
     no_shell_v2: bool,
+
+    /// Disable stat_v2 feature advertisement
+    #[arg(long)]
+    no_stat_v2: bool,
+
+    /// Disable ls_v2 feature advertisement
+    #[arg(long)]
+    no_ls_v2: bool,
+
+    /// Disable sendrecv_v2 feature advertisement
+    #[arg(long)]
+    no_sendrecv_v2: bool,
+
+    /// Enable fixed_push_mkdir feature advertisement
+    #[arg(long)]
+    fixed_push_mkdir: bool,
 }
 
 #[tokio::main]
@@ -19,6 +35,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args = Args::parse();
     let options = MockAdbdOptions {
         enable_shell_v2: !args.no_shell_v2,
+        enable_stat_v2: !args.no_stat_v2,
+        enable_ls_v2: !args.no_ls_v2,
+        enable_sendrecv_v2: !args.no_sendrecv_v2,
+        fixed_push_mkdir: args.fixed_push_mkdir,
+        fs: InMemoryFs::default(),
     };
 
     let listener = TcpListener::bind(&args.listen).await?;
