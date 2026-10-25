@@ -921,8 +921,9 @@ impl SyncSession {
             }
             Err(err) => {
                 let mut res = PushResult::default();
-                res.errors
-                    .push(format!("stat failed when trying to push to {dst_str}: {err}"));
+                res.errors.push(format!(
+                    "stat failed when trying to push to {dst_str}: {err}"
+                ));
                 return Ok(res);
             }
         }
@@ -1027,7 +1028,13 @@ impl SyncSession {
                 .as_secs() as u32;
 
             match self
-                .sync_send(src_path, &target_dst_str, mtime, mode, file_type.is_symlink())
+                .sync_send(
+                    src_path,
+                    &target_dst_str,
+                    mtime,
+                    mode,
+                    file_type.is_symlink(),
+                )
                 .await
             {
                 Ok(bytes) => {
@@ -1073,8 +1080,8 @@ impl SyncSession {
         is_symlink: bool,
     ) -> Result<u64, String> {
         if is_symlink {
-            let link_target = std::fs::read_link(lpath)
-                .map_err(|e| format!("readlink '{lpath}' failed: {e}"))?;
+            let link_target =
+                std::fs::read_link(lpath).map_err(|e| format!("readlink '{lpath}' failed: {e}"))?;
             let mut contents = link_target.to_string_lossy().as_bytes().to_vec();
             contents.push(0);
             let len = contents.len() as u64;
@@ -1148,7 +1155,10 @@ impl SyncSession {
     ) -> Result<(), String> {
         if self.have_sendrecv_v2 {
             if rpath.len() > 1024 {
-                return Err(format!("SendRequest failed: path too long: {}", rpath.len()));
+                return Err(format!(
+                    "SendRequest failed: path too long: {}",
+                    rpath.len()
+                ));
             }
             let mut hdr_buf = Vec::with_capacity(8 + rpath.len() + 12);
             hdr_buf.extend_from_slice(&ID_SEND_V2.to_le_bytes());
@@ -1200,12 +1210,7 @@ impl SyncSession {
         self.write_or_fail(lpath, rpath, &done_hdr).await
     }
 
-    async fn write_or_fail(
-        &mut self,
-        lpath: &str,
-        rpath: &str,
-        data: &[u8],
-    ) -> Result<(), String> {
+    async fn write_or_fail(&mut self, lpath: &str, rpath: &str, data: &[u8]) -> Result<(), String> {
         let stream = self.session.stream_mut();
         if let Err(e) = stream.write_all(data).await {
             if e.kind() == std::io::ErrorKind::ConnectionReset {
@@ -1246,11 +1251,8 @@ impl SyncSession {
 
             if !should_block {
                 let mut test_buf = [0u8; 1];
-                match tokio::time::timeout(
-                    std::time::Duration::ZERO,
-                    stream.peek(&mut test_buf),
-                )
-                .await
+                match tokio::time::timeout(std::time::Duration::ZERO, stream.peek(&mut test_buf))
+                    .await
                 {
                     Ok(Ok(0)) | Err(_) => {
                         return overall_ack_success;

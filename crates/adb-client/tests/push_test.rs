@@ -125,7 +125,11 @@ async fn test_push_file_sizes_and_attrs_parity_v2_and_v1() {
                 (Node::File(rf), Node::File(ff)) => {
                     assert_eq!(rf.data, ff.data, "data mismatch for {filename}");
                     assert_eq!(rf.data, contents, "data content mismatch for {filename}");
-                    assert_eq!(rf.mode & 0o777, ff.mode & 0o777, "mode mismatch for {filename}");
+                    assert_eq!(
+                        rf.mode & 0o777,
+                        ff.mode & 0o777,
+                        "mode mismatch for {filename}"
+                    );
                 }
                 _ => panic!("Expected File node"),
             }
@@ -468,10 +472,7 @@ async fn test_push_failing_device_mid_batch() {
 
     // Push 5 files where file 3 targets /nonexistent/file3.txt (which fails on device)
     // First two files go to /data, file 3 to /nonexistent/file3.txt
-    let res1 = sync
-        .push(&source_strs[0..2], "/data", &opts)
-        .await
-        .unwrap();
+    let res1 = sync.push(&source_strs[0..2], "/data", &opts).await.unwrap();
     assert!(res1.success);
 
     let res_fail = sync
