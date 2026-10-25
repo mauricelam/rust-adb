@@ -131,12 +131,14 @@ async fn test_sync_ls_parity_v2_and_v1() {
     let ref_empty = server.run_client(&["-s", &mock.addr, "ls", "/data/empty"]);
     assert!(ref_empty.success());
 
+    let norm = |s: &str| s.replace("\r\n", "\n");
+
     let rust_empty_out = entries_empty
         .iter()
         .map(|e| e.format_line())
         .collect::<Vec<_>>()
         .join("");
-    assert_eq!(rust_empty_out, ref_empty.stdout);
+    assert_eq!(rust_empty_out, norm(&ref_empty.stdout));
 
     // 2. Test ls on directory with files, subdirectories, symlink and multi-byte UTF-8 names (/data)
     let entries_data = sync.ls("/data").await.expect("ls /data failed");
@@ -148,7 +150,7 @@ async fn test_sync_ls_parity_v2_and_v1() {
         .map(|e| e.format_line())
         .collect::<Vec<_>>()
         .join("");
-    assert_eq!(rust_data_out, ref_data.stdout);
+    assert_eq!(rust_data_out, norm(&ref_data.stdout));
 
     // 3. Test ls on missing path /nonexistent
     let entries_missing = sync
@@ -163,7 +165,7 @@ async fn test_sync_ls_parity_v2_and_v1() {
         .map(|e| e.format_line())
         .collect::<Vec<_>>()
         .join("");
-    assert_eq!(rust_missing_out, ref_missing.stdout);
+    assert_eq!(rust_missing_out, norm(&ref_missing.stdout));
 
     // Repeat with v2 features disabled (ls_v1)
     let mock_v1 = MockAdbdProcess::start_with_options(MockAdbdOptions {
@@ -188,7 +190,7 @@ async fn test_sync_ls_parity_v2_and_v1() {
         .map(|e| e.format_line())
         .collect::<Vec<_>>()
         .join("");
-    assert_eq!(rust_v1_out, ref_v1.stdout);
+    assert_eq!(rust_v1_out, norm(&ref_v1.stdout));
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
