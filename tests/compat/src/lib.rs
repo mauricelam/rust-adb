@@ -147,33 +147,52 @@ impl TestServer {
         let home_dir =
             tempfile::tempdir().expect("Failed to create temporary directory for test home");
 
-        let port = match config.server_port {
-            Some(p) => p,
-            None => get_free_port().expect("Failed to find free TCP port for ADB server"),
-        };
+        let mut attempts = 0;
+        loop {
+            attempts += 1;
+            let port = match config.server_port {
+                Some(p) => p,
+                None => get_free_port().expect("Failed to find free TCP port for ADB server"),
+            };
 
-        let mut cmd = Command::new(&config.server_bin_path);
-        cmd.args(["-P", &port.to_string(), "server", "nodaemon"]);
-        set_isolated_env(&mut cmd, home_dir.path(), port);
+            let mut cmd = Command::new(&config.server_bin_path);
+            cmd.args(["-P", &port.to_string(), "server", "nodaemon"]);
+            set_isolated_env(&mut cmd, home_dir.path(), port);
 
-        let mut child = cmd.spawn().expect("Failed to start ADB server process");
+            let mut child = match cmd.spawn() {
+                Ok(c) => c,
+                Err(_) if config.server_port.is_none() && attempts < 10 => continue,
+                Err(e) => panic!("Failed to start ADB server process: {e}"),
+            };
 
-        let start_time = Instant::now();
-        let timeout = get_cmd_timeout();
-        let mut ready = false;
+            let start_time = Instant::now();
+            let timeout = get_cmd_timeout();
+            let mut ready = false;
 
-        while start_time.elapsed() < timeout {
-            if std::net::TcpStream::connect(("127.0.0.1", port)).is_ok() {
-                ready = true;
-                break;
+            while start_time.elapsed() < timeout {
+                if std::net::TcpStream::connect(("127.0.0.1", port)).is_ok() {
+                    ready = true;
+                    break;
+                }
+                if let Ok(Some(status)) = child.try_wait() {
+                    if config.server_port.is_none() && attempts < 10 {
+                        // Port collision or premature exit, retry with a new free port
+                        break;
+                    }
+                    panic!("ADB server process exited unexpectedly with status: {status}");
+                }
+                thread::sleep(Duration::from_millis(50));
             }
-            if let Ok(Some(status)) = child.try_wait() {
-                panic!("ADB server process exited unexpectedly with status: {status}");
-            }
-            thread::sleep(Duration::from_millis(50));
-        }
 
-        if !ready {
+            if ready {
+                return TestServer {
+                    port,
+                    home_dir,
+                    child: Some(child),
+                    config,
+                };
+            }
+
             #[cfg(unix)]
             {
                 let pgid = child.id() as i32;
@@ -183,17 +202,13 @@ impl TestServer {
             }
             let _ = child.kill();
             let _ = child.wait();
-            panic!(
-                "Timed out after {:?} waiting for ADB server to listen on port {port}",
-                timeout
-            );
-        }
 
-        TestServer {
-            port,
-            home_dir,
-            child: Some(child),
-            config,
+            if config.server_port.is_some() || attempts >= 10 {
+                panic!(
+                    "Timed out after {:?} waiting for ADB server to listen on port {port}",
+                    timeout
+                );
+            }
         }
     }
 
