@@ -209,10 +209,10 @@ async fn test_unix_interactive_shell_pty_resize_disconnect() {
     let mut read_buf = vec![0u8; 1024];
     let mut accumulated = Vec::new();
     unsafe {
-        let flags = libc::fcntl(master_file.as_raw_fd(), libc::F_GETFL);
+        let flags = libc::fcntl(master_reader.as_raw_fd(), libc::F_GETFL);
         if flags != -1 {
             libc::fcntl(
-                master_file.as_raw_fd(),
+                master_reader.as_raw_fd(),
                 libc::F_SETFL,
                 flags | libc::O_NONBLOCK,
             );

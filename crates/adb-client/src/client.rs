@@ -1305,6 +1305,7 @@ impl AdbClient {
             }
 
             // SIGWINCH watcher channel
+            #[cfg(unix)]
             let (winch_tx, mut winch_rx) = tokio::sync::mpsc::unbounded_channel::<Vec<u8>>();
             #[cfg(unix)]
             let sigwinch_task = if pty_dec.type_arg == "pty" {
@@ -1381,14 +1382,25 @@ impl AdbClient {
                             break;
                         }
                     }
-                    Some(winch_payload) = winch_rx.recv() => {
-                        let winsz_pkt = adb_proto::ShellPacket::new(
-                            adb_proto::ShellPacketId::WindowSizeChange,
-                            winch_payload,
-                        );
-                        if let Ok(encoded) = winsz_pkt.encode() {
-                            let _ = write_half.write_all(&encoded).await;
-                            let _ = write_half.flush().await;
+                    winch_payload = async {
+                        #[cfg(unix)]
+                        {
+                            winch_rx.recv().await
+                        }
+                        #[cfg(not(unix))]
+                        {
+                            std::future::pending::<Option<Vec<u8>>>().await
+                        }
+                    } => {
+                        if let Some(payload) = winch_payload {
+                            let winsz_pkt = adb_proto::ShellPacket::new(
+                                adb_proto::ShellPacketId::WindowSizeChange,
+                                payload,
+                            );
+                            if let Ok(encoded) = winsz_pkt.encode() {
+                                let _ = write_half.write_all(&encoded).await;
+                                let _ = write_half.flush().await;
+                            }
                         }
                     }
                     n_res = async {
@@ -1438,6 +1450,7 @@ impl AdbClient {
                                         if let Some(task) = sigwinch_task {
                                             task.abort();
                                         }
+                                        #[cfg(unix)]
                                         drop(_raw_guard);
                                         return Ok(0);
                                     }
