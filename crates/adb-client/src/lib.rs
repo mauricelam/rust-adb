@@ -5,6 +5,7 @@ pub mod device_selection;
 pub mod server_address;
 pub mod session;
 pub mod shell_interactive;
+pub mod sync_session;
 pub mod transport;
 
 pub use client::{
@@ -13,6 +14,7 @@ pub use client::{
     ExternalBinaryLauncher, LaunchConfig, LaunchError, Outcome, SelfExecLauncher, ServerLauncher,
     SessionFactory, ShellOptions, TrackDevicesMode, ADB_SERVER_VERSION,
 };
+pub use sync_session::{errno_from_wire, DirEntry, Stat, SyncError, SyncSession};
 pub use device_selection::{DeviceSelection, SelectionError};
 pub use server_address::{
     resolve_server_address, AddressError, ServerAddress, ServerAddressEnv, ServerAddressOptions,

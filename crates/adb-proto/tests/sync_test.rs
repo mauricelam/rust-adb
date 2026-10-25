@@ -279,6 +279,19 @@ fn test_send_mode_parsing() {
 }
 
 #[test]
+fn test_sync_struct_sizes() {
+    use adb_proto::sync::{
+        SyncDentV1, SyncDentV2, SyncRecvV2, SyncSendV2, SyncStatV1, SyncStatV2,
+    };
+    assert_eq!(std::mem::size_of::<SyncStatV1>(), 16);
+    assert_eq!(std::mem::size_of::<SyncStatV2>(), 72);
+    assert_eq!(std::mem::size_of::<SyncDentV1>(), 20);
+    assert_eq!(std::mem::size_of::<SyncDentV2>(), 76);
+    assert_eq!(std::mem::size_of::<SyncSendV2>(), 12);
+    assert_eq!(std::mem::size_of::<SyncRecvV2>(), 8);
+}
+
+#[test]
 fn test_error_handling() {
     // 1. Unknown ID
     let bad_id_bytes = b"BADI\x00\x00\x00\x00";
