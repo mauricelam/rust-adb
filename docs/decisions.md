@@ -56,3 +56,8 @@
 
 **Decision:** Use the vendored `android-tools-cmake` submodule (`37.0.0p1`) rather than building `original/` directly or using external tarballs. Mutants for mutation testing are applied as unified diff patches against `android-tools-cmake/vendor/adb`.
 **Reason:** The standalone C++ build from `android-tools-cmake` builds cleanly outside AOSP, vendors required support libraries, and provides a reproducible target for mutation testing on Linux.
+
+## 11. Interactive Shell Terminal Handling on Unix
+
+**Decision:** `adb-client` implements Unix interactive shell terminal handling matching C++ `commandline.cpp`. Local terminal raw mode (`libc::cfmakeraw`) is managed via a RAII `RawTerminalGuard` that restores original `libc::termios` settings on drop (including early returns and panics). PTY allocation selection (`PtyMode::Auto`, `No`, `Yes`, `Definitely`) evaluates `is_interactive`, `stdin_isatty`, and device shell v2 support. Initial window size and subsequent size changes triggered via `SIGWINCH` are formatted as `<rows>x<cols>,<xpixels>x<ypixels>\0` (`format_window_size`) and sent over `ShellPacketId::WindowSizeChange` packets. Stdin input is parsed through `EscapeStateMachine`, swallowing `~` at start-of-line and ending the session with status 0 upon `~.`. For unit and integration testing, pseudo-terminal pairs (`libc::openpty`) are used to verify raw terminal transitions, window size signals, and disconnect sequences against `mock-adbd`.
+**Reason:** This ensures exact terminal mode and escape sequence parity with standard ADB without leaving local terminals in a corrupt state upon disconnect or error.
