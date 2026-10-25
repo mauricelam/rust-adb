@@ -6,25 +6,55 @@ use std::fmt;
 /// Ports `ID_LSTAT_V1` from `original/file_sync_protocol.h`.
 pub const ID_LSTAT_V1: u32 = u32::from_le_bytes(*b"STAT");
 
+/// `ID_STAT_V2` constant (`MKID('S', 'T', 'A', '2')`).
+///
+/// Ports `ID_STAT_V2` from `original/file_sync_protocol.h`.
+pub const ID_STAT_V2: u32 = u32::from_le_bytes(*b"STA2");
+
+/// `ID_LSTAT_V2` constant (`MKID('L', 'S', 'T', '2')`).
+///
+/// Ports `ID_LSTAT_V2` from `original/file_sync_protocol.h`.
+pub const ID_LSTAT_V2: u32 = u32::from_le_bytes(*b"LST2");
+
 /// `ID_LIST_V1` constant (`MKID('L', 'I', 'S', 'T')`).
 ///
 /// Ports `ID_LIST_V1` from `original/file_sync_protocol.h`.
 pub const ID_LIST_V1: u32 = u32::from_le_bytes(*b"LIST");
+
+/// `ID_LIST_V2` constant (`MKID('L', 'I', 'S', '2')`).
+///
+/// Ports `ID_LIST_V2` from `original/file_sync_protocol.h`.
+pub const ID_LIST_V2: u32 = u32::from_le_bytes(*b"LIS2");
 
 /// `ID_DENT_V1` constant (`MKID('D', 'E', 'N', 'T')`).
 ///
 /// Ports `ID_DENT_V1` from `original/file_sync_protocol.h`.
 pub const ID_DENT_V1: u32 = u32::from_le_bytes(*b"DENT");
 
+/// `ID_DENT_V2` constant (`MKID('D', 'N', 'T', '2')`).
+///
+/// Ports `ID_DENT_V2` from `original/file_sync_protocol.h`.
+pub const ID_DENT_V2: u32 = u32::from_le_bytes(*b"DNT2");
+
 /// `ID_SEND_V1` constant (`MKID('S', 'E', 'N', 'D')`).
 ///
 /// Ports `ID_SEND_V1` from `original/file_sync_protocol.h`.
 pub const ID_SEND_V1: u32 = u32::from_le_bytes(*b"SEND");
 
+/// `ID_SEND_V2` constant (`MKID('S', 'N', 'D', '2')`).
+///
+/// Ports `ID_SEND_V2` from `original/file_sync_protocol.h`.
+pub const ID_SEND_V2: u32 = u32::from_le_bytes(*b"SND2");
+
 /// `ID_RECV_V1` constant (`MKID('R', 'E', 'C', 'V')`).
 ///
 /// Ports `ID_RECV_V1` from `original/file_sync_protocol.h`.
 pub const ID_RECV_V1: u32 = u32::from_le_bytes(*b"RECV");
+
+/// `ID_RECV_V2` constant (`MKID('R', 'C', 'V', '2')`).
+///
+/// Ports `ID_RECV_V2` from `original/file_sync_protocol.h`.
+pub const ID_RECV_V2: u32 = u32::from_le_bytes(*b"RCV2");
 
 /// `ID_DONE` constant (`MKID('D', 'O', 'N', 'E')`).
 ///
@@ -60,6 +90,81 @@ pub const SYNC_DATA_MAX: usize = 64 * 1024;
 ///
 /// Ports path length check in `original/daemon/file_sync_service.cpp`.
 pub const SYNC_PATH_MAX: usize = 1024;
+
+/// Wire structure for `sync_stat_v1` (16 bytes packed).
+#[repr(C, packed)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SyncStatV1 {
+    pub id: u32,
+    pub mode: u32,
+    pub size: u32,
+    pub mtime: u32,
+}
+
+/// Wire structure for `sync_stat_v2` (72 bytes packed).
+#[repr(C, packed)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SyncStatV2 {
+    pub id: u32,
+    pub error: u32,
+    pub dev: u64,
+    pub ino: u64,
+    pub mode: u32,
+    pub nlink: u32,
+    pub uid: u32,
+    pub gid: u32,
+    pub size: u64,
+    pub atime: i64,
+    pub mtime: i64,
+    pub ctime: i64,
+}
+
+/// Wire structure for `sync_dent_v1` (20 bytes packed header, followed by `namelen` bytes of name).
+#[repr(C, packed)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SyncDentV1 {
+    pub id: u32,
+    pub mode: u32,
+    pub size: u32,
+    pub mtime: u32,
+    pub namelen: u32,
+}
+
+/// Wire structure for `sync_dent_v2` (76 bytes packed header, followed by `namelen` bytes of name).
+#[repr(C, packed)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SyncDentV2 {
+    pub id: u32,
+    pub error: u32,
+    pub dev: u64,
+    pub ino: u64,
+    pub mode: u32,
+    pub nlink: u32,
+    pub uid: u32,
+    pub gid: u32,
+    pub size: u64,
+    pub atime: i64,
+    pub mtime: i64,
+    pub ctime: i64,
+    pub namelen: u32,
+}
+
+/// Wire structure for `sync_send_v2` (12 bytes packed).
+#[repr(C, packed)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SyncSendV2 {
+    pub id: u32,
+    pub mode: u32,
+    pub flags: u32,
+}
+
+/// Wire structure for `sync_recv_v2` (8 bytes packed).
+#[repr(C, packed)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SyncRecvV2 {
+    pub id: u32,
+    pub flags: u32,
+}
 
 /// Errors that can occur when encoding Sync v1 messages.
 #[derive(Debug, Clone, PartialEq, Eq)]

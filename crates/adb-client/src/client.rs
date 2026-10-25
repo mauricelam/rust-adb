@@ -731,6 +731,11 @@ impl AdbClient {
         &self.addr
     }
 
+    /// Returns a reference to the session factory.
+    pub fn session_factory(&self) -> &Arc<dyn SessionFactory> {
+        &self.session_factory
+    }
+
     /// Ensures the server is running and version matches before executing host operations.
     async fn ensure_server(&self) -> Outcome<()> {
         let state = self

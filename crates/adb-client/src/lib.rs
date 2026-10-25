@@ -5,6 +5,7 @@ pub mod device_selection;
 pub mod server_address;
 pub mod session;
 pub mod shell_interactive;
+pub mod sync_session;
 pub mod transport;
 
 pub use client::{
@@ -23,6 +24,7 @@ pub use shell_interactive::{
     determine_pty_allocation, format_window_size, parse_escape_char_arg, EscapeResult, EscapeState,
     EscapeStateMachine, PtyDecision, PtyMode,
 };
+pub use sync_session::{errno_from_wire, DirEntry, Stat, SyncError, SyncSession};
 pub use transport::{format_host_command, TransportSelector};
 
 #[cfg(test)]
