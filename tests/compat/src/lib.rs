@@ -295,13 +295,14 @@ impl TestServer {
 
 impl Drop for TestServer {
     fn drop(&mut self) {
-        // Send graceful kill request
-        let mut kill_cmd = Command::new(&self.config.client_path);
-        kill_cmd.args(["-P", &self.port.to_string(), "kill-server"]);
-        set_isolated_env(&mut kill_cmd, self.home_dir.path(), self.port);
-        let _ = kill_cmd.status();
-
         if let Some(mut child) = self.child.take() {
+            #[cfg(unix)]
+            {
+                let pgid = child.id() as i32;
+                unsafe {
+                    libc::kill(-pgid, libc::SIGKILL);
+                }
+            }
             let _ = child.kill();
             let _ = child.wait();
         }
