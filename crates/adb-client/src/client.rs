@@ -26,6 +26,36 @@ impl TrackDevicesMode {
     }
 }
 
+/// Escapes a command argument for the shell following standard ADB single-quote escaping rules.
+///
+/// Ports `escape_arg` from `original/adb_utils.cpp`.
+pub fn escape_arg(s: &str) -> String {
+    let mut result = String::with_capacity(s.len() + 2);
+    result.push('\'');
+    for c in s.chars() {
+        if c == '\'' {
+            result.push_str("'\\''");
+        } else {
+            result.push(c);
+        }
+    }
+    result.push('\'');
+    result
+}
+
+/// Options for device shell execution.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ShellOptions {
+    /// -n: Close stdin immediately / do not forward stdin.
+    pub close_stdin: bool,
+    /// -x: Disable Shell v2 protocol and force historical Shell v1 protocol.
+    pub disable_shell_protocol: bool,
+    /// -T: Disable remote PTY allocation (force raw mode).
+    pub no_pty: bool,
+    /// Value for `TERM` environment variable (e.g. `xterm-256color`).
+    pub term: Option<String>,
+}
+
 /// Expected ADB server version matching C++ `ADB_SERVER_VERSION` in `original/adb.h`.
 pub const ADB_SERVER_VERSION: u32 = 41;
 
@@ -1069,5 +1099,382 @@ impl AdbClient {
             }
         };
         self.track_devices(mode).await
+    }
+
+    /// Runs a command on the device using Shell v1 or v2 protocol.
+    ///
+    /// Ports `adb_shell` and `RemoteShell` from `original/client/commandline.cpp`.
+    pub async fn shell<R, W1, W2>(
+        &self,
+        selector: &TransportSelector,
+        args: &[&str],
+        options: &ShellOptions,
+        stdin: Option<R>,
+        stdout: Option<W1>,
+        stderr: Option<W2>,
+    ) -> Outcome<i32>
+    where
+        R: tokio::io::AsyncRead + Unpin + Send,
+        W1: tokio::io::AsyncWrite + Unpin + Send,
+        W2: tokio::io::AsyncWrite + Unpin + Send,
+    {
+        let outcome = self.ensure_server().await;
+        if let Err(err) = outcome.result {
+            return Outcome {
+                result: Err(err),
+                events: outcome.events,
+            };
+        }
+
+        let features_outcome = self.features(selector).await;
+        let features_str = match features_outcome.result {
+            Ok(f) => f,
+            Err(err) => {
+                return Outcome {
+                    result: Err(err),
+                    events: outcome.events,
+                };
+            }
+        };
+
+        let device_features = adb_proto::Features::parse(&features_str.replace('\n', ","));
+        let device_supports_shell2 = device_features.contains(&adb_proto::Feature::Shell2);
+
+        let use_shell_protocol = device_supports_shell2 && !options.disable_shell_protocol;
+
+        let command = args.join(" ");
+
+        if !use_shell_protocol {
+            if options.no_pty {
+                if !device_supports_shell2 {
+                    return Outcome {
+                        result: Err(ClientError::QueryFailed(
+                            "error: device only supports allocating a pty".to_string(),
+                        )),
+                        events: outcome.events,
+                    };
+                } else if options.disable_shell_protocol {
+                    return Outcome {
+                        result: Err(ClientError::QueryFailed(
+                            "error: -x only supports allocating a pty".to_string(),
+                        )),
+                        events: outcome.events,
+                    };
+                }
+            }
+
+            let service_string = format!("shell:{command}");
+            if service_string.len() > adb_proto::limits::MAX_PAYLOAD_V1 {
+                return Outcome {
+                    result: Err(ClientError::QueryFailed(
+                        "error: shell command too long".to_string(),
+                    )),
+                    events: outcome.events,
+                };
+            }
+        }
+
+        let service_string = if use_shell_protocol {
+            let mut v2_args = vec!["v2".to_string()];
+            if let Some(term) = &options.term {
+                v2_args.push(format!("TERM={term}"));
+            }
+            v2_args.push("raw".to_string());
+            format!("shell,{}:{}", v2_args.join(","), command)
+        } else {
+            format!("shell:{command}")
+        };
+
+        let res = self
+            .run_shell_session(
+                selector,
+                &service_string,
+                use_shell_protocol,
+                options,
+                stdin,
+                stdout,
+                stderr,
+            )
+            .await;
+
+        Outcome {
+            result: res,
+            events: outcome.events,
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn run_shell_session<R, W1, W2>(
+        &self,
+        selector: &TransportSelector,
+        service_string: &str,
+        use_shell_protocol: bool,
+        options: &ShellOptions,
+        stdin: Option<R>,
+        mut stdout_writer: Option<W1>,
+        mut stderr_writer: Option<W2>,
+    ) -> Result<i32, ClientError>
+    where
+        R: tokio::io::AsyncRead + Unpin + Send,
+        W1: tokio::io::AsyncWrite + Unpin + Send,
+        W2: tokio::io::AsyncWrite + Unpin + Send,
+    {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let mut session = self.session_factory.connect(&self.addr).await?;
+        session.select_transport(selector).await?;
+        session.send_service(service_string).await?;
+        session.read_status().await?;
+
+        let stream = session.into_inner();
+        let (mut read_half, mut write_half) = tokio::io::split(stream);
+
+        let mut stdin_reader = stdin;
+        let mut stdin_eof = stdin_reader.is_none() || options.close_stdin;
+
+        let mut read_buf = [0u8; 8192];
+        let mut stdin_buf = [0u8; 8192];
+
+        if use_shell_protocol {
+            let mut decoder = adb_proto::ShellDecoder::new();
+            let mut exit_code: Option<i32> = None;
+
+            if stdin_reader.is_none() || options.close_stdin {
+                let close_pkt =
+                    adb_proto::ShellPacket::new(adb_proto::ShellPacketId::CloseStdin, vec![]);
+                if let Ok(encoded) = close_pkt.encode() {
+                    let _ = write_half.write_all(&encoded).await;
+                    let _ = write_half.flush().await;
+                }
+                stdin_eof = true;
+            }
+
+            loop {
+                tokio::select! {
+                    n_res = read_half.read(&mut read_buf) => {
+                        let n = n_res.map_err(|e| ClientError::Session(SessionError::ReadStatusFailed(e)))?;
+                        if n == 0 {
+                            break;
+                        }
+                        decoder.feed(&read_buf[..n]);
+
+                        while let Ok(Some(pkt)) = decoder.pop_packet() {
+                            match pkt.id {
+                                adb_proto::ShellPacketId::Stdout => {
+                                    if let Some(ref mut w) = stdout_writer {
+                                        if w.write_all(&pkt.data).await.is_err() || w.flush().await.is_err() {
+                                            exit_code = Some(128 + 13);
+                                            break;
+                                        }
+                                    }
+                                }
+                                adb_proto::ShellPacketId::Stderr => {
+                                    if let Some(ref mut w) = stderr_writer {
+                                        if w.write_all(&pkt.data).await.is_err() || w.flush().await.is_err() {
+                                            exit_code = Some(128 + 13);
+                                            break;
+                                        }
+                                    }
+                                }
+                                adb_proto::ShellPacketId::Exit => {
+                                    if let Ok(code) = pkt.parse_exit_code() {
+                                        exit_code = Some(code as i32);
+                                    }
+                                }
+                                _ => {}
+                            }
+                        }
+
+                        if exit_code == Some(128 + 13) {
+                            break;
+                        }
+                    }
+                    n_res = async {
+                        if let Some(ref mut r) = stdin_reader {
+                            r.read(&mut stdin_buf).await
+                        } else {
+                            std::future::pending().await
+                        }
+                    }, if !stdin_eof => {
+                        match n_res {
+                            Ok(0) => {
+                                stdin_eof = true;
+                                let close_pkt = adb_proto::ShellPacket::new(
+                                    adb_proto::ShellPacketId::CloseStdin,
+                                    vec![],
+                                );
+                                if let Ok(encoded) = close_pkt.encode() {
+                                    let _ = write_half.write_all(&encoded).await;
+                                    let _ = write_half.flush().await;
+                                }
+                            }
+                            Ok(n) => {
+                                let stdin_pkt = adb_proto::ShellPacket::new(
+                                    adb_proto::ShellPacketId::Stdin,
+                                    stdin_buf[..n].to_vec(),
+                                );
+                                if let Ok(encoded) = stdin_pkt.encode() {
+                                    if write_half.write_all(&encoded).await.is_err() || write_half.flush().await.is_err() {
+                                        stdin_eof = true;
+                                    }
+                                }
+                            }
+                            Err(_) => {
+                                stdin_eof = true;
+                            }
+                        }
+                    }
+                }
+            }
+
+            Ok(exit_code.unwrap_or(255))
+        } else {
+            loop {
+                tokio::select! {
+                    n_res = read_half.read(&mut read_buf) => {
+                        let n = n_res.map_err(|e| ClientError::Session(SessionError::ReadStatusFailed(e)))?;
+                        if n == 0 {
+                            break;
+                        }
+                        if let Some(ref mut w) = stdout_writer {
+                            if w.write_all(&read_buf[..n]).await.is_err() || w.flush().await.is_err() {
+                                break;
+                            }
+                        }
+                    }
+                    n_res = async {
+                        if let Some(ref mut r) = stdin_reader {
+                            r.read(&mut stdin_buf).await
+                        } else {
+                            std::future::pending().await
+                        }
+                    }, if !stdin_eof => {
+                        match n_res {
+                            Ok(0) => {
+                                stdin_eof = true;
+                            }
+                            Ok(n) => {
+                                if write_half.write_all(&stdin_buf[..n]).await.is_err() || write_half.flush().await.is_err() {
+                                    stdin_eof = true;
+                                }
+                            }
+                            Err(_) => {
+                                stdin_eof = true;
+                            }
+                        }
+                    }
+                }
+            }
+
+            Ok(0)
+        }
+    }
+
+    /// Runs a command on the device with stdin piped to the remote command (`exec-in`).
+    pub async fn exec_in<R>(
+        &self,
+        selector: &TransportSelector,
+        args: &[&str],
+        mut stdin: R,
+    ) -> Outcome<i32>
+    where
+        R: tokio::io::AsyncRead + Unpin + Send,
+    {
+        let outcome = self.ensure_server().await;
+        if let Err(err) = outcome.result {
+            return Outcome {
+                result: Err(err),
+                events: outcome.events,
+            };
+        }
+
+        if args.is_empty() {
+            return Outcome {
+                result: Err(ClientError::InvalidUsage(
+                    "usage: adb exec-in command".to_string(),
+                )),
+                events: outcome.events,
+            };
+        }
+
+        let mut cmd = format!("exec:{}", args[0]);
+        for arg in &args[1..] {
+            cmd.push(' ');
+            cmd.push_str(&escape_arg(arg));
+        }
+
+        let res = async {
+            let mut session = self.session_factory.connect(&self.addr).await?;
+            session.select_transport(selector).await?;
+            session.send_service(&cmd).await?;
+            session.read_status().await?;
+
+            let mut stream = session.into_inner();
+            tokio::io::copy(&mut stdin, &mut stream)
+                .await
+                .map_err(|e| ClientError::Session(SessionError::WriteFailure(e)))?;
+
+            Ok(0)
+        }
+        .await;
+
+        Outcome {
+            result: res,
+            events: outcome.events,
+        }
+    }
+
+    /// Runs a command on the device and streams stdout back (`exec-out`).
+    pub async fn exec_out<W>(
+        &self,
+        selector: &TransportSelector,
+        args: &[&str],
+        mut stdout: W,
+    ) -> Outcome<i32>
+    where
+        W: tokio::io::AsyncWrite + Unpin + Send,
+    {
+        let outcome = self.ensure_server().await;
+        if let Err(err) = outcome.result {
+            return Outcome {
+                result: Err(err),
+                events: outcome.events,
+            };
+        }
+
+        if args.is_empty() {
+            return Outcome {
+                result: Err(ClientError::InvalidUsage(
+                    "usage: adb exec-out command".to_string(),
+                )),
+                events: outcome.events,
+            };
+        }
+
+        let mut cmd = format!("exec:{}", args[0]);
+        for arg in &args[1..] {
+            cmd.push(' ');
+            cmd.push_str(&escape_arg(arg));
+        }
+
+        let res = async {
+            let mut session = self.session_factory.connect(&self.addr).await?;
+            session.select_transport(selector).await?;
+            session.send_service(&cmd).await?;
+            session.read_status().await?;
+
+            let mut stream = session.into_inner();
+            tokio::io::copy(&mut stream, &mut stdout)
+                .await
+                .map_err(|e| ClientError::Session(SessionError::ReadStatusFailed(e)))?;
+
+            Ok(0)
+        }
+        .await;
+
+        Outcome {
+            result: res,
+            events: outcome.events,
+        }
     }
 }
