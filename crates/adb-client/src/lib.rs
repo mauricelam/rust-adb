@@ -4,6 +4,7 @@ pub mod client;
 pub mod device_selection;
 pub mod server_address;
 pub mod session;
+pub mod shell_interactive;
 pub mod transport;
 
 pub use client::{
@@ -18,6 +19,10 @@ pub use server_address::{
     DEFAULT_SERVER_PORT,
 };
 pub use session::{Session, SessionConfig, SessionError};
+pub use shell_interactive::{
+    determine_pty_allocation, format_window_size, parse_escape_char_arg, EscapeResult, EscapeState,
+    EscapeStateMachine, PtyDecision, PtyMode,
+};
 pub use transport::{format_host_command, TransportSelector};
 
 #[cfg(test)]

@@ -706,7 +706,7 @@ pub async fn handle_connection_with_options(
                             break;
                         }
 
-                        if cmd_str == "cat" {
+                        if cmd_str == "cat" || cmd_str.is_empty() {
                             streams.insert(
                                 mock_local_id,
                                 StreamState {
