@@ -1,20 +1,4 @@
 use crate::client::{ClientError, ShellOptions};
-use std::sync::OnceLock;
-use std::time::Instant;
-
-static PTY_DEBUG_START: OnceLock<Instant> = OnceLock::new();
-
-pub fn is_pty_debug() -> bool {
-    std::env::var_os("ADB_PTY_DEBUG").is_some()
-}
-
-pub fn pty_debug_log(msg: impl AsRef<str>) {
-    if is_pty_debug() {
-        let start = *PTY_DEBUG_START.get_or_init(Instant::now);
-        let elapsed = start.elapsed();
-        eprintln!("[PTY_DEBUG +{:.3?}] {}", elapsed, msg.as_ref());
-    }
-}
 
 /// Mode for PTY allocation requested by client options (`-t`, `-tt`, `-T`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -142,17 +126,11 @@ pub struct RawTerminalGuard {
 #[cfg(unix)]
 impl RawTerminalGuard {
     pub fn new(fd: std::os::fd::RawFd) -> Option<Self> {
-        pty_debug_log(format!("RawTerminalGuard::new(fd={fd}): checking isatty"));
         if unsafe { libc::isatty(fd) } == 0 {
-            pty_debug_log(format!("RawTerminalGuard::new(fd={fd}): isatty returned 0"));
             return None;
         }
         let mut orig_termios = unsafe { std::mem::zeroed() };
-        let getattr_res = unsafe { libc::tcgetattr(fd, &mut orig_termios) };
-        pty_debug_log(format!(
-            "RawTerminalGuard::new(fd={fd}): tcgetattr res={getattr_res}"
-        ));
-        if getattr_res != 0 {
+        if unsafe { libc::tcgetattr(fd, &mut orig_termios) } != 0 {
             return None;
         }
         let mut raw_termios = orig_termios;
@@ -160,11 +138,7 @@ impl RawTerminalGuard {
         raw_termios.c_cc[libc::VTIME] = 0;
         raw_termios.c_cc[libc::VMIN] = 1;
 
-        let setattr_res = unsafe { libc::tcsetattr(fd, libc::TCSAFLUSH, &raw_termios) };
-        pty_debug_log(format!(
-            "RawTerminalGuard::new(fd={fd}): tcsetattr res={setattr_res}"
-        ));
-        if setattr_res != 0 {
+        if unsafe { libc::tcsetattr(fd, libc::TCSANOW, &raw_termios) } != 0 {
             return None;
         }
 
@@ -180,11 +154,9 @@ impl RawTerminalGuard {
 impl Drop for RawTerminalGuard {
     fn drop(&mut self) {
         if self.active {
-            let res = unsafe { libc::tcsetattr(self.fd, libc::TCSAFLUSH, &self.orig_termios) };
-            pty_debug_log(format!(
-                "RawTerminalGuard::drop(fd={}): tcsetattr restored orig termios res={res}",
-                self.fd
-            ));
+            unsafe {
+                libc::tcsetattr(self.fd, libc::TCSANOW, &self.orig_termios);
+            }
         }
     }
 }
@@ -203,12 +175,7 @@ impl RawTerminalGuard {
 #[cfg(unix)]
 pub fn get_window_size(fd: std::os::fd::RawFd) -> Option<(u16, u16, u16, u16)> {
     let mut ws: libc::winsize = unsafe { std::mem::zeroed() };
-    let res = unsafe { libc::ioctl(fd, libc::TIOCGWINSZ, &mut ws) };
-    pty_debug_log(format!(
-        "get_window_size(fd={fd}): ioctl TIOCGWINSZ res={res}, ws=({}, {}, {}, {})",
-        ws.ws_row, ws.ws_col, ws.ws_xpixel, ws.ws_ypixel
-    ));
-    if res == 0 {
+    if unsafe { libc::ioctl(fd, libc::TIOCGWINSZ, &mut ws) } == 0 {
         Some((ws.ws_row, ws.ws_col, ws.ws_xpixel, ws.ws_ypixel))
     } else {
         None
