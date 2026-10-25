@@ -138,7 +138,7 @@ impl RawTerminalGuard {
         raw_termios.c_cc[libc::VTIME] = 0;
         raw_termios.c_cc[libc::VMIN] = 1;
 
-        if unsafe { libc::tcsetattr(fd, libc::TCSANOW, &raw_termios) } != 0 {
+        if unsafe { libc::tcsetattr(fd, libc::TCSAFLUSH, &raw_termios) } != 0 {
             return None;
         }
 
@@ -155,7 +155,7 @@ impl Drop for RawTerminalGuard {
     fn drop(&mut self) {
         if self.active {
             unsafe {
-                libc::tcsetattr(self.fd, libc::TCSANOW, &self.orig_termios);
+                libc::tcsetattr(self.fd, libc::TCSAFLUSH, &self.orig_termios);
             }
         }
     }
