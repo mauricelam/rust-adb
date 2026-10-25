@@ -2,8 +2,8 @@ use crate::client::AdbClient;
 use crate::session::{Session, SessionError};
 use crate::transport::TransportSelector;
 use adb_proto::sync::{
-    ID_DENT_V1, ID_DENT_V2, ID_DONE, ID_LIST_V1, ID_LIST_V2, ID_LSTAT_V1, ID_LSTAT_V2, ID_QUIT,
-    ID_STAT_V2,
+    ID_DATA, ID_DENT_V1, ID_DENT_V2, ID_DONE, ID_LIST_V1, ID_LIST_V2, ID_LSTAT_V1, ID_LSTAT_V2,
+    ID_QUIT, ID_RECV_V1, ID_RECV_V2, ID_STAT_V2,
 };
 use std::fmt;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -104,6 +104,44 @@ impl From<SessionError> for SyncError {
     }
 }
 
+/// Compression algorithm option for sync operations.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum CompressionType {
+    #[default]
+    None,
+    Any,
+    Brotli,
+    LZ4,
+    Zstd,
+}
+
+/// Options controlling `pull` behavior.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct PullOptions {
+    pub copy_attrs: bool,
+    pub compression: CompressionType,
+}
+
+/// Outcome of pulling a single source file.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PullSourceOutcome {
+    pub source: String,
+    pub destination: String,
+    pub bytes_transferred: u64,
+    pub success: bool,
+    pub error: Option<String>,
+}
+
+/// Summary result of a `pull` operation over one or more sources.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct PullResult {
+    pub bytes_transferred: u64,
+    pub outcomes: Vec<PullSourceOutcome>,
+    pub warnings: Vec<String>,
+    pub errors: Vec<String>,
+    pub success: bool,
+}
+
 /// Represents a directory entry returned by sync `ls` request.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DirEntry {
@@ -154,7 +192,7 @@ impl Stat {
     }
 }
 
-/// An active ADB sync connection session supporting `ls`, `stat`, `lstat`, and `stat_with_fallback`.
+/// An active ADB sync connection session supporting `ls`, `stat`, `lstat`, `stat_with_fallback`, and `pull`.
 pub struct SyncSession {
     session: Session,
     features: adb_proto::Features,
@@ -528,8 +566,338 @@ impl SyncSession {
         }
     }
 
+    /// Pulls one or more remote files to a local destination path.
+    pub async fn pull<P: AsRef<std::path::Path>>(
+        &mut self,
+        sources: &[&str],
+        destination: P,
+        options: &PullOptions,
+    ) -> Result<PullResult, SyncError> {
+        if options.compression != CompressionType::None {
+            return Err(SyncError::NotSupported(
+                "compression option is not supported".to_string(),
+            ));
+        }
+
+        let dst = destination.as_ref();
+        let dst_str = dst.to_string_lossy().to_string();
+        let dst_bytes = dst_str.as_bytes();
+        let ends_with_sep = !dst_bytes.is_empty()
+            && (dst_bytes.last() == Some(&b'/') || dst_bytes.last() == Some(&b'\\'));
+
+        let stripped_str = dst_str.trim_end_matches(['/', '\\']);
+        let stripped_path = if stripped_str.is_empty() {
+            dst
+        } else {
+            std::path::Path::new(stripped_str)
+        };
+
+        let mut dst_exists = true;
+        let mut dst_isdir = false;
+
+        match std::fs::metadata(stripped_path) {
+            Ok(st) => {
+                dst_isdir = st.is_dir();
+            }
+            Err(err) => {
+                dst_exists = false;
+                if sources.len() == 1 && err.kind() == std::io::ErrorKind::NotFound {
+                    let parent = dst.parent().unwrap_or_else(|| std::path::Path::new(""));
+                    let parent = if parent.as_os_str().is_empty() {
+                        std::path::Path::new(".")
+                    } else {
+                        parent
+                    };
+                    if let Err(parent_err) = std::fs::metadata(parent) {
+                        let mut res = PullResult::default();
+                        res.errors.push(format!(
+                            "cannot create file/directory '{dst_str}': {parent_err}"
+                        ));
+                        return Ok(res);
+                    }
+                } else {
+                    let mut res = PullResult::default();
+                    res.errors
+                        .push(format!("failed to access '{dst_str}': {err}"));
+                    return Ok(res);
+                }
+            }
+        }
+
+        if !dst_isdir {
+            if sources.len() > 1 {
+                let mut res = PullResult::default();
+                res.errors
+                    .push(format!("target '{dst_str}' is not a directory"));
+                return Ok(res);
+            } else if ends_with_sep && dst_exists {
+                let mut res = PullResult::default();
+                res.errors
+                    .push(format!("failed to access '{dst_str}': Not a directory"));
+                return Ok(res);
+            }
+        }
+
+        let mut res = PullResult {
+            success: true,
+            ..Default::default()
+        };
+
+        for src in sources {
+            let src_path = *src;
+
+            let src_st = match self.stat_with_fallback(src_path).await {
+                Ok(st) => st,
+                Err(SyncError::Errno { errno: 2, .. }) | Err(SyncError::Errno { wire: 2, .. }) => {
+                    let msg = format!("remote object '{src_path}' does not exist");
+                    res.errors.push(msg.clone());
+                    res.success = false;
+                    res.outcomes.push(PullSourceOutcome {
+                        source: src_path.to_string(),
+                        destination: dst_str.clone(),
+                        bytes_transferred: 0,
+                        success: false,
+                        error: Some(msg),
+                    });
+                    continue;
+                }
+                Err(err) => {
+                    let msg = format!("failed to stat remote object '{src_path}': {err}");
+                    res.errors.push(msg.clone());
+                    res.success = false;
+                    res.outcomes.push(PullSourceOutcome {
+                        source: src_path.to_string(),
+                        destination: dst_str.clone(),
+                        bytes_transferred: 0,
+                        success: false,
+                        error: Some(msg),
+                    });
+                    continue;
+                }
+            };
+
+            let mode = src_st.mode;
+            let file_type = mode & 0o170000;
+            let is_pullable =
+                file_type == 0o100000 || file_type == 0o060000 || file_type == 0o020000;
+            if !is_pullable {
+                res.warnings.push(format!(
+                    "skipping special file '{src_path}' (mode = 0o{mode:o})"
+                ));
+                continue;
+            }
+
+            let target_dst_path: std::path::PathBuf = if dst_isdir {
+                let basename = std::path::Path::new(src_path)
+                    .file_name()
+                    .and_then(|s| s.to_str())
+                    .unwrap_or(src_path);
+                dst.join(basename)
+            } else {
+                dst.to_path_buf()
+            };
+
+            let target_dst_str = target_dst_path.to_string_lossy().to_string();
+
+            match self.sync_recv(src_path, &target_dst_path).await {
+                Ok(bytes) => {
+                    if options.copy_attrs {
+                        if let Err(e) =
+                            set_time_and_mode(&target_dst_path, src_st.mtime as u64, src_st.mode)
+                        {
+                            let msg =
+                                format!("failed to set time and mode on '{target_dst_str}': {e}");
+                            res.errors.push(msg.clone());
+                            res.success = false;
+                            res.outcomes.push(PullSourceOutcome {
+                                source: src_path.to_string(),
+                                destination: target_dst_str,
+                                bytes_transferred: bytes,
+                                success: false,
+                                error: Some(msg),
+                            });
+                            continue;
+                        }
+                    }
+                    res.bytes_transferred += bytes;
+                    res.outcomes.push(PullSourceOutcome {
+                        source: src_path.to_string(),
+                        destination: target_dst_str,
+                        bytes_transferred: bytes,
+                        success: true,
+                        error: None,
+                    });
+                }
+                Err(err_msg) => {
+                    res.errors.push(err_msg.clone());
+                    res.success = false;
+                    res.outcomes.push(PullSourceOutcome {
+                        source: src_path.to_string(),
+                        destination: target_dst_str,
+                        bytes_transferred: 0,
+                        success: false,
+                        error: Some(err_msg),
+                    });
+                }
+            }
+        }
+
+        Ok(res)
+    }
+
+    async fn sync_recv(&mut self, rpath: &str, lpath: &std::path::Path) -> Result<u64, String> {
+        if self.have_sendrecv_v2 {
+            self.send_recv_v2_req(rpath).await?;
+        } else {
+            self.send_request(ID_RECV_V1, rpath)
+                .await
+                .map_err(|e| e.to_string())?;
+        }
+
+        let _ = std::fs::remove_file(lpath);
+
+        let mut file = match std::fs::File::create(lpath) {
+            Ok(f) => f,
+            Err(e) => {
+                return Err(format!("cannot create '{}': {e}", lpath.display()));
+            }
+        };
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let _ = file.set_permissions(std::fs::Permissions::from_mode(0o644));
+        }
+
+        let stream = self.session.stream_mut();
+        let mut bytes_copied = 0u64;
+
+        let res = async {
+            loop {
+                let mut header_buf = [0u8; 8];
+                if stream.read_exact(&mut header_buf).await.is_err() {
+                    return Err("failed to read sync response header".to_string());
+                }
+
+                let id = u32::from_le_bytes(header_buf[0..4].try_into().unwrap());
+                let size = u32::from_le_bytes(header_buf[4..8].try_into().unwrap());
+
+                if id == ID_DONE {
+                    break;
+                }
+
+                if id != ID_DATA {
+                    let msglen = size as usize;
+                    let mut fail_buf = vec![0u8; msglen];
+                    let _ = stream.read_exact(&mut fail_buf).await;
+                    let fail_msg = String::from_utf8_lossy(&fail_buf);
+                    return Err(format!(
+                        "failed to copy '{rpath}' to '{}': remote {fail_msg}",
+                        lpath.display()
+                    ));
+                }
+
+                let data_len = size as usize;
+                if data_len > adb_proto::sync::SYNC_DATA_MAX {
+                    return Err(format!(
+                        "msg.data.size too large: {data_len} (max {})",
+                        adb_proto::sync::SYNC_DATA_MAX
+                    ));
+                }
+
+                let mut chunk = vec![0u8; data_len];
+                if stream.read_exact(&mut chunk).await.is_err() {
+                    return Err("failed to read chunk payload".to_string());
+                }
+
+                use std::io::Write;
+                if let Err(e) = file.write_all(&chunk) {
+                    return Err(format!("cannot write '{}': {e}", lpath.display()));
+                }
+
+                bytes_copied += data_len as u64;
+            }
+            Ok(bytes_copied)
+        }
+        .await;
+
+        if res.is_err() {
+            let _ = std::fs::remove_file(lpath);
+        }
+
+        res
+    }
+
+    async fn send_recv_v2_req(&mut self, path: &str) -> Result<(), String> {
+        if path.len() > 1024 {
+            return Err(format!("SendRequest failed: path too long: {}", path.len()));
+        }
+
+        let path_bytes = path.as_bytes();
+        let mut buf = Vec::with_capacity(8 + path_bytes.len() + 8);
+        buf.extend_from_slice(&ID_RECV_V2.to_le_bytes());
+        buf.extend_from_slice(&(path_bytes.len() as u32).to_le_bytes());
+        buf.extend_from_slice(path_bytes);
+        buf.extend_from_slice(&ID_RECV_V2.to_le_bytes());
+        buf.extend_from_slice(&0u32.to_le_bytes());
+
+        let stream = self.session.stream_mut();
+        stream
+            .write_all(&buf)
+            .await
+            .map_err(|e| format!("failed to send RECV_V2 request: {e}"))?;
+        stream
+            .flush()
+            .await
+            .map_err(|e| format!("failed to flush RECV_V2 request: {e}"))?;
+        Ok(())
+    }
+
     /// Sends `QUIT` request to close sync session gracefully.
     pub async fn quit(&mut self) -> Result<(), SyncError> {
         self.send_request(ID_QUIT, "").await
+    }
+}
+
+fn set_time_and_mode(path: &std::path::Path, time: u64, mode: u32) -> std::io::Result<()> {
+    #[cfg(unix)]
+    {
+        use std::ffi::CString;
+        use std::os::unix::ffi::OsStrExt;
+
+        let times = libc::utimbuf {
+            actime: time as _,
+            modtime: time as _,
+        };
+        let c_path = CString::new(path.as_os_str().as_bytes()).map_err(|_| {
+            std::io::Error::new(std::io::ErrorKind::InvalidInput, "path contains null byte")
+        })?;
+        let r1 = unsafe { libc::utime(c_path.as_ptr(), &times) };
+
+        let perm_bits = (mode & 0o7777) as libc::mode_t;
+        let r2 = unsafe { libc::chmod(c_path.as_ptr(), perm_bits) };
+
+        if r1 != 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+        if r2 != 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+        Ok(())
+    }
+
+    #[cfg(not(unix))]
+    {
+        use std::time::{Duration, UNIX_EPOCH};
+        let file = std::fs::File::options().write(true).open(path)?;
+        let st = UNIX_EPOCH + Duration::from_secs(time);
+        let times = std::fs::FileTimes::new().set_modified(st).set_accessed(st);
+        file.set_times(times)?;
+        let mut perms = file.metadata()?.permissions();
+        if (mode & 0o200) == 0 {
+            perms.set_readonly(true);
+            std::fs::set_permissions(path, perms)?;
+        }
+        Ok(())
     }
 }

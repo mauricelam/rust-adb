@@ -84,6 +84,8 @@ impl Default for InMemoryFs {
         fs.add_file("/data/f_65536.bin", vec![0xBB; 65536], 0o100644, 2000);
         let f300k: Vec<u8> = (0..307200).map(|i| (i % 256) as u8).collect();
         fs.add_file("/data/f_300k.bin", f300k, 0o100644, 2000);
+        fs.add_file("/data/fail.bin", vec![], 0o100644, 2000);
+        fs.add_file("/data/disconnect.bin", vec![0xCC; 100000], 0o100644, 2000);
         fs
     }
 }

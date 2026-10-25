@@ -24,7 +24,10 @@ pub use shell_interactive::{
     determine_pty_allocation, format_window_size, parse_escape_char_arg, EscapeResult, EscapeState,
     EscapeStateMachine, PtyDecision, PtyMode,
 };
-pub use sync_session::{errno_from_wire, DirEntry, Stat, SyncError, SyncSession};
+pub use sync_session::{
+    errno_from_wire, CompressionType, DirEntry, PullOptions, PullResult, PullSourceOutcome, Stat,
+    SyncError, SyncSession,
+};
 pub use transport::{format_host_command, TransportSelector};
 
 #[cfg(test)]
