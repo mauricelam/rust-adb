@@ -280,9 +280,7 @@ fn test_send_mode_parsing() {
 
 #[test]
 fn test_sync_struct_sizes() {
-    use adb_proto::sync::{
-        SyncDentV1, SyncDentV2, SyncRecvV2, SyncSendV2, SyncStatV1, SyncStatV2,
-    };
+    use adb_proto::sync::{SyncDentV1, SyncDentV2, SyncRecvV2, SyncSendV2, SyncStatV1, SyncStatV2};
     assert_eq!(std::mem::size_of::<SyncStatV1>(), 16);
     assert_eq!(std::mem::size_of::<SyncStatV2>(), 72);
     assert_eq!(std::mem::size_of::<SyncDentV1>(), 20);

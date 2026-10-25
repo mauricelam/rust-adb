@@ -14,7 +14,6 @@ pub use client::{
     ExternalBinaryLauncher, LaunchConfig, LaunchError, Outcome, SelfExecLauncher, ServerLauncher,
     SessionFactory, ShellOptions, TrackDevicesMode, ADB_SERVER_VERSION,
 };
-pub use sync_session::{errno_from_wire, DirEntry, Stat, SyncError, SyncSession};
 pub use device_selection::{DeviceSelection, SelectionError};
 pub use server_address::{
     resolve_server_address, AddressError, ServerAddress, ServerAddressEnv, ServerAddressOptions,
@@ -25,6 +24,7 @@ pub use shell_interactive::{
     determine_pty_allocation, format_window_size, parse_escape_char_arg, EscapeResult, EscapeState,
     EscapeStateMachine, PtyDecision, PtyMode,
 };
+pub use sync_session::{errno_from_wire, DirEntry, Stat, SyncError, SyncSession};
 pub use transport::{format_host_command, TransportSelector};
 
 #[cfg(test)]

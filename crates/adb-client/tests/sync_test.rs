@@ -1,6 +1,6 @@
 use adb_client::{
-    AdbClient, DefaultSessionFactory, LaunchError, ServerAddress, ServerLauncher,
-    SyncError, SyncSession, TransportSelector,
+    AdbClient, DefaultSessionFactory, LaunchError, ServerAddress, ServerLauncher, SyncError,
+    SyncSession, TransportSelector,
 };
 use compat::TestServer;
 use mock_adbd::MockAdbdOptions;
@@ -104,7 +104,11 @@ async fn test_sync_ls_parity_v2_and_v1() {
     let server = TestServer::start();
 
     let connect_out = server.run_client(&["connect", &mock.addr]);
-    assert!(connect_out.success(), "connect failed: {}", connect_out.stderr);
+    assert!(
+        connect_out.success(),
+        "connect failed: {}",
+        connect_out.stderr
+    );
 
     let addr = ServerAddress {
         host: Some("127.0.0.1".into()),
@@ -147,7 +151,10 @@ async fn test_sync_ls_parity_v2_and_v1() {
     assert_eq!(rust_data_out, ref_data.stdout);
 
     // 3. Test ls on missing path /nonexistent
-    let entries_missing = sync.ls("/nonexistent").await.expect("ls /nonexistent failed");
+    let entries_missing = sync
+        .ls("/nonexistent")
+        .await
+        .expect("ls /nonexistent failed");
     let ref_missing = server.run_client(&["-s", &mock.addr, "ls", "/nonexistent"]);
     assert!(ref_missing.success());
 
@@ -215,7 +222,10 @@ async fn test_sync_stat_lstat_fallback() {
     assert_eq!(st.mtime, 2000);
 
     // 2. stat missing file
-    let err_missing = sync.stat("/data/no_such_file").await.expect_err("stat missing file should fail");
+    let err_missing = sync
+        .stat("/data/no_such_file")
+        .await
+        .expect_err("stat missing file should fail");
     assert_eq!(err_missing.raw_os_error(), Some(2)); // ENOENT = 2
 
     // 3. Test with stat_v2 disabled (v1 fallback)
@@ -231,11 +241,17 @@ async fn test_sync_stat_lstat_fallback() {
         .expect("sync v1 connect failed");
 
     // stat without stat_v2 returns NotSupported
-    let err_nosup = sync_v1.stat("/data/f_1.bin").await.expect_err("stat without v2 should fail");
+    let err_nosup = sync_v1
+        .stat("/data/f_1.bin")
+        .await
+        .expect_err("stat without v2 should fail");
     assert!(matches!(err_nosup, SyncError::NotSupported(_)));
 
     // lstat uses v1
-    let st_lstat_v1 = sync_v1.lstat("/data/f_1.bin").await.expect("lstat v1 failed");
+    let st_lstat_v1 = sync_v1
+        .lstat("/data/f_1.bin")
+        .await
+        .expect("lstat v1 failed");
     assert!(st_lstat_v1.is_file());
     assert_eq!(st_lstat_v1.size, 1);
 
@@ -272,8 +288,13 @@ async fn test_sync_overlong_path_refusal() {
         .expect("sync connect failed");
 
     let long_path = "a/".repeat(600); // 1200 bytes > 1024
-    let err = sync.ls(&long_path).await.expect_err("overlong path should fail");
-    assert!(err.to_string().contains("SendRequest failed: path too long: 1200"));
+    let err = sync
+        .ls(&long_path)
+        .await
+        .expect_err("overlong path should fail");
+    assert!(err
+        .to_string()
+        .contains("SendRequest failed: path too long: 1200"));
     assert_eq!(err.raw_os_error(), Some(36)); // ENAMETOOLONG = 36
 }
 

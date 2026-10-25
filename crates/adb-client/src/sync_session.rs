@@ -2,8 +2,8 @@ use crate::client::AdbClient;
 use crate::session::{Session, SessionError};
 use crate::transport::TransportSelector;
 use adb_proto::sync::{
-    ID_DENT_V1, ID_DENT_V2, ID_DONE, ID_LIST_V1, ID_LIST_V2, ID_LSTAT_V1, ID_LSTAT_V2,
-    ID_QUIT, ID_STAT_V2,
+    ID_DENT_V1, ID_DENT_V2, ID_DONE, ID_LIST_V1, ID_LIST_V2, ID_LSTAT_V1, ID_LSTAT_V2, ID_QUIT,
+    ID_STAT_V2,
 };
 use std::fmt;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -40,11 +40,18 @@ pub fn errno_from_wire(wire: u32) -> i32 {
 #[derive(Debug)]
 pub enum SyncError {
     ConnectFailed(String),
-    PathTooLong { message: String, errno: i32 },
+    PathTooLong {
+        message: String,
+        errno: i32,
+    },
     NotSupported(String),
     ProtocolFault(String),
     HostilePath(String),
-    Errno { wire: u32, errno: i32, message: String },
+    Errno {
+        wire: u32,
+        errno: i32,
+        message: String,
+    },
     Io(std::io::Error),
     Session(SessionError),
 }
@@ -189,7 +196,8 @@ impl SyncSession {
         let have_sendrecv_v2_brotli = features.contains(&adb_proto::Feature::SendRecv2Brotli);
         let have_sendrecv_v2_lz4 = features.contains(&adb_proto::Feature::SendRecv2LZ4);
         let have_sendrecv_v2_zstd = features.contains(&adb_proto::Feature::SendRecv2Zstd);
-        let have_sendrecv_v2_dry_run_send = features.contains(&adb_proto::Feature::SendRecv2DryRunSend);
+        let have_sendrecv_v2_dry_run_send =
+            features.contains(&adb_proto::Feature::SendRecv2DryRunSend);
         let have_fixed_push_mkdir = features.contains(&adb_proto::Feature::FixedPushMkdir);
 
         let session_res = client.session_factory().connect(client.addr()).await;
