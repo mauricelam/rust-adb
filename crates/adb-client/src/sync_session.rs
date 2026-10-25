@@ -2,9 +2,11 @@ use crate::client::AdbClient;
 use crate::session::{Session, SessionError};
 use crate::transport::TransportSelector;
 use adb_proto::sync::{
-    ID_DATA, ID_DENT_V1, ID_DENT_V2, ID_DONE, ID_LIST_V1, ID_LIST_V2, ID_LSTAT_V1, ID_LSTAT_V2,
-    ID_QUIT, ID_RECV_V1, ID_RECV_V2, ID_STAT_V2,
+    ID_DATA, ID_DENT_V1, ID_DENT_V2, ID_DONE, ID_FAIL, ID_LIST_V1, ID_LIST_V2, ID_LSTAT_V1,
+    ID_LSTAT_V2, ID_OKAY, ID_QUIT, ID_RECV_V1, ID_RECV_V2, ID_SEND_V1, ID_SEND_V2, ID_STAT_V2,
+    SYNC_DATA_MAX,
 };
+use std::collections::VecDeque;
 use std::fmt;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
@@ -137,6 +139,34 @@ pub struct PullSourceOutcome {
 pub struct PullResult {
     pub bytes_transferred: u64,
     pub outcomes: Vec<PullSourceOutcome>,
+    pub warnings: Vec<String>,
+    pub errors: Vec<String>,
+    pub success: bool,
+}
+
+/// Options controlling `push` behavior.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct PushOptions {
+    pub sync: bool,
+    pub compression: CompressionType,
+    pub dry_run: bool,
+}
+
+/// Outcome of pushing a single source file.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PushSourceOutcome {
+    pub source: String,
+    pub destination: String,
+    pub bytes_transferred: u64,
+    pub success: bool,
+    pub error: Option<String>,
+}
+
+/// Summary result of a `push` operation over one or more sources.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct PushResult {
+    pub bytes_transferred: u64,
+    pub outcomes: Vec<PushSourceOutcome>,
     pub warnings: Vec<String>,
     pub errors: Vec<String>,
     pub success: bool,
@@ -851,6 +881,492 @@ impl SyncSession {
             .await
             .map_err(|e| format!("failed to flush RECV_V2 request: {e}"))?;
         Ok(())
+    }
+
+    /// Pushes one or more local files to a remote destination path.
+    pub async fn push<P: AsRef<std::path::Path>>(
+        &mut self,
+        sources: &[&str],
+        destination: P,
+        options: &PushOptions,
+    ) -> Result<PushResult, SyncError> {
+        if options.compression != CompressionType::None {
+            return Err(SyncError::NotSupported(
+                "compression option is not supported".to_string(),
+            ));
+        }
+        if options.dry_run {
+            return Err(SyncError::NotSupported(
+                "dry-run option is not supported".to_string(),
+            ));
+        }
+        if options.sync {
+            return Err(SyncError::NotSupported(
+                "sync option is not supported".to_string(),
+            ));
+        }
+
+        let dst = destination.as_ref();
+        let dst_str = dst.to_string_lossy().to_string();
+
+        let mut dst_exists = true;
+        let mut dst_isdir = false;
+
+        match self.stat_with_fallback(&dst_str).await {
+            Ok(st) => {
+                dst_isdir = st.is_dir();
+            }
+            Err(SyncError::Errno { errno, .. }) if errno == 2 || errno == 95 => {
+                dst_exists = false;
+            }
+            Err(err) => {
+                let mut res = PushResult::default();
+                res.errors.push(format!(
+                    "stat failed when trying to push to {dst_str}: {err}"
+                ));
+                return Ok(res);
+            }
+        }
+
+        if !dst_isdir {
+            if sources.len() > 1 {
+                let mut res = PushResult::default();
+                res.errors
+                    .push(format!("target '{dst_str}' is not a directory"));
+                return Ok(res);
+            } else {
+                let dst_bytes = dst_str.as_bytes();
+                let ends_with_sep = !dst_bytes.is_empty()
+                    && (dst_bytes.last() == Some(&b'/') || dst_bytes.last() == Some(&b'\\'));
+                if ends_with_sep && dst_exists {
+                    let mut res = PushResult::default();
+                    res.errors
+                        .push(format!("failed to access '{dst_str}': Not a directory"));
+                    return Ok(res);
+                }
+            }
+        }
+
+        let mut res = PushResult {
+            success: true,
+            ..Default::default()
+        };
+        let mut deferred_acks: VecDeque<(String, String, u64)> = VecDeque::new();
+
+        for src in sources {
+            let src_path = *src;
+            let local_path = std::path::Path::new(src_path);
+
+            let local_st = match std::fs::symlink_metadata(local_path) {
+                Ok(st) => st,
+                Err(e) => {
+                    let msg = format!("cannot stat '{src_path}': {e}");
+                    res.errors.push(msg.clone());
+                    res.success = false;
+                    res.outcomes.push(PushSourceOutcome {
+                        source: src_path.to_string(),
+                        destination: dst_str.clone(),
+                        bytes_transferred: 0,
+                        success: false,
+                        error: Some(msg),
+                    });
+                    continue;
+                }
+            };
+
+            let file_type = local_st.file_type();
+            if file_type.is_dir() {
+                return Err(SyncError::NotSupported(
+                    "directory push is not supported".to_string(),
+                ));
+            }
+
+            #[cfg(unix)]
+            let mode = {
+                use std::os::unix::fs::MetadataExt;
+                local_st.mode()
+            };
+            #[cfg(not(unix))]
+            let mode = {
+                if file_type.is_symlink() {
+                    0o120755
+                } else if local_st.permissions().readonly() {
+                    0o100444
+                } else {
+                    0o100644
+                }
+            };
+
+            let is_reg_or_symlink = file_type.is_file() || file_type.is_symlink();
+            if !is_reg_or_symlink {
+                res.warnings.push(format!(
+                    "skipping special file '{src_path}' (mode = 0o{mode:o})"
+                ));
+                continue;
+            }
+
+            let target_dst_str = if dst_isdir {
+                let basename = local_path
+                    .file_name()
+                    .and_then(|s| s.to_str())
+                    .unwrap_or(src_path);
+                let dst_trimmed = dst_str.trim_end_matches('/');
+                if dst_trimmed.is_empty() {
+                    format!("/{basename}")
+                } else {
+                    format!("{dst_trimmed}/{basename}")
+                }
+            } else {
+                dst_str.clone()
+            };
+
+            let mtime = local_st
+                .modified()
+                .unwrap_or(std::time::SystemTime::UNIX_EPOCH)
+                .duration_since(std::time::SystemTime::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs() as u32;
+
+            match self
+                .sync_send(
+                    src_path,
+                    &target_dst_str,
+                    mtime,
+                    mode,
+                    file_type.is_symlink(),
+                )
+                .await
+            {
+                Ok(bytes) => {
+                    res.bytes_transferred += bytes;
+                    deferred_acks.push_back((src_path.to_string(), target_dst_str.clone(), bytes));
+                    if !self
+                        .read_acknowledgements(&mut deferred_acks, &mut res, false)
+                        .await
+                    {
+                        break;
+                    }
+                }
+                Err(err_msg) => {
+                    res.errors.push(err_msg.clone());
+                    res.success = false;
+                    res.outcomes.push(PushSourceOutcome {
+                        source: src_path.to_string(),
+                        destination: target_dst_str,
+                        bytes_transferred: 0,
+                        success: false,
+                        error: Some(err_msg),
+                    });
+                    break;
+                }
+            }
+        }
+
+        if !deferred_acks.is_empty() {
+            let _ = self
+                .read_acknowledgements(&mut deferred_acks, &mut res, true)
+                .await;
+        }
+
+        Ok(res)
+    }
+
+    async fn sync_send(
+        &mut self,
+        lpath: &str,
+        rpath: &str,
+        mtime: u32,
+        mode: u32,
+        is_symlink: bool,
+    ) -> Result<u64, String> {
+        if is_symlink {
+            let link_target =
+                std::fs::read_link(lpath).map_err(|e| format!("readlink '{lpath}' failed: {e}"))?;
+            let mut contents = link_target.to_string_lossy().as_bytes().to_vec();
+            contents.push(0);
+            let len = contents.len() as u64;
+            self.send_small_file(rpath, mode, lpath, mtime, &contents)
+                .await?;
+            Ok(len)
+        } else {
+            let file = std::fs::File::open(lpath)
+                .map_err(|e| format!("opening '{lpath}' locally failed: {e}"))?;
+            let metadata = file
+                .metadata()
+                .map_err(|e| format!("cannot stat '{lpath}': {e}"))?;
+            let file_size = metadata.len();
+
+            if file_size < SYNC_DATA_MAX as u64 {
+                use std::io::Read;
+                let mut data = Vec::with_capacity(file_size as usize);
+                let mut reader = file;
+                reader
+                    .read_to_end(&mut data)
+                    .map_err(|e| format!("reading '{lpath}' locally failed: {e}"))?;
+                self.send_small_file(rpath, mode, lpath, mtime, &data)
+                    .await?;
+                Ok(file_size)
+            } else {
+                self.send_large_file(rpath, mode, lpath, mtime, file)
+                    .await?;
+                Ok(file_size)
+            }
+        }
+    }
+
+    async fn send_small_file(
+        &mut self,
+        rpath: &str,
+        mode: u32,
+        lpath: &str,
+        mtime: u32,
+        data: &[u8],
+    ) -> Result<(), String> {
+        let path_and_mode = format!("{rpath},{mode}");
+        if path_and_mode.len() > 1024 {
+            return Err(format!(
+                "SendRequest failed: path too long: {}",
+                path_and_mode.len()
+            ));
+        }
+
+        let mut buf = Vec::with_capacity(8 + path_and_mode.len() + 8 + data.len() + 8);
+        buf.extend_from_slice(&ID_SEND_V1.to_le_bytes());
+        buf.extend_from_slice(&(path_and_mode.len() as u32).to_le_bytes());
+        buf.extend_from_slice(path_and_mode.as_bytes());
+
+        buf.extend_from_slice(&ID_DATA.to_le_bytes());
+        buf.extend_from_slice(&(data.len() as u32).to_le_bytes());
+        buf.extend_from_slice(data);
+
+        buf.extend_from_slice(&ID_DONE.to_le_bytes());
+        buf.extend_from_slice(&mtime.to_le_bytes());
+
+        self.write_or_fail(lpath, rpath, &buf).await
+    }
+
+    async fn send_large_file(
+        &mut self,
+        rpath: &str,
+        mode: u32,
+        lpath: &str,
+        mtime: u32,
+        mut file: std::fs::File,
+    ) -> Result<(), String> {
+        if self.have_sendrecv_v2 {
+            if rpath.len() > 1024 {
+                return Err(format!(
+                    "SendRequest failed: path too long: {}",
+                    rpath.len()
+                ));
+            }
+            let mut hdr_buf = Vec::with_capacity(8 + rpath.len() + 12);
+            hdr_buf.extend_from_slice(&ID_SEND_V2.to_le_bytes());
+            hdr_buf.extend_from_slice(&(rpath.len() as u32).to_le_bytes());
+            hdr_buf.extend_from_slice(rpath.as_bytes());
+
+            hdr_buf.extend_from_slice(&ID_SEND_V2.to_le_bytes());
+            hdr_buf.extend_from_slice(&mode.to_le_bytes());
+            hdr_buf.extend_from_slice(&0u32.to_le_bytes()); // flags = 0
+
+            self.write_or_fail(lpath, rpath, &hdr_buf).await?;
+        } else {
+            let path_and_mode = format!("{rpath},{mode}");
+            if path_and_mode.len() > 1024 {
+                return Err(format!(
+                    "SendRequest failed: path too long: {}",
+                    path_and_mode.len()
+                ));
+            }
+            let mut hdr_buf = Vec::with_capacity(8 + path_and_mode.len());
+            hdr_buf.extend_from_slice(&ID_SEND_V1.to_le_bytes());
+            hdr_buf.extend_from_slice(&(path_and_mode.len() as u32).to_le_bytes());
+            hdr_buf.extend_from_slice(path_and_mode.as_bytes());
+
+            self.write_or_fail(lpath, rpath, &hdr_buf).await?;
+        }
+
+        use std::io::Read;
+        let mut chunk_buf = vec![0u8; SYNC_DATA_MAX];
+        loop {
+            let n = match file.read(&mut chunk_buf) {
+                Ok(0) => break,
+                Ok(n) => n,
+                Err(e) => return Err(format!("reading '{lpath}' locally failed: {e}")),
+            };
+
+            let mut data_hdr = Vec::with_capacity(8 + n);
+            data_hdr.extend_from_slice(&ID_DATA.to_le_bytes());
+            data_hdr.extend_from_slice(&(n as u32).to_le_bytes());
+            data_hdr.extend_from_slice(&chunk_buf[..n]);
+
+            self.write_or_fail(lpath, rpath, &data_hdr).await?;
+        }
+
+        let mut done_hdr = [0u8; 8];
+        done_hdr[0..4].copy_from_slice(&ID_DONE.to_le_bytes());
+        done_hdr[4..8].copy_from_slice(&mtime.to_le_bytes());
+
+        self.write_or_fail(lpath, rpath, &done_hdr).await
+    }
+
+    async fn write_or_fail(&mut self, lpath: &str, rpath: &str, data: &[u8]) -> Result<(), String> {
+        let stream = self.session.stream_mut();
+        if let Err(e) = stream.write_all(data).await {
+            if e.kind() == std::io::ErrorKind::ConnectionReset {
+                let mut status_buf = [0u8; 8];
+                if stream.read_exact(&mut status_buf).await.is_ok() {
+                    let id = u32::from_le_bytes(status_buf[0..4].try_into().unwrap());
+                    let msglen = u32::from_le_bytes(status_buf[4..8].try_into().unwrap()) as usize;
+                    if id == ID_FAIL && msglen <= SYNC_DATA_MAX {
+                        let mut fail_buf = vec![0u8; msglen];
+                        if stream.read_exact(&mut fail_buf).await.is_ok() {
+                            let fail_msg = String::from_utf8_lossy(&fail_buf);
+                            return Err(format!(
+                                "failed to copy '{lpath}' to '{rpath}': remote {fail_msg}"
+                            ));
+                        }
+                    }
+                }
+            }
+            return Err(format!("failed to copy '{lpath}' to '{rpath}': {e}"));
+        }
+        let _ = stream.flush().await;
+        Ok(())
+    }
+
+    async fn read_acknowledgements(
+        &mut self,
+        deferred_acks: &mut VecDeque<(String, String, u64)>,
+        res: &mut PushResult,
+        read_all: bool,
+    ) -> bool {
+        const MAX_DEFERRED_ACKS: usize = 128;
+        let mut overall_ack_success = true;
+
+        while !deferred_acks.is_empty() {
+            let should_block = read_all || deferred_acks.len() >= MAX_DEFERRED_ACKS;
+
+            let stream = self.session.stream_mut();
+
+            if !should_block {
+                let mut test_buf = [0u8; 1];
+                match tokio::time::timeout(std::time::Duration::ZERO, stream.peek(&mut test_buf))
+                    .await
+                {
+                    Ok(Ok(0)) | Err(_) => {
+                        return overall_ack_success;
+                    }
+                    Ok(Err(_)) => {}
+                    Ok(Ok(_)) => {}
+                }
+            }
+
+            let mut hdr_buf = [0u8; 8];
+            if stream.read_exact(&mut hdr_buf).await.is_err() {
+                let err_msg = "failed to read copy response: EOF".to_string();
+                res.errors.push(err_msg.clone());
+                res.success = false;
+                while let Some((from, to, bytes)) = deferred_acks.pop_front() {
+                    res.outcomes.push(PushSourceOutcome {
+                        source: from,
+                        destination: to,
+                        bytes_transferred: bytes,
+                        success: false,
+                        error: Some(err_msg.clone()),
+                    });
+                }
+                return false;
+            }
+
+            let id = u32::from_le_bytes(hdr_buf[0..4].try_into().unwrap());
+            let msglen = u32::from_le_bytes(hdr_buf[4..8].try_into().unwrap()) as usize;
+
+            if id == ID_OKAY {
+                let (from, to, bytes) = deferred_acks.pop_front().unwrap();
+                if msglen != 0 {
+                    let err_msg = format!("received ID_OKAY with msg_len ({msglen} != 0)");
+                    res.errors.push(err_msg.clone());
+                    res.success = false;
+                    overall_ack_success = false;
+                    res.outcomes.push(PushSourceOutcome {
+                        source: from,
+                        destination: to,
+                        bytes_transferred: bytes,
+                        success: false,
+                        error: Some(err_msg),
+                    });
+                } else {
+                    res.outcomes.push(PushSourceOutcome {
+                        source: from,
+                        destination: to,
+                        bytes_transferred: bytes,
+                        success: true,
+                        error: None,
+                    });
+                }
+            } else if id == ID_FAIL {
+                if msglen > SYNC_DATA_MAX {
+                    let (from, to, bytes) = deferred_acks.pop_front().unwrap();
+                    let err_msg = format!("too-long message length from daemon: msglen = {msglen}");
+                    res.errors.push(err_msg.clone());
+                    res.success = false;
+                    overall_ack_success = false;
+                    res.outcomes.push(PushSourceOutcome {
+                        source: from,
+                        destination: to,
+                        bytes_transferred: bytes,
+                        success: false,
+                        error: Some(err_msg),
+                    });
+                } else {
+                    let mut fail_buf = vec![0u8; msglen];
+                    if stream.read_exact(&mut fail_buf).await.is_err() {
+                        let err_msg = "failed to read copy response: EOF".to_string();
+                        res.errors.push(err_msg.clone());
+                        res.success = false;
+                        while let Some((from, to, bytes)) = deferred_acks.pop_front() {
+                            res.outcomes.push(PushSourceOutcome {
+                                source: from,
+                                destination: to,
+                                bytes_transferred: bytes,
+                                success: false,
+                                error: Some(err_msg.clone()),
+                            });
+                        }
+                        return false;
+                    }
+
+                    let fail_msg = String::from_utf8_lossy(&fail_buf);
+                    let (from, to, bytes) = deferred_acks.pop_front().unwrap();
+                    let err_msg = format!("failed to copy '{from}' to '{to}': remote {fail_msg}");
+                    res.errors.push(err_msg.clone());
+                    res.success = false;
+                    overall_ack_success = false;
+                    res.outcomes.push(PushSourceOutcome {
+                        source: from,
+                        destination: to,
+                        bytes_transferred: bytes,
+                        success: false,
+                        error: Some(err_msg),
+                    });
+                }
+            } else {
+                let (from, to, bytes) = deferred_acks.pop_front().unwrap();
+                let err_msg = format!("unexpected response from daemon: id = 0x{id:08x}");
+                res.errors.push(err_msg.clone());
+                res.success = false;
+                overall_ack_success = false;
+                res.outcomes.push(PushSourceOutcome {
+                    source: from,
+                    destination: to,
+                    bytes_transferred: bytes,
+                    success: false,
+                    error: Some(err_msg),
+                });
+            }
+        }
+        overall_ack_success
     }
 
     /// Sends `QUIT` request to close sync session gracefully.
