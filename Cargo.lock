@@ -36,6 +36,7 @@ dependencies = [
  "libc",
  "mock-adbd",
  "temp-env",
+ "tempfile",
  "tokio",
  "tokio-stream",
 ]

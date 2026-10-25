@@ -433,26 +433,38 @@ fn process_sync_buffer(
                         if id == ID_RECV_V2 {
                             sync_state.decoder_buf.drain(..8);
                         }
-                        let node = fs.get(&path);
-                        match node {
-                            Some(fs::Node::File(f)) => {
-                                let mut resp = Vec::new();
-                                for chunk in f.data.chunks(SYNC_DATA_MAX) {
-                                    resp.extend_from_slice(&ID_DATA.to_le_bytes());
-                                    resp.extend_from_slice(&(chunk.len() as u32).to_le_bytes());
-                                    resp.extend_from_slice(chunk);
+                        if path == "/data/fail.bin" {
+                            pending_writes.push_back(encode_sync_fail("permission denied"));
+                        } else if path == "/data/disconnect.bin" {
+                            let mut resp = Vec::new();
+                            resp.extend_from_slice(&ID_DATA.to_le_bytes());
+                            resp.extend_from_slice(&1000u32.to_le_bytes());
+                            resp.extend_from_slice(&[0xCC; 1000]);
+                            pending_writes.push_back(resp);
+                            *close_pending = true;
+                        } else {
+                            let node = fs.get(&path);
+                            match node {
+                                Some(fs::Node::File(f)) => {
+                                    let mut resp = Vec::new();
+                                    for chunk in f.data.chunks(SYNC_DATA_MAX) {
+                                        resp.extend_from_slice(&ID_DATA.to_le_bytes());
+                                        resp.extend_from_slice(&(chunk.len() as u32).to_le_bytes());
+                                        resp.extend_from_slice(chunk);
+                                    }
+                                    resp.extend_from_slice(&ID_DONE.to_le_bytes());
+                                    resp.extend_from_slice(&0u32.to_le_bytes());
+                                    pending_writes.push_back(resp);
                                 }
-                                resp.extend_from_slice(&ID_DONE.to_le_bytes());
-                                resp.extend_from_slice(&0u32.to_le_bytes());
-                                pending_writes.push_back(resp);
-                            }
-                            Some(fs::Node::Directory { .. }) => {
-                                let fail_msg = format!("'{}' is a directory", path);
-                                pending_writes.push_back(encode_sync_fail(&fail_msg));
-                            }
-                            _ => {
-                                let fail_msg = format!("remote object '{}' does not exist", path);
-                                pending_writes.push_back(encode_sync_fail(&fail_msg));
+                                Some(fs::Node::Directory { .. }) => {
+                                    let fail_msg = format!("'{}' is a directory", path);
+                                    pending_writes.push_back(encode_sync_fail(&fail_msg));
+                                }
+                                _ => {
+                                    let fail_msg =
+                                        format!("remote object '{}' does not exist", path);
+                                    pending_writes.push_back(encode_sync_fail(&fail_msg));
+                                }
                             }
                         }
                     }
