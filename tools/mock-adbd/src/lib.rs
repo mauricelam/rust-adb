@@ -174,16 +174,45 @@ fn parse_text_command(cmd: &str, prefix: &str) -> Option<String> {
         cmd.strip_prefix(&p)?
     };
 
-    let text = raw_text.trim();
-    let text = if (text.starts_with('"') && text.ends_with('"') && text.len() >= 2)
-        || (text.starts_with('\'') && text.ends_with('\'') && text.len() >= 2)
-    {
-        &text[1..text.len() - 1]
-    } else {
-        text
-    };
+    let trimmed = raw_text.trim();
+    if trimmed.is_empty() {
+        return Some("\n".to_string());
+    }
 
-    Some(format!("{text}\n"))
+    let mut parts = Vec::new();
+    let mut current = String::new();
+    let mut in_single_quote = false;
+    let mut in_double_quote = false;
+
+    let chars: Vec<char> = trimmed.chars().collect();
+    let mut i = 0;
+    while i < chars.len() {
+        let c = chars[i];
+        if c == '\'' && !in_double_quote {
+            // Check for escaped single quote '\'
+            if i + 3 < chars.len() && chars[i..i + 4] == ['\'', '\\', '\'', '\''] {
+                current.push('\'');
+                i += 4;
+                continue;
+            }
+            in_single_quote = !in_single_quote;
+        } else if c == '"' && !in_single_quote {
+            in_double_quote = !in_double_quote;
+        } else if c == ' ' && !in_single_quote && !in_double_quote {
+            if !current.is_empty() {
+                parts.push(current.clone());
+                current.clear();
+            }
+        } else {
+            current.push(c);
+        }
+        i += 1;
+    }
+    if !current.is_empty() {
+        parts.push(current);
+    }
+
+    Some(format!("{}\n", parts.join(" ")))
 }
 
 fn parse_exit_command(cmd: &str) -> Option<u8> {
@@ -248,6 +277,7 @@ struct SyncStreamState {
 
 enum StreamKind {
     ShellV1,
+    ShellV1Cat,
     ShellV2NonCat { decoder: ShellDecoder, is_pty: bool },
     ShellV2Cat { decoder: ShellDecoder, is_pty: bool },
     Sync(SyncStreamState),
@@ -700,7 +730,7 @@ pub async fn handle_connection_with_options(
                                         ShellPacketId::Stdout,
                                         echo_text.into_bytes(),
                                     )),
-                                    0,
+                                    Some(0),
                                 )
                             } else if let Some(stderr_text) = parse_text_command(cmd_str, "stderr")
                             {
@@ -709,10 +739,10 @@ pub async fn handle_connection_with_options(
                                         ShellPacketId::Stderr,
                                         stderr_text.into_bytes(),
                                     )),
-                                    0,
+                                    Some(0),
                                 )
                             } else if let Some(code) = parse_exit_command(cmd_str) {
-                                (None, code)
+                                (None, Some(code))
                             } else if cmd_str == "env-term" {
                                 let term_text = format!("{}\n", term_val.unwrap_or("unset"));
                                 (
@@ -720,7 +750,15 @@ pub async fn handle_connection_with_options(
                                         ShellPacketId::Stdout,
                                         term_text.into_bytes(),
                                     )),
-                                    0,
+                                    Some(0),
+                                )
+                            } else if cmd_str == "no_exit" {
+                                (
+                                    Some(ShellPacket::new(
+                                        ShellPacketId::Stdout,
+                                        b"no exit packet stdout\n".to_vec(),
+                                    )),
+                                    None,
                                 )
                             } else {
                                 (
@@ -728,7 +766,7 @@ pub async fn handle_connection_with_options(
                                         ShellPacketId::Stderr,
                                         b"mock-adbd: unsupported command\n".to_vec(),
                                     )),
-                                    127,
+                                    Some(127),
                                 )
                             };
 
@@ -737,11 +775,13 @@ pub async fn handle_connection_with_options(
                                 pending_writes
                                     .push_back(pkt.encode().expect("shell encode failed"));
                             }
-                            pending_writes.push_back(
-                                ShellPacket::exit_code(exit_code)
-                                    .encode()
-                                    .expect("shell encode failed"),
-                            );
+                            if let Some(code) = exit_code {
+                                pending_writes.push_back(
+                                    ShellPacket::exit_code(code)
+                                        .encode()
+                                        .expect("shell encode failed"),
+                                );
+                            }
 
                             streams.insert(
                                 mock_local_id,
@@ -769,7 +809,10 @@ pub async fn handle_connection_with_options(
                         )
                         .await;
                     }
-                } else if let Some(cmd) = service.strip_prefix("shell:") {
+                } else if let Some(cmd) = service
+                    .strip_prefix("shell:")
+                    .or_else(|| service.strip_prefix("exec:"))
+                {
                     let mock_local_id = next_stream_id.fetch_add(1, Ordering::SeqCst);
 
                     if write_packet_versioned(
@@ -783,30 +826,44 @@ pub async fn handle_connection_with_options(
                     .await
                     .is_err()
                     {
-                        mock_log("Failed to write OKAY for shell: OPEN");
+                        mock_log("Failed to write OKAY for shell/exec: OPEN");
                         break;
                     }
 
-                    let output = parse_text_command(cmd, "echo");
-                    let response_payload = match output {
-                        Some(text) => text.into_bytes(),
-                        None => b"mock-adbd: unsupported command\n".to_vec(),
-                    };
-
-                    let mut pending_writes = VecDeque::new();
-                    pending_writes.push_back(response_payload);
-
-                    streams.insert(
-                        mock_local_id,
-                        StreamState {
+                    if cmd == "cat" {
+                        streams.insert(
                             mock_local_id,
-                            host_local_id,
-                            kind: StreamKind::ShellV1,
-                            write_in_flight: false,
-                            pending_writes,
-                            close_pending: true,
-                        },
-                    );
+                            StreamState {
+                                mock_local_id,
+                                host_local_id,
+                                kind: StreamKind::ShellV1Cat,
+                                write_in_flight: false,
+                                pending_writes: VecDeque::new(),
+                                close_pending: false,
+                            },
+                        );
+                    } else {
+                        let output = parse_text_command(cmd, "echo");
+                        let response_payload = match output {
+                            Some(text) => text.into_bytes(),
+                            None => b"mock-adbd: unsupported command\n".to_vec(),
+                        };
+
+                        let mut pending_writes = VecDeque::new();
+                        pending_writes.push_back(response_payload);
+
+                        streams.insert(
+                            mock_local_id,
+                            StreamState {
+                                mock_local_id,
+                                host_local_id,
+                                kind: StreamKind::ShellV1,
+                                write_in_flight: false,
+                                pending_writes,
+                                close_pending: true,
+                            },
+                        );
+                    }
                 } else {
                     let _ = write_packet_versioned(
                         &mut writer,
@@ -850,6 +907,9 @@ pub async fn handle_connection_with_options(
                             );
                         }
                         StreamKind::ShellV1 => {}
+                        StreamKind::ShellV1Cat => {
+                            stream_state.pending_writes.push_back(payload.clone());
+                        }
                         StreamKind::ShellV2NonCat { decoder, is_pty } => {
                             decoder.feed(&payload);
                             while let Ok(Some(pkt)) = decoder.pop_packet() {
