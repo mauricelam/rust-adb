@@ -26,8 +26,8 @@ pub use shell_interactive::{
     EscapeStateMachine, PtyDecision, PtyMode,
 };
 pub use sync_session::{
-    errno_from_wire, CompressionType, DirEntry, PullOptions, PullResult, PullSourceOutcome,
-    PushOptions, PushResult, PushSourceOutcome, Stat, SyncError, SyncSession,
+    errno_from_wire, errno_to_string, CompressionType, DirEntry, PullOptions, PullResult,
+    PullSourceOutcome, PushOptions, PushResult, PushSourceOutcome, Stat, SyncError, SyncSession,
 };
 pub use transport::{format_host_command, TransportSelector};
 

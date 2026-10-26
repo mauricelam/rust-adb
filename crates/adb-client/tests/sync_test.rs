@@ -349,3 +349,20 @@ async fn test_symlink_to_dir_fallback_and_stat_fields() {
         .expect("stat_with_fallback /data failed");
     assert!(st.is_dir());
 }
+
+#[test]
+fn test_errno_translation_and_string() {
+    use adb_client::{errno_from_wire, errno_to_string};
+
+    let wire_enoent = 2;
+    let host_enoent = errno_from_wire(wire_enoent);
+    #[cfg(unix)]
+    assert_eq!(host_enoent, libc::ENOENT);
+    #[cfg(windows)]
+    assert_eq!(host_enoent, 2);
+
+    let err_str = errno_to_string(host_enoent);
+    assert!(!err_str.is_empty());
+
+    assert_eq!(errno_to_string(0), "Success");
+}
