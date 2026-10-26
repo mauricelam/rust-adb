@@ -209,7 +209,7 @@ async fn test_forward_management_parity() {
         .unwrap_err();
     let ref_val_src = server.run_client(&["forward", "tcp:-1", "tcp:1234"]);
     assert!(!ref_val_src.success());
-    assert_eq!(val_src_err.to_string(), "error: Invalid source port: '-1'");
+    assert_eq!(val_src_err.to_string(), "Invalid source port: '-1'");
     assert!(ref_val_src.stderr.contains("Invalid source port: '-1'"));
 
     let val_dst_err = client
@@ -219,10 +219,7 @@ async fn test_forward_management_parity() {
         .unwrap_err();
     let ref_val_dst = server.run_client(&["forward", "tcp:1234", "tcp:abc"]);
     assert!(!ref_val_dst.success());
-    assert_eq!(
-        val_dst_err.to_string(),
-        "error: Invalid destination port: 'abc'"
-    );
+    assert_eq!(val_dst_err.to_string(), "Invalid destination port: 'abc'");
     assert!(ref_val_dst
         .stderr
         .contains("Invalid destination port: 'abc'"));
@@ -236,7 +233,7 @@ async fn test_forward_management_parity() {
     assert!(!ref_val_dst_zero.success());
     assert_eq!(
         val_dst_zero_err.to_string(),
-        "error: Invalid destination port: '0'"
+        "Invalid destination port: '0'"
     );
     assert!(ref_val_dst_zero
         .stderr
@@ -252,7 +249,7 @@ async fn test_forward_management_parity() {
     assert!(!ref_dev_raw.success());
     assert_eq!(
         dev_raw_err.to_string(),
-        "error: dev-raw is not supported by the device"
+        "dev-raw is not supported by the device"
     );
     assert!(ref_dev_raw
         .stderr

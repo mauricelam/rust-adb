@@ -33,7 +33,7 @@ pub fn parse_escape_char_arg(s: &str) -> Result<Option<char>, ClientError> {
         Ok(Some(s.chars().next().unwrap()))
     } else {
         Err(ClientError::QueryFailed(
-            "error: -e requires a single-character argument or 'none'".to_string(),
+            "-e requires a single-character argument or 'none'".to_string(),
         ))
     }
 }
@@ -85,11 +85,11 @@ pub fn determine_pty_allocation(
         if requested_type != "pty" {
             if !device_supports_shell2 {
                 return Err(ClientError::QueryFailed(
-                    "error: device only supports allocating a pty".to_string(),
+                    "device only supports allocating a pty".to_string(),
                 ));
             } else if options.disable_shell_protocol {
                 return Err(ClientError::QueryFailed(
-                    "error: -x only supports allocating a pty".to_string(),
+                    "-x only supports allocating a pty".to_string(),
                 ));
             }
         }
@@ -409,20 +409,17 @@ mod tests {
         assert!(dec.raw_stdin);
         assert!(!dec.use_shell_protocol);
 
-        // v1 (no shell2 on device), non-interactive (requests raw) -> error: device only supports allocating a pty
+        // v1 (no shell2 on device), non-interactive (requests raw) -> device only supports allocating a pty
         let err = determine_pty_allocation(&opt, false, true, false).unwrap_err();
-        assert_eq!(
-            err.to_string(),
-            "error: device only supports allocating a pty"
-        );
+        assert_eq!(err.to_string(), "device only supports allocating a pty");
 
-        // -x (disable shell protocol), non-interactive -> error: -x only supports allocating a pty
+        // -x (disable shell protocol), non-interactive -> -x only supports allocating a pty
         let opt_x = ShellOptions {
             disable_shell_protocol: true,
             ..Default::default()
         };
         let err = determine_pty_allocation(&opt_x, false, true, true).unwrap_err();
-        assert_eq!(err.to_string(), "error: -x only supports allocating a pty");
+        assert_eq!(err.to_string(), "-x only supports allocating a pty");
     }
 
     #[test]

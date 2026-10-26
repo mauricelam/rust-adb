@@ -112,7 +112,7 @@ impl fmt::Display for SyncError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             SyncError::InvalidResponse => write!(f, "invalid response"),
-            SyncError::ConnectFailed(msg) => write!(f, "adb: error: {msg}"),
+            SyncError::ConnectFailed(msg) => write!(f, "{msg}"),
             SyncError::PathTooLong { message, .. } => write!(f, "{message}"),
             SyncError::NotSupported(msg) => write!(f, "{msg}"),
             SyncError::ProtocolFault(msg) => write!(f, "protocol fault: {msg}"),
