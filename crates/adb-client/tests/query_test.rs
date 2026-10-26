@@ -121,8 +121,7 @@ async fn test_query_no_device() {
     assert_eq!(devices_l_out, "List of devices attached\n\n");
 
     // 3. adb devices with invalid arguments
-    let err_arg = client
-        .devices_with_args(&["-x"])
+    let err_arg = adb_cli::parse_and_exec_devices(&client, &["-x"])
         .await
         .result
         .expect_err("invalid args should fail");

@@ -248,10 +248,21 @@ impl Session {
 
         if read_transport {
             let mut buf = [0u8; 8];
-            self.stream
-                .read_exact(&mut buf)
-                .await
-                .map_err(|_| SessionError::ReadTransportIdFailed)?;
+            let mut read_bytes = 0;
+            while read_bytes < 8 {
+                if !self.read_buf.is_empty() {
+                    let avail = (8 - read_bytes).min(self.read_buf.len());
+                    buf[read_bytes..read_bytes + avail].copy_from_slice(&self.read_buf[..avail]);
+                    self.read_buf.drain(..avail);
+                    read_bytes += avail;
+                } else {
+                    self.stream
+                        .read_exact(&mut buf[read_bytes..])
+                        .await
+                        .map_err(|_| SessionError::ReadTransportIdFailed)?;
+                    read_bytes = 8;
+                }
+            }
             let id = u64::from_ne_bytes(buf);
             Ok(Some(id))
         } else if let TransportSelector::Id(id) = selector {

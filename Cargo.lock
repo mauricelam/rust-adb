@@ -24,11 +24,18 @@ dependencies = [
 [[package]]
 name = "adb-cli"
 version = "0.0.0"
+dependencies = [
+ "adb-client",
+ "bytes",
+ "tokio",
+ "tokio-stream",
+]
 
 [[package]]
 name = "adb-client"
 version = "0.0.0"
 dependencies = [
+ "adb-cli",
  "adb-proto",
  "async-stream",
  "bytes",

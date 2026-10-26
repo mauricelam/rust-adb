@@ -275,8 +275,7 @@ async fn test_forward_management_parity() {
     ];
 
     for (args, expected_msg) in usage_cases {
-        let err = client
-            .forward_with_args(&selector, args)
+        let err = adb_cli::parse_and_exec_forward(&client, &selector, args)
             .await
             .result
             .unwrap_err();

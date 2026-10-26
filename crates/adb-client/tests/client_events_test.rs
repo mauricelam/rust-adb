@@ -210,7 +210,11 @@ async fn execute_op(client: &AdbClient, op: QueryOp) -> adb_client::Outcome<Stri
         QueryOp::GetSerialNo => client.get_serialno(&selector).await,
         QueryOp::GetDevPath => client.get_devpath(&selector).await,
         QueryOp::TransportId => client.transport_id(&selector).await,
-        QueryOp::Features => client.features(&selector).await,
+        QueryOp::Features => {
+            client
+                .features(&selector, &adb_proto::FeatureOptions::default())
+                .await
+        }
         QueryOp::HostFeatures => client.host_features().await,
     }
 }

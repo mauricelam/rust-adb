@@ -417,7 +417,7 @@ async fn test_differential_no_device() {
         feat_ref_args.pop();
         feat_ref_args.push("features");
         let err_feat = client
-            .features(&selector)
+            .features(&selector, &adb_proto::FeatureOptions::default())
             .await
             .result
             .expect_err(&format!("features should fail for {name}"));
@@ -477,7 +477,7 @@ async fn test_differential_one_mock_device() {
     assert_eq!(norm(&serialno), norm(&ref_serialno.stdout));
 
     let feats = client
-        .features(&selector)
+        .features(&selector, &adb_proto::FeatureOptions::default())
         .await
         .result
         .expect("features failed");

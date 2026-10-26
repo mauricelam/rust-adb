@@ -179,8 +179,8 @@ impl std::fmt::Display for ClientEvent {
 
 /// Result of an `AdbClient` operation paired with events emitted during version check or daemon management.
 #[derive(Debug)]
-pub struct Outcome<T> {
-    pub result: Result<T, ClientError>,
+pub struct Outcome<T, E = ClientError> {
+    pub result: Result<T, E>,
     pub events: Vec<ClientEvent>,
 }
 
@@ -763,17 +763,12 @@ impl AdbClientBuilder {
     }
 }
 
-struct VersionCheckState {
-    result: Result<(), ClientError>,
-    events: std::sync::Mutex<Vec<ClientEvent>>,
-}
-
 /// Represents an ADB client instance associated with a server address.
 pub struct AdbClient {
     addr: ServerAddress,
     session_factory: Arc<dyn SessionFactory>,
     launcher: Arc<dyn ServerLauncher>,
-    version_checked: tokio::sync::OnceCell<VersionCheckState>,
+    version_checked: tokio::sync::OnceCell<()>,
 }
 
 impl AdbClient {
@@ -799,32 +794,29 @@ impl AdbClient {
 
     /// Ensures the server is running and version matches before executing host operations.
     async fn ensure_server(&self) -> Outcome<()> {
-        let state = self
+        let mut check_events = Vec::new();
+        let res = self
             .version_checked
-            .get_or_init(|| async {
-                let mut check_events = Vec::new();
-                let res = check_server_version(
+            .get_or_try_init(|| async {
+                check_server_version(
                     &self.addr,
                     self.session_factory.as_ref(),
                     self.launcher.as_ref(),
                     &mut check_events,
                 )
-                .await;
-                VersionCheckState {
-                    result: res,
-                    events: std::sync::Mutex::new(check_events),
-                }
+                .await
             })
             .await;
 
-        let events = {
-            let mut guard = state.events.lock().unwrap();
-            std::mem::take(&mut *guard)
-        };
-
-        Outcome {
-            result: state.result.clone(),
-            events,
+        match res {
+            Ok(_) => Outcome {
+                result: Ok(()),
+                events: check_events,
+            },
+            Err(err) => Outcome {
+                result: Err(err.clone()),
+                events: check_events,
+            },
         }
     }
 
@@ -872,21 +864,6 @@ impl AdbClient {
             result: res,
             events: outcome.events,
         }
-    }
-
-    /// Validates arguments for `devices` and executes query.
-    pub async fn devices_with_args(&self, args: &[&str]) -> Outcome<String> {
-        let long = match args {
-            [] => false,
-            ["-l"] => true,
-            _ => {
-                return Outcome {
-                    result: Err(ClientError::InvalidUsage("adb devices [-l]".to_string())),
-                    events: Vec::new(),
-                };
-            }
-        };
-        self.devices(long).await
     }
 
     /// Executes a general host query command formatted with transport selector.
@@ -967,7 +944,11 @@ impl AdbClient {
     /// Queries target device features and filters against client supported features (`features`).
     ///
     /// Ports `features` handling from `original/client/commandline.cpp`.
-    pub async fn features(&self, selector: &TransportSelector) -> Outcome<String> {
+    pub async fn features(
+        &self,
+        selector: &TransportSelector,
+        options: &adb_proto::FeatureOptions,
+    ) -> Outcome<String> {
         let outcome = self.ensure_server().await;
         if let Err(err) = outcome.result {
             return Outcome {
@@ -984,9 +965,7 @@ impl AdbClient {
             let payload = session.read_string().await?;
 
             let device_features = adb_proto::Features::parse(&payload);
-            let burst = std::env::var("ADB_BURST_MODE").is_ok_and(|v| v == "1");
-            let options = adb_proto::FeatureOptions { delayed_ack: burst };
-            let client_features = adb_proto::client_supported_features(&options);
+            let client_features = adb_proto::client_supported_features(options);
 
             let mut output = String::new();
             for feature in device_features.items() {
@@ -1042,19 +1021,6 @@ impl AdbClient {
         }
     }
 
-    /// Validates arguments for `connect` and executes command.
-    pub async fn connect_with_args(&self, args: &[&str]) -> Outcome<String> {
-        match args {
-            [target] => self.connect(target).await,
-            _ => Outcome {
-                result: Err(ClientError::InvalidUsage(
-                    "usage: adb connect HOST[:PORT]".to_string(),
-                )),
-                events: Vec::new(),
-            },
-        }
-    }
-
     /// Disconnects from a TCP/IP device (`host:disconnect:<target or empty>`).
     ///
     /// Ports `disconnect` command handling from `original/client/commandline.cpp`.
@@ -1081,20 +1047,6 @@ impl AdbClient {
         Outcome {
             result: res,
             events: outcome.events,
-        }
-    }
-
-    /// Validates arguments for `disconnect` and executes command.
-    pub async fn disconnect_with_args(&self, args: &[&str]) -> Outcome<String> {
-        match args {
-            [] => self.disconnect(None).await,
-            [target] => self.disconnect(Some(target)).await,
-            _ => Outcome {
-                result: Err(ClientError::InvalidUsage(
-                    "usage: adb disconnect [HOST[:PORT]]".to_string(),
-                )),
-                events: Vec::new(),
-            },
         }
     }
 
@@ -1162,29 +1114,6 @@ impl AdbClient {
         }
     }
 
-    /// Validates arguments for `track-devices` and returns tracking stream.
-    pub async fn track_devices_with_args(
-        &self,
-        args: &[&str],
-    ) -> Outcome<Pin<Box<dyn tokio_stream::Stream<Item = Result<bytes::Bytes, ClientError>> + Send>>>
-    {
-        let mode = match args {
-            [] => TrackDevicesMode::Normal,
-            ["-l"] => TrackDevicesMode::Long,
-            ["--proto-text"] => TrackDevicesMode::ProtoText,
-            ["--proto-binary"] => TrackDevicesMode::ProtoBinary,
-            _ => {
-                return Outcome {
-                    result: Err(ClientError::InvalidUsage(
-                        "usage: adb track-devices [-l][--proto-text][--proto-binary]".to_string(),
-                    )),
-                    events: Vec::new(),
-                };
-            }
-        };
-        self.track_devices(mode).await
-    }
-
     /// Runs a command on the device using Shell v1 or v2 protocol.
     ///
     /// Ports `adb_shell` and `RemoteShell` from `original/client/commandline.cpp`.
@@ -1210,7 +1139,9 @@ impl AdbClient {
             };
         }
 
-        let features_outcome = self.features(selector).await;
+        let features_outcome = self
+            .features(selector, &adb_proto::FeatureOptions::default())
+            .await;
         let features_str = match features_outcome.result {
             Ok(f) => f,
             Err(err) => {
@@ -1739,7 +1670,9 @@ impl AdbClient {
         }
 
         if remote.starts_with("dev-raw:") {
-            let features_outcome = self.features(selector).await;
+            let features_outcome = self
+                .features(selector, &adb_proto::FeatureOptions::default())
+                .await;
             let features_str = match features_outcome.result {
                 Ok(f) => f,
                 Err(err) => {
@@ -1765,15 +1698,10 @@ impl AdbClient {
         };
 
         let res = async {
-            let mut session = Session::connect_and_switch_with_config(
-                &self.addr,
-                selector,
-                &cmd,
-                true, // force_switch
-                SessionConfig::default(),
-            )
-            .await?;
-
+            let mut session = self.session_factory.connect(&self.addr).await?;
+            session.select_transport(selector).await?;
+            session.send_service(&cmd).await?;
+            session.read_status().await?;
             session.read_status().await?;
 
             let resolved_port = match session.read_string().await {
@@ -1817,15 +1745,10 @@ impl AdbClient {
 
         let cmd = format!("host:killforward:{local}");
         let res = async {
-            let mut session = Session::connect_and_switch_with_config(
-                &self.addr,
-                selector,
-                &cmd,
-                true, // force_switch
-                SessionConfig::default(),
-            )
-            .await?;
-
+            let mut session = self.session_factory.connect(&self.addr).await?;
+            session.select_transport(selector).await?;
+            session.send_service(&cmd).await?;
+            session.read_status().await?;
             session.read_status().await?;
             let _ = session.read_to_close().await;
             Ok(String::new())
@@ -1857,15 +1780,10 @@ impl AdbClient {
         }
 
         let res = async {
-            let mut session = Session::connect_and_switch_with_config(
-                &self.addr,
-                selector,
-                "host:killforward-all",
-                true, // force_switch
-                SessionConfig::default(),
-            )
-            .await?;
-
+            let mut session = self.session_factory.connect(&self.addr).await?;
+            session.select_transport(selector).await?;
+            session.send_service("host:killforward-all").await?;
+            session.read_status().await?;
             session.read_status().await?;
             let _ = session.read_to_close().await;
             Ok(String::new())
@@ -1881,80 +1799,6 @@ impl AdbClient {
                 Err(err) => Err(err.into()),
             },
             events: outcome.events,
-        }
-    }
-
-    /// Dispatches `forward` subcommands matching C++ CLI argument parsing.
-    pub async fn forward_with_args(
-        &self,
-        selector: &TransportSelector,
-        args: &[&str],
-    ) -> Outcome<String> {
-        if args.is_empty() {
-            return Outcome {
-                result: Err(ClientError::InvalidUsage(
-                    "forward requires an argument".to_string(),
-                )),
-                events: Vec::new(),
-            };
-        }
-
-        match args[0] {
-            "--list" => {
-                if args.len() != 1 {
-                    return Outcome {
-                        result: Err(ClientError::InvalidUsage(
-                            "--list doesn't take any arguments".to_string(),
-                        )),
-                        events: Vec::new(),
-                    };
-                }
-                self.forward_list(selector).await
-            }
-            "--remove-all" => {
-                if args.len() != 1 {
-                    return Outcome {
-                        result: Err(ClientError::InvalidUsage(
-                            "--remove-all doesn't take any arguments".to_string(),
-                        )),
-                        events: Vec::new(),
-                    };
-                }
-                self.forward_remove_all(selector).await
-            }
-            "--remove" => {
-                if args.len() != 2 {
-                    return Outcome {
-                        result: Err(ClientError::InvalidUsage(
-                            "--remove requires an argument".to_string(),
-                        )),
-                        events: Vec::new(),
-                    };
-                }
-                self.forward_remove(selector, args[1]).await
-            }
-            "--no-rebind" => {
-                if args.len() != 3 {
-                    return Outcome {
-                        result: Err(ClientError::InvalidUsage(
-                            "--no-rebind takes two arguments".to_string(),
-                        )),
-                        events: Vec::new(),
-                    };
-                }
-                self.forward_add(selector, args[1], args[2], true).await
-            }
-            local => {
-                if args.len() != 2 {
-                    return Outcome {
-                        result: Err(ClientError::InvalidUsage(
-                            "forward takes two arguments".to_string(),
-                        )),
-                        events: Vec::new(),
-                    };
-                }
-                self.forward_add(selector, local, args[1], false).await
-            }
         }
     }
 }

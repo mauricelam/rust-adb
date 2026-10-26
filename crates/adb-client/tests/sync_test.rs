@@ -125,6 +125,7 @@ async fn test_sync_ls_parity_v2_and_v1() {
     // 1. Test ls on empty directory /data/empty
     let mut sync = SyncSession::connect_with_selector(&client, &selector)
         .await
+        .result
         .expect("sync session connect failed");
 
     let entries_empty = sync.ls("/data/empty").await.expect("ls /data/empty failed");
@@ -179,6 +180,7 @@ async fn test_sync_ls_parity_v2_and_v1() {
     let selector_v1 = TransportSelector::Serial(mock_v1.addr.clone());
     let mut sync_v1 = SyncSession::connect_with_selector(&client, &selector_v1)
         .await
+        .result
         .expect("sync v1 session connect failed");
 
     let entries_v1 = sync_v1.ls("/data").await.expect("ls /data v1 failed");
@@ -215,6 +217,7 @@ async fn test_sync_stat_lstat_fallback() {
 
     let mut sync = SyncSession::connect_with_selector(&client, &selector)
         .await
+        .result
         .expect("sync connect failed");
 
     // 1. stat /data/f_1.bin
@@ -240,6 +243,7 @@ async fn test_sync_stat_lstat_fallback() {
 
     let mut sync_v1 = SyncSession::connect_with_selector(&client, &selector_v1)
         .await
+        .result
         .expect("sync v1 connect failed");
 
     // stat without stat_v2 returns NotSupported
@@ -292,6 +296,7 @@ async fn test_sync_overlong_path_refusal() {
 
     let mut sync = SyncSession::connect_with_selector(&client, &selector)
         .await
+        .result
         .expect("sync connect failed");
 
     let long_path = "a/".repeat(600); // 1200 bytes > 1024
@@ -334,6 +339,7 @@ async fn test_symlink_to_dir_fallback_and_stat_fields() {
 
     let mut sync = SyncSession::connect_with_selector(&client, &selector)
         .await
+        .result
         .expect("sync connect failed");
 
     // Query stat /data using fallback
