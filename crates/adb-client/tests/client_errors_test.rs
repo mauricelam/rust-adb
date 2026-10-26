@@ -190,10 +190,10 @@ fn test_client_event_display() {
     );
 
     let error_line =
-        ClientEvent::ErrorLine("error: write failure during connection: Broken pipe".to_string());
+        ClientEvent::ErrorLine("write failure during connection: Broken pipe".to_string());
     assert_eq!(
         error_line.to_string(),
-        "error: write failure during connection: Broken pipe"
+        "write failure during connection: Broken pipe"
     );
 
     let failed_to_start = ClientEvent::FailedToStartDaemon;

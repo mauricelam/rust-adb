@@ -281,9 +281,9 @@ async fn test_kill_server_fail() {
     assert_eq!(err.to_string(), "cannot kill");
     assert_eq!(
         events,
-        vec![ClientEvent::ErrorLine("error: cannot kill".into())]
+        vec![ClientEvent::ErrorLine("cannot kill".into())]
     );
-    assert_eq!(events[0].to_string(), "error: cannot kill");
+    assert_eq!(events[0].to_string(), "cannot kill");
 }
 
 #[tokio::test]

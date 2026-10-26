@@ -367,7 +367,7 @@ async fn test_shell_disable_v2_x_option_refusal() {
         .result
         .expect_err("shell -x should fail");
 
-    assert_eq!(err.to_string(), "error: -x only supports allocating a pty");
+    assert_eq!(err.to_string(), "-x only supports allocating a pty");
 
     let ref_out = server.run_client(&["-s", &mock.addr, "shell", "-x", "-T", "echo", "hello"]);
     assert_eq!(ref_out.exit_code, Some(1));
@@ -415,7 +415,7 @@ async fn test_shell_no_v2_device_refusal() {
 
     assert_eq!(
         err.to_string(),
-        "error: device only supports allocating a pty"
+        "device only supports allocating a pty"
     );
 
     let ref_out = server.run_client(&["-s", &mock.addr, "shell", "-T", "echo", "hello"]);
@@ -459,7 +459,7 @@ async fn test_shell_overlong_command_refusal() {
         .result
         .expect_err("overlong shell command should fail");
 
-    assert_eq!(err.to_string(), "error: shell command too long");
+    assert_eq!(err.to_string(), "shell command too long");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
