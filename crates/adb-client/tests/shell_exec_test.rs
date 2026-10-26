@@ -413,10 +413,7 @@ async fn test_shell_no_v2_device_refusal() {
         .result
         .expect_err("shell -T on non-v2 device should fail");
 
-    assert_eq!(
-        err.to_string(),
-        "device only supports allocating a pty"
-    );
+    assert_eq!(err.to_string(), "device only supports allocating a pty");
 
     let ref_out = server.run_client(&["-s", &mock.addr, "shell", "-T", "echo", "hello"]);
     assert_eq!(ref_out.exit_code, Some(1));

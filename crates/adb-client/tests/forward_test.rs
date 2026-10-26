@@ -219,10 +219,7 @@ async fn test_forward_management_parity() {
         .unwrap_err();
     let ref_val_dst = server.run_client(&["forward", "tcp:1234", "tcp:abc"]);
     assert!(!ref_val_dst.success());
-    assert_eq!(
-        val_dst_err.to_string(),
-        "Invalid destination port: 'abc'"
-    );
+    assert_eq!(val_dst_err.to_string(), "Invalid destination port: 'abc'");
     assert!(ref_val_dst
         .stderr
         .contains("Invalid destination port: 'abc'"));

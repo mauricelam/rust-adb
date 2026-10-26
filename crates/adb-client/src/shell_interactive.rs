@@ -411,10 +411,7 @@ mod tests {
 
         // v1 (no shell2 on device), non-interactive (requests raw) -> device only supports allocating a pty
         let err = determine_pty_allocation(&opt, false, true, false).unwrap_err();
-        assert_eq!(
-            err.to_string(),
-            "device only supports allocating a pty"
-        );
+        assert_eq!(err.to_string(), "device only supports allocating a pty");
 
         // -x (disable shell protocol), non-interactive -> -x only supports allocating a pty
         let opt_x = ShellOptions {
