@@ -72,6 +72,8 @@ async fn test_forward_management_parity() {
     });
     let selector = TransportSelector::Serial(mock.addr.clone());
 
+    let norm = |s: &str| s.replace("\r\n", "\n");
+
     // 1. List with nothing forwarded
     let list_empty = client
         .forward_list(&TransportSelector::Any)
@@ -79,7 +81,7 @@ async fn test_forward_management_parity() {
         .result
         .unwrap();
     let ref_list_empty = server.run_client(&["forward", "--list"]);
-    assert_eq!(list_empty, ref_list_empty.stdout);
+    assert_eq!(norm(&list_empty), norm(&ref_list_empty.stdout));
 
     // 2. Add tcp:0 tcp:1234
     let add_res = client
@@ -98,7 +100,7 @@ async fn test_forward_management_parity() {
         .unwrap();
     let ref_list_after_add = server.run_client(&["forward", "--list"]);
     let expected_rule = format!("{} {local_spec} tcp:1234\n", mock.addr);
-    assert_eq!(list_after_add, ref_list_after_add.stdout);
+    assert_eq!(norm(&list_after_add), norm(&ref_list_after_add.stdout));
     assert!(list_after_add.contains(&expected_rule));
 
     // 3. Add same local port twice (rebind allowed)
@@ -193,7 +195,10 @@ async fn test_forward_management_parity() {
         .result
         .unwrap();
     let ref_list_after_remove_all = server.run_client(&["forward", "--list"]);
-    assert_eq!(list_after_remove_all, ref_list_after_remove_all.stdout);
+    assert_eq!(
+        norm(&list_after_remove_all),
+        norm(&ref_list_after_remove_all.stdout)
+    );
     assert_eq!(list_after_remove_all.trim(), "");
 
     // 8. Target validation failures (forward_targets_are_valid)
