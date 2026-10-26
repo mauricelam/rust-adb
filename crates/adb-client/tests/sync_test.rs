@@ -271,7 +271,12 @@ async fn test_sync_overlong_path_refusal() {
     let mock = MockAdbdProcess::start_with_options(MockAdbdOptions::default());
     let server = TestServer::start();
 
-    let _ = server.run_client(&["connect", &mock.addr]);
+    let connect_out = server.run_client(&["connect", &mock.addr]);
+    assert!(
+        connect_out.success(),
+        "connect failed: {}",
+        connect_out.stderr
+    );
 
     let addr = ServerAddress {
         host: Some("127.0.0.1".into()),
@@ -308,7 +313,12 @@ async fn test_symlink_to_dir_fallback_and_stat_fields() {
     });
     let server = TestServer::start();
 
-    let _ = server.run_client(&["connect", &mock.addr]);
+    let connect_out = server.run_client(&["connect", &mock.addr]);
+    assert!(
+        connect_out.success(),
+        "connect failed: {}",
+        connect_out.stderr
+    );
 
     let addr = ServerAddress {
         host: Some("127.0.0.1".into()),
