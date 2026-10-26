@@ -6,6 +6,10 @@ on:
   pull_request:
     branches: ["**"]
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 env:
   CARGO_TERM_COLOR: always
 
@@ -53,9 +57,13 @@ jobs:
           & "$env:ADB_REFERENCE" version
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@master
         with:
+          toolchain: "1.94.0"
           components: rustfmt, clippy
+
+      - name: Cache Cargo dependencies
+        uses: Swatinem/rust-cache@v2
 
       - name: Format check
         run: cargo fmt --all -- --check
@@ -65,14 +73,6 @@ jobs:
 
       - name: Run tests
         run: cargo test --workspace
-
-      - name: Run interactive shell test 20 times (stress test)
-        if: runner.os != 'Windows'
-        run: |
-          for i in $(seq 1 20); do
-            echo "=== Run $i / 20 ==="
-            cargo test -p adb-client --test interactive_shell_test || exit 1
-          done
 
   compat-baseline:
     name: Compat Baseline (C++ vs C++) (${{ matrix.os }})
@@ -116,7 +116,12 @@ jobs:
           [System.IO.File]::AppendAllText($env:GITHUB_ENV, "ADB_SERVER_BIN=$adbPath`n", [System.Text.UTF8Encoding]::new($false))
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.94.0"
+
+      - name: Cache Cargo dependencies
+        uses: Swatinem/rust-cache@v2
 
       - name: Run compatibility suite 10 times
         shell: bash

@@ -1,4 +1,4 @@
-//! A library for talking to an ADB server.
+//! adb-client: Client-side library for connecting to and interacting with the ADB server.
 
 pub mod client;
 pub mod device_selection;

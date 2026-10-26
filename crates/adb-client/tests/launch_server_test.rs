@@ -253,9 +253,9 @@ async fn test_4_version_mismatch_kills_fake_server_and_starts_real_one() {
     assert_eq!(ver, ADB_SERVER_VERSION);
 }
 
-#[cfg(not(unix))]
+#[cfg(windows)]
 #[tokio::test]
-async fn test_windows_launcher_returns_unsupported() {
+async fn test_windows_launcher_spawns_process() {
     use adb_client::ServerLauncher;
 
     let port = get_free_port();
@@ -263,11 +263,10 @@ async fn test_windows_launcher_returns_unsupported() {
     let ref_adb = get_reference_adb_path();
     let launcher = ExternalBinaryLauncher::new(&ref_adb);
     let res = launcher.launch(&addr.to_spec(), None).await;
-    assert!(res.is_err());
-    match res.unwrap_err() {
-        adb_client::LaunchError::Unsupported(msg) => {
-            assert!(msg.contains("Windows server launching is not supported yet"));
-        }
-        err => panic!("Expected LaunchError::Unsupported, got {:?}", err),
+    // Process launch attempt on non-existent binary or real binary
+    if ref_adb.exists() {
+        assert!(res.is_ok());
+    } else {
+        assert!(res.is_err());
     }
 }

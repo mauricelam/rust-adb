@@ -523,7 +523,37 @@ async fn launch_binary(
     }
 }
 
-#[cfg(not(unix))]
+#[cfg(windows)]
+async fn launch_binary(
+    path: &std::path::Path,
+    spec: &str,
+    one_device: Option<&str>,
+    _config: LaunchConfig,
+) -> Result<(), LaunchError> {
+    use std::os::windows::process::CommandExt;
+    use std::process::Stdio;
+
+    const CREATE_NO_WINDOW: u32 = 0x08000000;
+
+    let mut cmd = std::process::Command::new(path);
+    cmd.stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .arg("-L")
+        .arg(spec)
+        .arg("fork-server")
+        .arg("server")
+        .creation_flags(CREATE_NO_WINDOW);
+
+    if let Some(device) = one_device {
+        cmd.arg("--one-device").arg(device);
+    }
+
+    cmd.spawn()?;
+    Ok(())
+}
+
+#[cfg(not(any(unix, windows)))]
 async fn launch_binary(
     _path: &std::path::Path,
     _spec: &str,
@@ -531,7 +561,7 @@ async fn launch_binary(
     _config: LaunchConfig,
 ) -> Result<(), LaunchError> {
     Err(LaunchError::Unsupported(
-        "Windows server launching is not supported yet".to_string(),
+        "Server launching is not supported on this platform".to_string(),
     ))
 }
 
