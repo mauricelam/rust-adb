@@ -155,13 +155,16 @@ fn test_binary_checksum_validation() {
 
 /// Normalizes output strings for cross-platform and dynamic environment comparisons:
 /// - Converts CRLF to LF
+/// - Replaces dynamic `Version ...` release lines with `Version [VERSION]`
 /// - Replaces dynamic `Installed as ...` path lines with `Installed as [PATH]`
 /// - Replaces dynamic `Running on ...` OS lines with `Running on [OS]`
 fn normalize_cli_output(input: &str) -> String {
     let s = input.replace("\r\n", "\n");
     let mut lines = Vec::new();
     for line in s.lines() {
-        if line.starts_with("Installed as ") {
+        if line.starts_with("Version ") {
+            lines.push("Version [VERSION]".to_string());
+        } else if line.starts_with("Installed as ") {
             lines.push("Installed as [PATH]".to_string());
         } else if line.starts_with("Running on ") {
             lines.push("Running on [OS]".to_string());
