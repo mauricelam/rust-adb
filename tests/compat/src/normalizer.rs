@@ -15,7 +15,7 @@ pub struct GoldenCase {
 static PROG_NAME_RE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"(?m)^(\s*)adb(?:\.exe)?:").unwrap());
 
-// Match tcp:5037 or tcp:localhost:5037 (port must be > 0 so tcp:0 in help text is preserved)
+// Match tcp:5037 or tcp:localhost:5037 or tcp:127.0.0.1:5037
 static TCP_PORT_RE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"(tcp:(?:[a-zA-Z0-9\.]+:)?)[1-9]\d*").unwrap());
 
@@ -28,6 +28,12 @@ static INSTALLED_AS_RE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"(Installed as )\S+").unwrap());
 
 static RUNNING_ON_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(Running on ).*").unwrap());
+
+// Match WSA / OS-specific connection refused error details on Windows or other OSes
+static CONN_REFUSED_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"(cannot connect to daemon at tcp:<port>: ).*(?:refused|actively refused).*")
+        .unwrap()
+});
 
 /// Rule 1: Normalize line endings CRLF -> LF.
 pub fn normalize_line_endings(input: &str) -> String {
@@ -71,13 +77,30 @@ pub fn normalize_version(input: &str) -> String {
     RUNNING_ON_RE.replace_all(&s, "${1}<os>").to_string()
 }
 
+/// Rule 6: Remove OS-specific help lines (e.g. `--local-agent` on Linux/macOS vs Windows)
+/// and normalize connection refused OS error text.
+pub fn normalize_os_differences(input: &str) -> String {
+    let mut lines = Vec::new();
+    for line in input.split('\n') {
+        if line.contains("--local-agent") {
+            continue;
+        }
+        lines.push(line);
+    }
+    let s = lines.join("\n");
+    CONN_REFUSED_RE
+        .replace_all(&s, "${1}Connection refused")
+        .to_string()
+}
+
 /// Master normalizer combining all rules in sequence.
 pub fn normalize_output(input: &str) -> String {
     let s = normalize_line_endings(input);
     let s = normalize_program_name(&s);
     let s = normalize_server_ports(&s);
     let s = normalize_temp_paths(&s);
-    normalize_version(&s)
+    let s = normalize_version(&s);
+    normalize_os_differences(&s)
 }
 
 #[cfg(test)]
@@ -154,6 +177,18 @@ mod tests {
         let expected =
             "Android Debug Bridge version <version>\nVersion <version>\nInstalled as <path>\nRunning on <os>\n";
         assert_eq!(normalize_version(ver), expected);
+    }
+
+    #[test]
+    fn test_normalize_os_differences() {
+        let win_err = "cannot connect to daemon at tcp:<port>: cannot connect to 127.0.0.1:58273: No connection could be made because the target machine actively refused it. (10061)\n";
+        assert_eq!(
+            normalize_os_differences(win_err),
+            "cannot connect to daemon at tcp:<port>: Connection refused\n"
+        );
+
+        let help_text = "     --local-agent: locate agent files\n     uninstall [-k]\n";
+        assert_eq!(normalize_os_differences(help_text), "     uninstall [-k]\n");
     }
 
     #[test]
