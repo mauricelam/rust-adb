@@ -1,4 +1,4 @@
-//! Message types, serialization, shell v2 framing, smart-socket framing, connection banners, features, and the sync protocol. Pure code, no I/O.
+//! adb-proto: Message types, serialization, shell v2 framing, smart-socket framing, connection banners, features, and the sync protocol. Pure code, no I/O.
 
 pub mod auth;
 pub mod banner;

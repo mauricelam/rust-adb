@@ -1,4 +1,4 @@
-//! RSA keys, Android's public-key format, adbkey handling, TLS and pairing.
+//! adb-auth: RSA keys, Android's public-key format, adbkey handling, TLS and pairing.
 
 pub mod host_auth;
 pub mod keys;

@@ -1,4 +1,4 @@
-//! A Transport trait with TCP, USB and emulator implementations.
+//! adb-transport: Connection and transport interfaces for USB, TCP/IP, and mDNS.
 
 #[cfg(test)]
 mod tests {

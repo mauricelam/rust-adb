@@ -2,7 +2,7 @@
 
 ## Overview
 
-This project is a modern, safe, and performant implementation of the Android Debug Bridge (ADB) protocol in Rust, designed for strict behavioral parity with upstream C++ ADB. For key architectural decisions and guidelines, refer to [docs/decisions.md](docs/decisions.md). The repository is structured as a Cargo workspace consisting of six crates:
+This project is a modern, safe, and performant implementation of the Android Debug Bridge (ADB) protocol in Rust, designed for strict behavioral parity with upstream C++ ADB. For key architectural decisions and guidelines, refer to [docs/decisions.md](docs/decisions.md). The repository is structured as a Cargo workspace consisting of six crates under `crates/` (the obsolete legacy `rust/` directory has been removed):
 
 - `adb-proto`: Wire protocol packet definitions, serialization, and framing logic.
 - `adb-auth`: Key generation, RSA key handling, and authentication protocols.

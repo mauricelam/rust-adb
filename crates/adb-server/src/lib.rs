@@ -1,4 +1,4 @@
-//! Device registry, stream multiplexing, port forwarding and device tracking.
+//! adb-server: Host server daemon implementation and service routing.
 
 #[cfg(test)]
 mod tests {
