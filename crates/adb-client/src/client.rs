@@ -44,6 +44,37 @@ pub fn escape_arg(s: &str) -> String {
     result
 }
 
+/// Validates forward/reverse targets.
+///
+/// Ports `forward_targets_are_valid` from C++ `original/adb_utils.cpp`.
+pub fn forward_targets_are_valid(source: &str, dest: &str) -> Result<(), String> {
+    if let Some(port_str) = source.strip_prefix("tcp:") {
+        match port_str.parse::<i32>() {
+            Ok(port) if port >= 0 => {}
+            _ => return Err(format!("Invalid source port: '{port_str}'")),
+        }
+    }
+
+    if let Some(port_str) = dest.strip_prefix("tcp:") {
+        match port_str.parse::<i32>() {
+            Ok(port) if port > 0 => {}
+            _ => return Err(format!("Invalid destination port: '{port_str}'")),
+        }
+    }
+
+    Ok(())
+}
+
+/// Checks if destination target is supported by device feature set.
+///
+/// Ports `forward_dest_is_featured` from C++ `original/client/commandline.cpp`.
+pub fn forward_dest_is_featured(dest: &str, features: &adb_proto::Features) -> Result<(), String> {
+    if dest.starts_with("dev-raw:") && !features.contains(&adb_proto::Feature::DevRaw) {
+        return Err("dev-raw is not supported by the device".to_string());
+    }
+    Ok(())
+}
+
 /// Options for device shell execution.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ShellOptions {
@@ -1622,6 +1653,278 @@ impl AdbClient {
         Outcome {
             result: res,
             events: outcome.events,
+        }
+    }
+
+    /// Lists all forward socket connections (`host:list-forward`).
+    ///
+    /// Ports `forward --list` handling from `original/client/commandline.cpp`.
+    pub async fn forward_list(&self, _selector: &TransportSelector) -> Outcome<String> {
+        let outcome = self.ensure_server().await;
+        if let Err(err) = outcome.result {
+            return Outcome {
+                result: Err(err),
+                events: outcome.events,
+            };
+        }
+
+        let res = async {
+            let mut session = self.session_factory.connect(&self.addr).await?;
+            session.send_service("host:list-forward").await?;
+            session.read_status().await?;
+            let payload = session.read_string().await?;
+            Ok(format!("{payload}\n"))
+        }
+        .await;
+
+        Outcome {
+            result: res,
+            events: outcome.events,
+        }
+    }
+
+    /// Adds a forward socket connection.
+    ///
+    /// Ports `forward` and `forward --no-rebind` handling from `original/client/commandline.cpp`.
+    pub async fn forward_add(
+        &self,
+        selector: &TransportSelector,
+        local: &str,
+        remote: &str,
+        no_rebind: bool,
+    ) -> Outcome<String> {
+        let outcome = self.ensure_server().await;
+        if let Err(err) = outcome.result {
+            return Outcome {
+                result: Err(err),
+                events: outcome.events,
+            };
+        }
+
+        if let Err(msg) = forward_targets_are_valid(local, remote) {
+            return Outcome {
+                result: Err(ClientError::QueryFailed(format!("error: {msg}"))),
+                events: outcome.events,
+            };
+        }
+
+        if remote.starts_with("dev-raw:") {
+            let features_outcome = self.features(selector).await;
+            let features_str = match features_outcome.result {
+                Ok(f) => f,
+                Err(err) => {
+                    return Outcome {
+                        result: Err(err),
+                        events: outcome.events,
+                    };
+                }
+            };
+            let features = adb_proto::Features::parse(&features_str.replace('\n', ","));
+            if let Err(msg) = forward_dest_is_featured(remote, &features) {
+                return Outcome {
+                    result: Err(ClientError::QueryFailed(format!("error: {msg}"))),
+                    events: outcome.events,
+                };
+            }
+        }
+
+        let cmd = if no_rebind {
+            format!("host:forward:norebind:{local};{remote}")
+        } else {
+            format!("host:forward:{local};{remote}")
+        };
+
+        let res = async {
+            let mut session = Session::connect_and_switch_with_config(
+                &self.addr,
+                selector,
+                &cmd,
+                true, // force_switch
+                SessionConfig::default(),
+            )
+            .await?;
+
+            session.read_status().await?;
+
+            let resolved_port = match session.read_string().await {
+                Ok(port) if !port.is_empty() => format!("{port}\n"),
+                _ => String::new(),
+            };
+
+            let _ = session.read_to_close().await;
+
+            Ok(resolved_port)
+        }
+        .await;
+
+        Outcome {
+            result: match res {
+                Ok(out) => Ok(out),
+                Err(SessionError::Fail(reason)) => {
+                    Err(ClientError::QueryFailed(format!("error: {reason}")))
+                }
+                Err(err) => Err(err.into()),
+            },
+            events: outcome.events,
+        }
+    }
+
+    /// Removes a specific forward socket connection (`host:killforward:<local>`).
+    ///
+    /// Ports `forward --remove` handling from `original/client/commandline.cpp`.
+    pub async fn forward_remove(
+        &self,
+        selector: &TransportSelector,
+        local: &str,
+    ) -> Outcome<String> {
+        let outcome = self.ensure_server().await;
+        if let Err(err) = outcome.result {
+            return Outcome {
+                result: Err(err),
+                events: outcome.events,
+            };
+        }
+
+        let cmd = format!("host:killforward:{local}");
+        let res = async {
+            let mut session = Session::connect_and_switch_with_config(
+                &self.addr,
+                selector,
+                &cmd,
+                true, // force_switch
+                SessionConfig::default(),
+            )
+            .await?;
+
+            session.read_status().await?;
+            let _ = session.read_to_close().await;
+            Ok(String::new())
+        }
+        .await;
+
+        Outcome {
+            result: match res {
+                Ok(out) => Ok(out),
+                Err(SessionError::Fail(reason)) => {
+                    Err(ClientError::QueryFailed(format!("error: {reason}")))
+                }
+                Err(err) => Err(err.into()),
+            },
+            events: outcome.events,
+        }
+    }
+
+    /// Removes all forward socket connections (`host:killforward-all`).
+    ///
+    /// Ports `forward --remove-all` handling from `original/client/commandline.cpp`.
+    pub async fn forward_remove_all(&self, selector: &TransportSelector) -> Outcome<String> {
+        let outcome = self.ensure_server().await;
+        if let Err(err) = outcome.result {
+            return Outcome {
+                result: Err(err),
+                events: outcome.events,
+            };
+        }
+
+        let res = async {
+            let mut session = Session::connect_and_switch_with_config(
+                &self.addr,
+                selector,
+                "host:killforward-all",
+                true, // force_switch
+                SessionConfig::default(),
+            )
+            .await?;
+
+            session.read_status().await?;
+            let _ = session.read_to_close().await;
+            Ok(String::new())
+        }
+        .await;
+
+        Outcome {
+            result: match res {
+                Ok(out) => Ok(out),
+                Err(SessionError::Fail(reason)) => {
+                    Err(ClientError::QueryFailed(format!("error: {reason}")))
+                }
+                Err(err) => Err(err.into()),
+            },
+            events: outcome.events,
+        }
+    }
+
+    /// Dispatches `forward` subcommands matching C++ CLI argument parsing.
+    pub async fn forward_with_args(
+        &self,
+        selector: &TransportSelector,
+        args: &[&str],
+    ) -> Outcome<String> {
+        if args.is_empty() {
+            return Outcome {
+                result: Err(ClientError::InvalidUsage(
+                    "forward requires an argument".to_string(),
+                )),
+                events: Vec::new(),
+            };
+        }
+
+        match args[0] {
+            "--list" => {
+                if args.len() != 1 {
+                    return Outcome {
+                        result: Err(ClientError::InvalidUsage(
+                            "--list doesn't take any arguments".to_string(),
+                        )),
+                        events: Vec::new(),
+                    };
+                }
+                self.forward_list(selector).await
+            }
+            "--remove-all" => {
+                if args.len() != 1 {
+                    return Outcome {
+                        result: Err(ClientError::InvalidUsage(
+                            "--remove-all doesn't take any arguments".to_string(),
+                        )),
+                        events: Vec::new(),
+                    };
+                }
+                self.forward_remove_all(selector).await
+            }
+            "--remove" => {
+                if args.len() != 2 {
+                    return Outcome {
+                        result: Err(ClientError::InvalidUsage(
+                            "--remove requires an argument".to_string(),
+                        )),
+                        events: Vec::new(),
+                    };
+                }
+                self.forward_remove(selector, args[1]).await
+            }
+            "--no-rebind" => {
+                if args.len() != 3 {
+                    return Outcome {
+                        result: Err(ClientError::InvalidUsage(
+                            "--no-rebind takes two arguments".to_string(),
+                        )),
+                        events: Vec::new(),
+                    };
+                }
+                self.forward_add(selector, args[1], args[2], true).await
+            }
+            local => {
+                if args.len() != 2 {
+                    return Outcome {
+                        result: Err(ClientError::InvalidUsage(
+                            "forward takes two arguments".to_string(),
+                        )),
+                        events: Vec::new(),
+                    };
+                }
+                self.forward_add(selector, local, args[1], false).await
+            }
         }
     }
 }
