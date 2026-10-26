@@ -666,12 +666,15 @@ impl SyncSession {
         let mut dst_isdir = false;
 
         let stripped_path_buf = stripped_path.to_path_buf();
-        let dst_parent_buf = dst.parent().unwrap_or_else(|| std::path::Path::new("")).to_path_buf();
+        let dst_parent_buf = dst
+            .parent()
+            .unwrap_or_else(|| std::path::Path::new(""))
+            .to_path_buf();
         let sources_len = sources.len();
         let dst_str_clone = dst_str.clone();
 
-        let meta_res = tokio::task::spawn_blocking(move || {
-            match std::fs::metadata(&stripped_path_buf) {
+        let meta_res =
+            tokio::task::spawn_blocking(move || match std::fs::metadata(&stripped_path_buf) {
                 Ok(st) => Ok(st.is_dir()),
                 Err(err) => {
                     if sources_len == 1 && err.kind() == std::io::ErrorKind::NotFound {
@@ -685,16 +688,15 @@ impl SyncSession {
                                 "cannot create file/directory '{dst_str_clone}': {parent_err}"
                             ))
                         } else {
-                            Err(format!("NOT_FOUND_OK"))
+                            Err("NOT_FOUND_OK".to_string())
                         }
                     } else {
                         Err(format!("failed to access '{dst_str_clone}': {err}"))
                     }
                 }
-            }
-        })
-        .await
-        .map_err(|e| SyncError::Io(std::io::Error::new(std::io::ErrorKind::Other, e)))?;
+            })
+            .await
+            .map_err(|e| SyncError::Io(std::io::Error::other(e)))?;
 
         match meta_res {
             Ok(is_dir) => {
@@ -796,7 +798,7 @@ impl SyncSession {
                             set_time_and_mode(&target_path_for_attr, mtime, mode)
                         })
                         .await
-                        .map_err(|e| SyncError::Io(std::io::Error::new(std::io::ErrorKind::Other, e)))?;
+                        .map_err(|e| SyncError::Io(std::io::Error::other(e)))?;
 
                         if let Err(e) = attr_res {
                             let msg =
@@ -1044,11 +1046,10 @@ impl SyncSession {
             let local_path = std::path::Path::new(src_path);
 
             let local_path_buf = local_path.to_path_buf();
-            let sym_meta_res = tokio::task::spawn_blocking(move || {
-                std::fs::symlink_metadata(&local_path_buf)
-            })
-            .await
-            .map_err(|e| SyncError::Io(std::io::Error::new(std::io::ErrorKind::Other, e)))?;
+            let sym_meta_res =
+                tokio::task::spawn_blocking(move || std::fs::symlink_metadata(&local_path_buf))
+                    .await
+                    .map_err(|e| SyncError::Io(std::io::Error::other(e)))?;
 
             let local_st = match sym_meta_res {
                 Ok(st) => st,
@@ -1317,7 +1318,9 @@ impl SyncSession {
                 let mut chunk = vec![0u8; SYNC_DATA_MAX];
                 let n = match file.read(&mut chunk) {
                     Ok(n) => n,
-                    Err(e) => return Err((file, format!("reading '{lpath_buf}' locally failed: {e}"))),
+                    Err(e) => {
+                        return Err((file, format!("reading '{lpath_buf}' locally failed: {e}")))
+                    }
                 };
                 chunk.truncate(n);
                 Ok((file, chunk))
