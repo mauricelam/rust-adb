@@ -5,6 +5,12 @@ edition.workspace = true
 rust-version.workspace = true
 publish.workspace = true
 
+[dependencies]
+adb-client = { path = "../adb-client" }
+bytes = "1"
+tokio = { version = "1", features = ["full"] }
+tokio-stream = "0.1"
+
 [[bin]]
 name = "adb"
 path = "src/main.rs"

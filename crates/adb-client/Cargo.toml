@@ -16,6 +16,7 @@ tokio-stream = "0.1"
 libc = "0.2"
 
 [dev-dependencies]
+adb-cli = { path = "../adb-cli" }
 compat = { path = "../../tests/compat" }
 mock-adbd = { path = "../../tools/mock-adbd" }
 temp-env = "0.3"

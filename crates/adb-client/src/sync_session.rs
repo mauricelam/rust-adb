@@ -1,4 +1,4 @@
-use crate::client::AdbClient;
+use crate::client::{AdbClient, Outcome};
 use crate::session::{Session, SessionError};
 use crate::transport::TransportSelector;
 use adb_proto::sync::{
@@ -238,7 +238,7 @@ pub struct SyncSession {
 
 impl SyncSession {
     /// Connects a sync session using default transport selector (`Any`).
-    pub async fn connect(client: &AdbClient) -> Result<Self, SyncError> {
+    pub async fn connect(client: &AdbClient) -> Outcome<Self, SyncError> {
         Self::connect_with_selector(client, &TransportSelector::Any).await
     }
 
@@ -246,13 +246,19 @@ impl SyncSession {
     pub async fn connect_with_selector(
         client: &AdbClient,
         selector: &TransportSelector,
-    ) -> Result<Self, SyncError> {
-        let features_res = client.features(selector).await;
+    ) -> Outcome<Self, SyncError> {
+        let features_res = client
+            .features(selector, &adb_proto::FeatureOptions::default())
+            .await;
+        let events = features_res.events;
         let features_str = match features_res.result {
             Ok(f) => f,
             Err(e) => {
                 let err_msg = format!("failed to get feature set: {e}");
-                return Err(SyncError::ConnectFailed(err_msg));
+                return Outcome {
+                    result: Err(SyncError::ConnectFailed(err_msg)),
+                    events,
+                };
             }
         };
 
@@ -273,37 +279,52 @@ impl SyncSession {
             Ok(s) => s,
             Err(e) => {
                 let err_msg = format!("connect failed: {e}");
-                return Err(SyncError::ConnectFailed(err_msg));
+                return Outcome {
+                    result: Err(SyncError::ConnectFailed(err_msg)),
+                    events,
+                };
             }
         };
 
         if let Err(e) = session.select_transport(selector).await {
             let err_msg = format!("connect failed: {e}");
-            return Err(SyncError::ConnectFailed(err_msg));
+            return Outcome {
+                result: Err(SyncError::ConnectFailed(err_msg)),
+                events,
+            };
         }
 
         if let Err(e) = session.send_service("sync:").await {
             let err_msg = format!("connect failed: {e}");
-            return Err(SyncError::ConnectFailed(err_msg));
+            return Outcome {
+                result: Err(SyncError::ConnectFailed(err_msg)),
+                events,
+            };
         }
 
         if let Err(e) = session.read_status().await {
             let err_msg = format!("connect failed: {e}");
-            return Err(SyncError::ConnectFailed(err_msg));
+            return Outcome {
+                result: Err(SyncError::ConnectFailed(err_msg)),
+                events,
+            };
         }
 
-        Ok(Self {
-            session,
-            features,
-            have_stat_v2,
-            have_ls_v2,
-            have_sendrecv_v2,
-            have_sendrecv_v2_brotli,
-            have_sendrecv_v2_lz4,
-            have_sendrecv_v2_zstd,
-            have_sendrecv_v2_dry_run_send,
-            have_fixed_push_mkdir,
-        })
+        Outcome {
+            result: Ok(Self {
+                session,
+                features,
+                have_stat_v2,
+                have_ls_v2,
+                have_sendrecv_v2,
+                have_sendrecv_v2_brotli,
+                have_sendrecv_v2_lz4,
+                have_sendrecv_v2_zstd,
+                have_sendrecv_v2_dry_run_send,
+                have_fixed_push_mkdir,
+            }),
+            events,
+        }
     }
 
     pub fn features(&self) -> &adb_proto::Features {

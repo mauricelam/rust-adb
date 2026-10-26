@@ -80,13 +80,15 @@ async fn test_usage_errors() {
     let client = AdbClient::new(addr);
 
     // connect usage errors
-    let err = client.connect_with_args(&[]).await.result.unwrap_err();
+    let err = adb_cli::parse_and_exec_connect(&client, &[])
+        .await
+        .result
+        .unwrap_err();
     assert!(
         matches!(&err, ClientError::InvalidUsage(msg) if msg == "usage: adb connect HOST[:PORT]")
     );
 
-    let err = client
-        .connect_with_args(&["a", "b"])
+    let err = adb_cli::parse_and_exec_connect(&client, &["a", "b"])
         .await
         .result
         .unwrap_err();
@@ -95,8 +97,7 @@ async fn test_usage_errors() {
     );
 
     // disconnect usage errors
-    let err = client
-        .disconnect_with_args(&["a", "b"])
+    let err = adb_cli::parse_and_exec_disconnect(&client, &["a", "b"])
         .await
         .result
         .unwrap_err();
@@ -105,8 +106,7 @@ async fn test_usage_errors() {
     );
 
     // track-devices usage errors
-    let err = client
-        .track_devices_with_args(&["-l", "--proto-text"])
+    let err = adb_cli::parse_and_exec_track_devices(&client, &["-l", "--proto-text"])
         .await
         .result
         .err()
@@ -115,8 +115,7 @@ async fn test_usage_errors() {
         matches!(&err, ClientError::InvalidUsage(msg) if msg == "usage: adb track-devices [-l][--proto-text][--proto-binary]")
     );
 
-    let err = client
-        .track_devices_with_args(&["--unknown"])
+    let err = adb_cli::parse_and_exec_track_devices(&client, &["--unknown"])
         .await
         .result
         .err()

@@ -150,6 +150,7 @@ async fn test_pull_file_sizes_and_attrs_parity_v2_and_v1() {
             // Pull using SyncSession
             let mut sync = SyncSession::connect_with_selector(&client, &selector)
                 .await
+                .result
                 .expect("sync connect failed");
 
             let opts = PullOptions {
@@ -241,6 +242,7 @@ async fn test_pull_destination_rules() {
 
     let mut sync = SyncSession::connect_with_selector(&client, &selector)
         .await
+        .result
         .expect("sync connect failed");
 
     let opts = PullOptions::default();
@@ -318,6 +320,7 @@ async fn test_pull_remote_missing_and_fail_and_cleanup() {
 
     let mut sync = SyncSession::connect_with_selector(&client, &selector)
         .await
+        .result
         .expect("sync connect failed");
 
     let temp_dir = TempDir::new().unwrap();
@@ -376,6 +379,7 @@ async fn test_pull_mid_transfer_disconnect() {
 
     let mut sync = SyncSession::connect_with_selector(&client, &selector)
         .await
+        .result
         .expect("sync connect failed");
 
     let temp_dir = TempDir::new().unwrap();
@@ -415,6 +419,7 @@ async fn test_pull_compression_rejection() {
 
     let mut sync = SyncSession::connect_with_selector(&client, &selector)
         .await
+        .result
         .expect("sync connect failed");
 
     let temp_dir = TempDir::new().unwrap();

@@ -90,6 +90,7 @@ async fn test_push_file_sizes_and_attrs_parity_v2_and_v1() {
             // Push using Rust SyncSession into mock_rust
             let mut sync = SyncSession::connect_with_selector(&client, &selector_rust)
                 .await
+                .result
                 .expect("sync connect failed");
 
             let push_opts = PushOptions::default();
@@ -170,6 +171,7 @@ async fn test_push_symlink_and_readonly_mode() {
     let selector = TransportSelector::Serial(mock_addr.clone());
     let mut sync = SyncSession::connect_with_selector(&client, &selector)
         .await
+        .result
         .unwrap();
 
     let temp_dir = TempDir::new().unwrap();
@@ -253,6 +255,7 @@ async fn test_push_destination_rules() {
     let selector = TransportSelector::Serial(mock_addr.clone());
     let mut sync = SyncSession::connect_with_selector(&client, &selector)
         .await
+        .result
         .unwrap();
 
     let temp_dir = TempDir::new().unwrap();
@@ -345,6 +348,7 @@ async fn test_push_unreadable_local_file() {
     let selector = TransportSelector::Serial(mock_addr.clone());
     let mut sync = SyncSession::connect_with_selector(&client, &selector)
         .await
+        .result
         .unwrap();
 
     let temp_dir = TempDir::new().unwrap();
@@ -396,6 +400,7 @@ async fn test_push_deferred_acknowledgements_128_files() {
     let selector = TransportSelector::Serial(mock_addr.clone());
     let mut sync = SyncSession::connect_with_selector(&client, &selector)
         .await
+        .result
         .unwrap();
 
     let temp_dir = TempDir::new().unwrap();
@@ -456,6 +461,7 @@ async fn test_push_failing_device_mid_batch() {
     let selector = TransportSelector::Serial(mock_addr.clone());
     let mut sync = SyncSession::connect_with_selector(&client, &selector)
         .await
+        .result
         .unwrap();
 
     let temp_dir = TempDir::new().unwrap();
@@ -508,6 +514,7 @@ async fn test_push_options_rejections() {
     let selector = TransportSelector::Serial(mock_addr.clone());
     let mut sync = SyncSession::connect_with_selector(&client, &selector)
         .await
+        .result
         .unwrap();
 
     let temp_dir = TempDir::new().unwrap();
