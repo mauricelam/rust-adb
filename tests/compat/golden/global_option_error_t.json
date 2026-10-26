@@ -1,0 +1,10 @@
+{
+  "args": [
+    "-t",
+    "abc"
+  ],
+  "env": [],
+  "stdout": "",
+  "stderr": "<prog>: invalid transport id\n",
+  "exit_code": 1
+}

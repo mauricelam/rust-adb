@@ -1,0 +1,9 @@
+{
+  "args": [
+    "get-devpath"
+  ],
+  "env": [],
+  "stdout": "",
+  "stderr": "error: no devices/emulators found\n",
+  "exit_code": 1
+}

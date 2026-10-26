@@ -1,0 +1,9 @@
+{
+  "args": [
+    "-H"
+  ],
+  "env": [],
+  "stdout": "",
+  "stderr": "<prog>: -H requires an argument\n",
+  "exit_code": 1
+}

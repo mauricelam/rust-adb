@@ -1,0 +1,10 @@
+{
+  "args": [
+    "forward",
+    "--remove"
+  ],
+  "env": [],
+  "stdout": "",
+  "stderr": "<prog>: --remove requires an argument\n",
+  "exit_code": 1
+}

@@ -1,0 +1,9 @@
+{
+  "args": [
+    "features"
+  ],
+  "env": [],
+  "stdout": "",
+  "stderr": "<prog>: no devices/emulators found\n",
+  "exit_code": 1
+}

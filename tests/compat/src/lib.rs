@@ -1,3 +1,6 @@
+pub mod normalizer;
+pub use normalizer::*;
+
 use std::env;
 use std::io::{Read, Write};
 use std::net::TcpListener;

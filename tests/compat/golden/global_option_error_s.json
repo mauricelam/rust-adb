@@ -1,0 +1,9 @@
+{
+  "args": [
+    "-s"
+  ],
+  "env": [],
+  "stdout": "",
+  "stderr": "<prog>: -s requires an argument\n",
+  "exit_code": 1
+}

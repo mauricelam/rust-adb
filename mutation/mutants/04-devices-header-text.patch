@@ -1,0 +1,13 @@
+diff --git a/client/commandline.cpp b/client/commandline.cpp
+index 0e77793..3453feb 100644
+--- a/client/commandline.cpp
++++ b/client/commandline.cpp
+@@ -1754,7 +1754,7 @@ int adb_commandline(int argc, const char** argv) {
+         if (!adb_check_server_version(&error)) {
+             error_exit("failed to check server version: %s", error.c_str());
+         }
+-        printf("List of devices attached\n");
++        printf("Attached devices:\n");
+         return adb_query_command(query);
+     } else if (!strcmp(argv[0], "transport-id")) {
+         TransportId transport_id;

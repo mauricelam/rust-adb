@@ -1,0 +1,9 @@
+{
+  "args": [
+    "connect"
+  ],
+  "env": [],
+  "stdout": "",
+  "stderr": "<prog>: usage: adb connect HOST[:PORT]\n",
+  "exit_code": 1
+}

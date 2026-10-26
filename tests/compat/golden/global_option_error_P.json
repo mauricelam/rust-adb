@@ -1,0 +1,10 @@
+{
+  "args": [
+    "-P",
+    "99999"
+  ],
+  "env": [],
+  "stdout": "",
+  "stderr": "<prog>: $ANDROID_ADB_SERVER_PORT must be a positive number less than 65535: got \"99999\"\n",
+  "exit_code": 1
+}

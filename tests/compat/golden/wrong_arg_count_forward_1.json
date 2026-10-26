@@ -1,0 +1,10 @@
+{
+  "args": [
+    "forward",
+    "a"
+  ],
+  "env": [],
+  "stdout": "",
+  "stderr": "<prog>: forward takes two arguments\n",
+  "exit_code": 1
+}
