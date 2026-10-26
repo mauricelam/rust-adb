@@ -14,4 +14,5 @@ libc = "0.2"
 [dev-dependencies]
 assert_cmd = "2"
 predicates = "3"
+sha2 = "0.10"
 mock-adbd = { path = "../../tools/mock-adbd" }

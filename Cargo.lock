@@ -341,6 +341,7 @@ dependencies = [
  "libc",
  "mock-adbd",
  "predicates",
+ "sha2",
  "tempfile",
 ]
 
