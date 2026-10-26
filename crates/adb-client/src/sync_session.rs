@@ -11,6 +11,36 @@ use std::fmt;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 /// Converts wire errno values (Linux asm-generic) to host OS errno.
+#[cfg(unix)]
+pub fn errno_from_wire(wire: u32) -> i32 {
+    match wire {
+        0 => 0,
+        1 => libc::EPERM,
+        2 => libc::ENOENT,
+        4 => libc::EINTR,
+        5 => libc::EIO,
+        12 => libc::ENOMEM,
+        13 => libc::EACCES,
+        14 => libc::EFAULT,
+        17 => libc::EEXIST,
+        20 => libc::ENOTDIR,
+        21 => libc::EISDIR,
+        22 => libc::EINVAL,
+        23 => libc::ENFILE,
+        24 => libc::EMFILE,
+        26 => libc::ETXTBSY,
+        27 => libc::EFBIG,
+        28 => libc::ENOSPC,
+        30 => libc::EROFS,
+        36 => libc::ENAMETOOLONG,
+        40 => libc::ELOOP,
+        75 => libc::EOVERFLOW,
+        _ => libc::EIO,
+    }
+}
+
+/// Converts wire errno values (Linux asm-generic) to host OS errno.
+#[cfg(windows)]
 pub fn errno_from_wire(wire: u32) -> i32 {
     match wire {
         0 => 0,
@@ -38,9 +68,18 @@ pub fn errno_from_wire(wire: u32) -> i32 {
     }
 }
 
+/// Converts a host OS errno to standard, human-readable error string matching `strerror(errno)`.
+pub fn errno_to_string(errno: i32) -> String {
+    if errno == 0 {
+        return "Success".to_string();
+    }
+    std::io::Error::from_raw_os_error(errno).to_string()
+}
+
 /// Errors that can occur during a Sync session operation.
 #[derive(Debug)]
 pub enum SyncError {
+    InvalidResponse,
     ConnectFailed(String),
     PathTooLong {
         message: String,
@@ -72,6 +111,7 @@ impl SyncError {
 impl fmt::Display for SyncError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            SyncError::InvalidResponse => write!(f, "invalid response"),
             SyncError::ConnectFailed(msg) => write!(f, "adb: error: {msg}"),
             SyncError::PathTooLong { message, .. } => write!(f, "{message}"),
             SyncError::NotSupported(msg) => write!(f, "{msg}"),
@@ -521,13 +561,11 @@ impl SyncSession {
             let error = u32::from_le_bytes(buf[4..8].try_into().unwrap());
             if error != 0 {
                 let host_errno = errno_from_wire(error);
+                let message = errno_to_string(host_errno);
                 return Err(SyncError::Errno {
                     wire: error,
                     errno: host_errno,
-                    message: match host_errno {
-                        2 => "No such file or directory".to_string(),
-                        _ => format!("wire error {error}"),
-                    },
+                    message,
                 });
             }
 
@@ -572,10 +610,12 @@ impl SyncSession {
             let mtime = u32::from_le_bytes(buf[12..16].try_into().unwrap());
 
             if mode == 0 && size == 0 && mtime == 0 {
+                let host_errno = errno_from_wire(2);
+                let message = errno_to_string(host_errno);
                 return Err(SyncError::Errno {
                     wire: 2,
-                    errno: 2,
-                    message: "No such file or directory".to_string(),
+                    errno: host_errno,
+                    message,
                 });
             }
 
@@ -625,30 +665,47 @@ impl SyncSession {
         let mut dst_exists = true;
         let mut dst_isdir = false;
 
-        match std::fs::metadata(stripped_path) {
-            Ok(st) => {
-                dst_isdir = st.is_dir();
-            }
-            Err(err) => {
-                dst_exists = false;
-                if sources.len() == 1 && err.kind() == std::io::ErrorKind::NotFound {
-                    let parent = dst.parent().unwrap_or_else(|| std::path::Path::new(""));
-                    let parent = if parent.as_os_str().is_empty() {
-                        std::path::Path::new(".")
+        let stripped_path_buf = stripped_path.to_path_buf();
+        let dst_parent_buf = dst.parent().unwrap_or_else(|| std::path::Path::new("")).to_path_buf();
+        let sources_len = sources.len();
+        let dst_str_clone = dst_str.clone();
+
+        let meta_res = tokio::task::spawn_blocking(move || {
+            match std::fs::metadata(&stripped_path_buf) {
+                Ok(st) => Ok(st.is_dir()),
+                Err(err) => {
+                    if sources_len == 1 && err.kind() == std::io::ErrorKind::NotFound {
+                        let parent = if dst_parent_buf.as_os_str().is_empty() {
+                            std::path::Path::new(".")
+                        } else {
+                            &dst_parent_buf
+                        };
+                        if let Err(parent_err) = std::fs::metadata(parent) {
+                            Err(format!(
+                                "cannot create file/directory '{dst_str_clone}': {parent_err}"
+                            ))
+                        } else {
+                            Err(format!("NOT_FOUND_OK"))
+                        }
                     } else {
-                        parent
-                    };
-                    if let Err(parent_err) = std::fs::metadata(parent) {
-                        let mut res = PullResult::default();
-                        res.errors.push(format!(
-                            "cannot create file/directory '{dst_str}': {parent_err}"
-                        ));
-                        return Ok(res);
+                        Err(format!("failed to access '{dst_str_clone}': {err}"))
                     }
+                }
+            }
+        })
+        .await
+        .map_err(|e| SyncError::Io(std::io::Error::new(std::io::ErrorKind::Other, e)))?;
+
+        match meta_res {
+            Ok(is_dir) => {
+                dst_isdir = is_dir;
+            }
+            Err(err_msg) => {
+                if err_msg == "NOT_FOUND_OK" {
+                    dst_exists = false;
                 } else {
                     let mut res = PullResult::default();
-                    res.errors
-                        .push(format!("failed to access '{dst_str}': {err}"));
+                    res.errors.push(err_msg);
                     return Ok(res);
                 }
             }
@@ -732,9 +789,16 @@ impl SyncSession {
             match self.sync_recv(src_path, &target_dst_path).await {
                 Ok(bytes) => {
                     if options.copy_attrs {
-                        if let Err(e) =
-                            set_time_and_mode(&target_dst_path, src_st.mtime as u64, src_st.mode)
-                        {
+                        let target_path_for_attr = target_dst_path.clone();
+                        let mtime = src_st.mtime as u64;
+                        let mode = src_st.mode;
+                        let attr_res = tokio::task::spawn_blocking(move || {
+                            set_time_and_mode(&target_path_for_attr, mtime, mode)
+                        })
+                        .await
+                        .map_err(|e| SyncError::Io(std::io::Error::new(std::io::ErrorKind::Other, e)))?;
+
+                        if let Err(e) = attr_res {
                             let msg =
                                 format!("failed to set time and mode on '{target_dst_str}': {e}");
                             res.errors.push(msg.clone());
@@ -784,20 +848,24 @@ impl SyncSession {
                 .map_err(|e| e.to_string())?;
         }
 
-        let _ = std::fs::remove_file(lpath);
-
-        let mut file = match std::fs::File::create(lpath) {
-            Ok(f) => f,
-            Err(e) => {
-                return Err(format!("cannot create '{}': {e}", lpath.display()));
+        let lpath_buf = lpath.to_path_buf();
+        let file_res = tokio::task::spawn_blocking(move || {
+            let _ = std::fs::remove_file(&lpath_buf);
+            let file = match std::fs::File::create(&lpath_buf) {
+                Ok(f) => f,
+                Err(e) => return Err(format!("cannot create '{}': {e}", lpath_buf.display())),
+            };
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                let _ = file.set_permissions(std::fs::Permissions::from_mode(0o644));
             }
-        };
+            Ok(file)
+        })
+        .await
+        .map_err(|e| e.to_string())?;
 
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            let _ = file.set_permissions(std::fs::Permissions::from_mode(0o644));
-        }
+        let mut file = file_res?;
 
         let stream = self.session.stream_mut();
         let mut bytes_copied = 0u64;
@@ -818,6 +886,12 @@ impl SyncSession {
 
                 if id != ID_DATA {
                     let msglen = size as usize;
+                    if msglen > SYNC_DATA_MAX {
+                        return Err(format!(
+                            "failed to copy '{rpath}' to '{}': remote message length too large: {msglen} (max {SYNC_DATA_MAX})",
+                            lpath.display()
+                        ));
+                    }
                     let mut fail_buf = vec![0u8; msglen];
                     let _ = stream.read_exact(&mut fail_buf).await;
                     let fail_msg = String::from_utf8_lossy(&fail_buf);
@@ -840,10 +914,18 @@ impl SyncSession {
                     return Err("failed to read chunk payload".to_string());
                 }
 
-                use std::io::Write;
-                if let Err(e) = file.write_all(&chunk) {
-                    return Err(format!("cannot write '{}': {e}", lpath.display()));
-                }
+                let write_res = tokio::task::spawn_blocking(move || {
+                    use std::io::Write;
+                    file.write_all(&chunk)?;
+                    Ok::<_, std::io::Error>(file)
+                })
+                .await
+                .map_err(|e| e.to_string())?;
+
+                file = match write_res {
+                    Ok(f) => f,
+                    Err(e) => return Err(format!("cannot write '{}': {e}", lpath.display())),
+                };
 
                 bytes_copied += data_len as u64;
             }
@@ -852,7 +934,11 @@ impl SyncSession {
         .await;
 
         if res.is_err() {
-            let _ = std::fs::remove_file(lpath);
+            let lpath_buf = lpath.to_path_buf();
+            let _ = tokio::task::spawn_blocking(move || {
+                let _ = std::fs::remove_file(&lpath_buf);
+            })
+            .await;
         }
 
         res
@@ -957,7 +1043,14 @@ impl SyncSession {
             let src_path = *src;
             let local_path = std::path::Path::new(src_path);
 
-            let local_st = match std::fs::symlink_metadata(local_path) {
+            let local_path_buf = local_path.to_path_buf();
+            let sym_meta_res = tokio::task::spawn_blocking(move || {
+                std::fs::symlink_metadata(&local_path_buf)
+            })
+            .await
+            .map_err(|e| SyncError::Io(std::io::Error::new(std::io::ErrorKind::Other, e)))?;
+
+            let local_st = match sym_meta_res {
                 Ok(st) => st,
                 Err(e) => {
                     let msg = format!("cannot stat '{src_path}': {e}");
@@ -976,6 +1069,11 @@ impl SyncSession {
 
             let file_type = local_st.file_type();
             if file_type.is_dir() {
+                if !deferred_acks.is_empty() {
+                    let _ = self
+                        .read_acknowledgements(&mut deferred_acks, &mut res, true)
+                        .await;
+                }
                 return Err(SyncError::NotSupported(
                     "directory push is not supported".to_string(),
                 ));
@@ -1080,36 +1178,62 @@ impl SyncSession {
         is_symlink: bool,
     ) -> Result<u64, String> {
         if is_symlink {
-            let link_target =
-                std::fs::read_link(lpath).map_err(|e| format!("readlink '{lpath}' failed: {e}"))?;
-            let mut contents = link_target.to_string_lossy().as_bytes().to_vec();
-            contents.push(0);
+            let lpath_buf = lpath.to_string();
+            let contents = tokio::task::spawn_blocking(move || {
+                let link_target = std::fs::read_link(&lpath_buf)
+                    .map_err(|e| format!("readlink '{lpath_buf}' failed: {e}"))?;
+                let mut contents = link_target.to_string_lossy().as_bytes().to_vec();
+                contents.push(0);
+                Ok::<_, String>(contents)
+            })
+            .await
+            .map_err(|e| e.to_string())??;
+
             let len = contents.len() as u64;
             self.send_small_file(rpath, mode, lpath, mtime, &contents)
                 .await?;
             Ok(len)
         } else {
-            let file = std::fs::File::open(lpath)
-                .map_err(|e| format!("opening '{lpath}' locally failed: {e}"))?;
-            let metadata = file
-                .metadata()
-                .map_err(|e| format!("cannot stat '{lpath}': {e}"))?;
-            let file_size = metadata.len();
+            let lpath_buf = lpath.to_string();
+            enum SendPrep {
+                Small(u64, Vec<u8>),
+                Large(u64, std::fs::File),
+            }
 
-            if file_size < SYNC_DATA_MAX as u64 {
-                use std::io::Read;
-                let mut data = Vec::with_capacity(file_size as usize);
-                let mut reader = file;
-                reader
-                    .read_to_end(&mut data)
-                    .map_err(|e| format!("reading '{lpath}' locally failed: {e}"))?;
-                self.send_small_file(rpath, mode, lpath, mtime, &data)
-                    .await?;
-                Ok(file_size)
-            } else {
-                self.send_large_file(rpath, mode, lpath, mtime, file)
-                    .await?;
-                Ok(file_size)
+            let prep = tokio::task::spawn_blocking(move || {
+                let file = std::fs::File::open(&lpath_buf)
+                    .map_err(|e| format!("opening '{lpath_buf}' locally failed: {e}"))?;
+                let metadata = file
+                    .metadata()
+                    .map_err(|e| format!("cannot stat '{lpath_buf}': {e}"))?;
+                let file_size = metadata.len();
+
+                if file_size < SYNC_DATA_MAX as u64 {
+                    use std::io::Read;
+                    let mut data = Vec::with_capacity(file_size as usize);
+                    let mut reader = file;
+                    reader
+                        .read_to_end(&mut data)
+                        .map_err(|e| format!("reading '{lpath_buf}' locally failed: {e}"))?;
+                    Ok::<_, String>(SendPrep::Small(file_size, data))
+                } else {
+                    Ok::<_, String>(SendPrep::Large(file_size, file))
+                }
+            })
+            .await
+            .map_err(|e| e.to_string())??;
+
+            match prep {
+                SendPrep::Small(file_size, data) => {
+                    self.send_small_file(rpath, mode, lpath, mtime, &data)
+                        .await?;
+                    Ok(file_size)
+                }
+                SendPrep::Large(file_size, file) => {
+                    self.send_large_file(rpath, mode, lpath, mtime, file)
+                        .await?;
+                    Ok(file_size)
+                }
             }
         }
     }
@@ -1186,19 +1310,35 @@ impl SyncSession {
             self.write_or_fail(lpath, rpath, &hdr_buf).await?;
         }
 
-        use std::io::Read;
-        let mut chunk_buf = vec![0u8; SYNC_DATA_MAX];
         loop {
-            let n = match file.read(&mut chunk_buf) {
-                Ok(0) => break,
-                Ok(n) => n,
-                Err(e) => return Err(format!("reading '{lpath}' locally failed: {e}")),
-            };
+            let lpath_buf = lpath.to_string();
+            let read_res = tokio::task::spawn_blocking(move || {
+                use std::io::Read;
+                let mut chunk = vec![0u8; SYNC_DATA_MAX];
+                let n = match file.read(&mut chunk) {
+                    Ok(n) => n,
+                    Err(e) => return Err((file, format!("reading '{lpath_buf}' locally failed: {e}"))),
+                };
+                chunk.truncate(n);
+                Ok((file, chunk))
+            })
+            .await
+            .map_err(|e| e.to_string())?;
 
-            let mut data_hdr = Vec::with_capacity(8 + n);
+            let (f, chunk) = match read_res {
+                Ok((f, chunk)) => (f, chunk),
+                Err((_f, err_msg)) => return Err(err_msg),
+            };
+            file = f;
+
+            if chunk.is_empty() {
+                break;
+            }
+
+            let mut data_hdr = Vec::with_capacity(8 + chunk.len());
             data_hdr.extend_from_slice(&ID_DATA.to_le_bytes());
-            data_hdr.extend_from_slice(&(n as u32).to_le_bytes());
-            data_hdr.extend_from_slice(&chunk_buf[..n]);
+            data_hdr.extend_from_slice(&(chunk.len() as u32).to_le_bytes());
+            data_hdr.extend_from_slice(&chunk);
 
             self.write_or_fail(lpath, rpath, &data_hdr).await?;
         }
