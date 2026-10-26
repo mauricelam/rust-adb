@@ -161,7 +161,7 @@ fn test_binary_checksum_validation() {
 fn normalize_cli_output(input: &str) -> String {
     let s = input.replace("\r\n", "\n");
     let mut lines = Vec::new();
-    for line in s.lines() {
+    for line in s.split('\n') {
         if line.starts_with("Version ") {
             lines.push("Version [VERSION]".to_string());
         } else if line.starts_with("Installed as ") {
@@ -172,11 +172,7 @@ fn normalize_cli_output(input: &str) -> String {
             lines.push(line.to_string());
         }
     }
-    let mut res = lines.join("\n");
-    if s.ends_with('\n') {
-        res.push('\n');
-    }
-    res
+    lines.join("\n")
 }
 
 /// Reads a golden fixture file from `tests/compat/fixtures/cli_stdout/`.
