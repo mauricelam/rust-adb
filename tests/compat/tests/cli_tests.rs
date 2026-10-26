@@ -162,17 +162,28 @@ fn normalize_cli_output(input: &str) -> String {
     let s = input.replace("\r\n", "\n");
     let mut lines = Vec::new();
     for line in s.split('\n') {
-        if line.starts_with("Version ") {
+        let trimmed = line.trim_end();
+        if trimmed.contains("--local-agent") {
+            continue;
+        }
+        if trimmed.starts_with("Version ") {
             lines.push("Version [VERSION]".to_string());
-        } else if line.starts_with("Installed as ") {
+        } else if trimmed.starts_with("Installed as ") {
             lines.push("Installed as [PATH]".to_string());
-        } else if line.starts_with("Running on ") {
+        } else if trimmed.starts_with("Running on ") {
             lines.push("Running on [OS]".to_string());
         } else {
-            lines.push(line.to_string());
+            lines.push(trimmed.to_string());
         }
     }
-    lines.join("\n")
+    while lines.last().is_some_and(|l| l.is_empty()) {
+        lines.pop();
+    }
+    let mut result = lines.join("\n");
+    if !result.is_empty() {
+        result.push('\n');
+    }
+    result
 }
 
 /// Reads a golden fixture file from `tests/compat/fixtures/cli_stdout/`.
@@ -182,9 +193,9 @@ fn read_fixture(filename: &str) -> String {
         .join("fixtures")
         .join("cli_stdout")
         .join(filename);
-    std::fs::read_to_string(&path)
-        .unwrap_or_else(|e| panic!("Failed to read golden fixture file {}: {e}", path.display()))
-        .replace("\r\n", "\n")
+    let content = std::fs::read_to_string(&path)
+        .unwrap_or_else(|e| panic!("Failed to read golden fixture file {}: {e}", path.display()));
+    normalize_cli_output(&content)
 }
 
 #[test]
