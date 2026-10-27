@@ -1,0 +1,10 @@
+{
+  "args": [
+    "disconnect",
+    "<mock_addr>"
+  ],
+  "env": [],
+  "stdout": "disconnected <serial>\n",
+  "stderr": "",
+  "exit_code": 0
+}

@@ -1,0 +1,13 @@
+diff --git a/client/commandline.cpp b/client/commandline.cpp
+index 4f43fb9..0436094 100644
+--- a/client/commandline.cpp
++++ b/client/commandline.cpp
+@@ -1908,7 +1908,7 @@ int adb_commandline(int argc, const char** argv) {
+         std::string cmd, error_message;
+         if (strcmp(argv[0], "--list") == 0) {
+             if (argc != 1) error_exit("--list doesn't take any arguments");
+-            return adb_query_command(host_prefix + "list-forward");
++            printf("Forwards:\n"); return adb_query_command(host_prefix + "list-forward");
+         } else if (strcmp(argv[0], "--remove-all") == 0) {
+             if (argc != 1) error_exit("--remove-all doesn't take any arguments");
+             cmd = "killforward-all";

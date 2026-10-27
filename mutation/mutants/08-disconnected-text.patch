@@ -1,0 +1,12 @@
+diff --git a/adb.cpp b/adb.cpp
+index a4794e9..c941d80 100644
+--- a/adb.cpp
++++ b/adb.cpp
+@@ -1456,7 +1456,7 @@ HostRequestResult handle_host_request(std::string_view service, TransportType ty
+         std::string address(service.substr(11));
+         if (address.empty()) {
+             kick_all_tcp_devices();
+-            SendOkay(reply_fd, "disconnected everything");
++            SendOkay(reply_fd, "disconnected all");
+             return HostRequestResult::Handled;
+         }

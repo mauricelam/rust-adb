@@ -1,0 +1,13 @@
+{
+  "args": [
+    "-s",
+    "<mock_addr>",
+    "forward",
+    "--remove",
+    "tcp:<alloc_port>"
+  ],
+  "env": [],
+  "stdout": "",
+  "stderr": "",
+  "exit_code": 0
+}

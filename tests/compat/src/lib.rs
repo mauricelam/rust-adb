@@ -341,6 +341,7 @@ pub fn get_cmd_timeout() -> Duration {
 }
 
 fn execute_cmd_with_timeout(mut cmd: Command, args_display: &[&str]) -> TestOutput {
+    cmd.stdin(std::process::Stdio::null());
     cmd.stdout(std::process::Stdio::piped());
     cmd.stderr(std::process::Stdio::piped());
 

@@ -1,0 +1,12 @@
+{
+  "args": [
+    "-s",
+    "<mock_addr>",
+    "shell",
+    "cat"
+  ],
+  "env": [],
+  "stdout": "hello from stdin\n",
+  "stderr": "",
+  "exit_code": 0
+}

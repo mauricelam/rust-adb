@@ -1,0 +1,11 @@
+{
+  "args": [
+    "-t",
+    "1",
+    "get-state"
+  ],
+  "env": [],
+  "stdout": "device\n",
+  "stderr": "",
+  "exit_code": 0
+}

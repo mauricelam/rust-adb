@@ -1,0 +1,10 @@
+{
+  "args": [
+    "connect",
+    "<mock_addr>"
+  ],
+  "env": [],
+  "stdout": "already connected to <serial>\n",
+  "stderr": "",
+  "exit_code": 0
+}

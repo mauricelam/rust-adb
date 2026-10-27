@@ -1,0 +1,12 @@
+{
+  "args": [
+    "-s",
+    "<mock_addr>",
+    "ls",
+    "/data"
+  ],
+  "env": [],
+  "stdout": "000081a4 000186a0 000007d0 disconnect.bin\n000081a4 00000000 000007d0 f_0.bin\n000081a4 00000001 000007d0 f_1.bin\n000081a4 0004b000 000007d0 f_300k.bin\n000081a4 0000ffff 000007d0 f_65535.bin\n000081a4 00010000 000007d0 f_65536.bin\n000081a4 00000000 000007d0 fail.bin\n",
+  "stderr": "",
+  "exit_code": 0
+}

@@ -1,0 +1,12 @@
+{
+  "args": [
+    "-s",
+    "<mock_addr>",
+    "forward",
+    "--list"
+  ],
+  "env": [],
+  "stdout": "<serial> tcp:<port> tcp:<port>\n\n",
+  "stderr": "",
+  "exit_code": 0
+}

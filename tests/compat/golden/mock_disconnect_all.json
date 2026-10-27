@@ -1,0 +1,9 @@
+{
+  "args": [
+    "disconnect"
+  ],
+  "env": [],
+  "stdout": "disconnected everything\n",
+  "stderr": "",
+  "exit_code": 0
+}

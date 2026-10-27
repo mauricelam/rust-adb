@@ -1,0 +1,13 @@
+{
+  "args": [
+    "-s",
+    "<mock_addr>",
+    "forward",
+    "tcp:0",
+    "tcp:1234"
+  ],
+  "env": [],
+  "stdout": "<port>\n",
+  "stderr": "",
+  "exit_code": 0
+}

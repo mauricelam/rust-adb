@@ -35,6 +35,18 @@ static CONN_REFUSED_RE: LazyLock<Regex> = LazyLock::new(|| {
         .unwrap()
 });
 
+// Match standalone allocated port line like "37697\n"
+static STANDALONE_PORT_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"(?m)^[1-9]\d{3,5}$").unwrap());
+
+// Match device serials like 127.0.0.1:58273 or localhost:58273
+static SERIAL_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"(?:127\.0\.0\.1|localhost):[1-9]\d*").unwrap());
+
+// Match transport_id:1 or transport_id:42 property
+static TRANSPORT_ID_PROP_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"transport_id:[1-9]\d*").unwrap());
+
 /// Rule 1: Normalize line endings CRLF -> LF.
 pub fn normalize_line_endings(input: &str) -> String {
     input.replace("\r\n", "\n")
@@ -47,7 +59,20 @@ pub fn normalize_program_name(input: &str) -> String {
 
 /// Rule 3: Replace server ports in messages such as `tcp:<port>` with `tcp:<port>`.
 pub fn normalize_server_ports(input: &str) -> String {
-    TCP_PORT_RE.replace_all(input, "${1}<port>").to_string()
+    let s = TCP_PORT_RE.replace_all(input, "${1}<port>").to_string();
+    STANDALONE_PORT_RE.replace_all(&s, "<port>").to_string()
+}
+
+/// Rule 7: Replace device serials such as `127.0.0.1:58273` with `<serial>`.
+pub fn normalize_device_serials(input: &str) -> String {
+    SERIAL_RE.replace_all(input, "<serial>").to_string()
+}
+
+/// Rule 8: Normalize transport ID property `transport_id:1` -> `transport_id:<transport_id>`.
+pub fn normalize_transport_ids(input: &str) -> String {
+    TRANSPORT_ID_PROP_RE
+        .replace_all(input, "transport_id:<transport_id>")
+        .to_string()
 }
 
 /// Rule 4: Replace temporary directory paths with `<tmp>`.
@@ -98,6 +123,8 @@ pub fn normalize_output(input: &str) -> String {
     let s = normalize_line_endings(input);
     let s = normalize_program_name(&s);
     let s = normalize_server_ports(&s);
+    let s = normalize_device_serials(&s);
+    let s = normalize_transport_ids(&s);
     let s = normalize_temp_paths(&s);
     let s = normalize_version(&s);
     normalize_os_differences(&s)
@@ -189,6 +216,24 @@ mod tests {
 
         let help_text = "     --local-agent: locate agent files\n     uninstall [-k]\n";
         assert_eq!(normalize_os_differences(help_text), "     uninstall [-k]\n");
+    }
+
+    #[test]
+    fn test_normalize_device_serials() {
+        let conn = "connected to 127.0.0.1:41759\n";
+        assert_eq!(normalize_device_serials(conn), "connected to <serial>\n");
+
+        let list = "127.0.0.1:41759\tdevice\n";
+        assert_eq!(normalize_device_serials(list), "<serial>\tdevice\n");
+    }
+
+    #[test]
+    fn test_normalize_transport_ids() {
+        let dev_l = "127.0.0.1:41759        device product:mock_device model:mock_model device:mock_device transport_id:1\n";
+        assert_eq!(
+            normalize_transport_ids(dev_l),
+            "127.0.0.1:41759        device product:mock_device model:mock_model device:mock_device transport_id:<transport_id>\n"
+        );
     }
 
     #[test]

@@ -1,0 +1,10 @@
+{
+  "args": [
+    "disconnect",
+    "127.0.0.1:59999"
+  ],
+  "env": [],
+  "stdout": "",
+  "stderr": "error: no such device '<serial>'\n",
+  "exit_code": 1
+}

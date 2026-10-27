@@ -1,0 +1,9 @@
+{
+  "args": [
+    "get-state"
+  ],
+  "env": [],
+  "stdout": "",
+  "stderr": "error: more than one device/emulator\n",
+  "exit_code": 1
+}

@@ -1,0 +1,12 @@
+{
+  "args": [
+    "-s",
+    "<mock_addr>",
+    "shell",
+    "unsupported_cmd"
+  ],
+  "env": [],
+  "stdout": "mock-adbd: unsupported command\n",
+  "stderr": "",
+  "exit_code": 0
+}
