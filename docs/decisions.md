@@ -61,3 +61,8 @@
 
 **Decision:** `adb-client` implements Unix interactive shell terminal handling matching C++ `commandline.cpp`. Local terminal raw mode (`libc::cfmakeraw`) is managed via a RAII `RawTerminalGuard` that restores original `libc::termios` settings on drop (including early returns and panics). PTY allocation selection (`PtyMode::Auto`, `No`, `Yes`, `Definitely`) evaluates `is_interactive`, `stdin_isatty`, and device shell v2 support. Initial window size and subsequent size changes triggered via `SIGWINCH` are formatted as `<rows>x<cols>,<xpixels>x<ypixels>\0` (`format_window_size`) and sent over `ShellPacketId::WindowSizeChange` packets. Stdin input is parsed through `EscapeStateMachine`, swallowing `~` at start-of-line and ending the session with status 0 upon `~.`. For unit and integration testing, pseudo-terminal pairs (`libc::openpty`) are used to verify raw terminal transitions, window size signals, and disconnect sequences against `mock-adbd`.
 **Reason:** This ensures exact terminal mode and escape sequence parity with standard ADB without leaving local terminals in a corrupt state upon disconnect or error.
+
+## 12. Global CLI Option Parsing
+
+**Decision:** Global options in `adb-cli` are parsed by hand rather than using `clap`.
+**Reason:** The C++ ADB global option parser in `adb_commandline` (`original/client/commandline.cpp`) exhibits specific quirks (e.g., `-s123`, `-t123`, accepting global options strictly before the command name, and exact error strings) that standard argument parsing libraries such as `clap` cannot replicate without breaking parity.

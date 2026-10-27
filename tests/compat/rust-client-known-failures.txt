@@ -1,0 +1,24 @@
+# List of known failing compatibility tests when using the Rust adb client.
+# Phase 4 issues will incrementally implement commands and remove entries from this file.
+
+# Help and Version
+test_help
+test_version
+test_golden_help_output
+test_golden_version_output
+test_adb_version_standalone
+test_adb_version_with_server
+
+# Server commands and device lifecycle
+test_server_no_device
+test_server_lifecycle
+
+# Mock ADBD services (shell, sync, etc.)
+test_mock_adbd_shell_v2_commands
+test_mock_adbd_no_shell_v2_fallback
+test_mock_adbd_sync_ls_pull_push
+test_mock_adbd_connect_and_shell
+test_mock_adbd_sync_v1_fallback_options
+
+# Client timeouts
+test_run_client_timeout_panics
