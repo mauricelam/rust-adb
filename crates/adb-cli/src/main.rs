@@ -13,5 +13,18 @@ pub fn exit_cleanly(code: i32) -> ! {
 }
 
 fn main() {
-    exit_cleanly(0);
+    let rt = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .expect("failed to build tokio runtime");
+
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    let env_fn = |key: &str| std::env::var(key).ok();
+    let mut output = adb_cli::Output::stdio();
+
+    let code = rt.block_on(adb_cli::run_cli(&args, env_fn, &mut output));
+
+    let _ = output.stdout.flush();
+    let _ = output.stderr.flush();
+    exit_cleanly(code);
 }

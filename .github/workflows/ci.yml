@@ -130,3 +130,91 @@ jobs:
             echo "=== Compatibility Test Run $i / 10 ==="
             cargo test -p compat || exit 1
           done
+
+  compat-rust-client:
+    name: Compat Rust Client (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    env:
+      RUST_TEST_THREADS: 1
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set ADB environment variables (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          chmod +x binaries/linux/adb
+          adb_path="$(pwd)/binaries/linux/adb"
+          echo "ADB_REFERENCE=$adb_path" >> $GITHUB_ENV
+          echo "ADB_SERVER_BIN=$adb_path" >> $GITHUB_ENV
+
+      - name: Set ADB environment variables (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          chmod +x binaries/mac/adb
+          adb_path="$(pwd)/binaries/mac/adb"
+          echo "ADB_REFERENCE=$adb_path" >> $GITHUB_ENV
+          echo "ADB_SERVER_BIN=$adb_path" >> $GITHUB_ENV
+
+      - name: Set ADB environment variables (Windows)
+        if: runner.os == 'Windows'
+        shell: powershell
+        run: |
+          $adbPath = (Resolve-Path "binaries/windows/adb.exe").Path
+          [System.IO.File]::AppendAllText($env:GITHUB_ENV, "ADB_REFERENCE=$adbPath`n", [System.Text.UTF8Encoding]::new($false))
+          [System.IO.File]::AppendAllText($env:GITHUB_ENV, "ADB_SERVER_BIN=$adbPath`n", [System.Text.UTF8Encoding]::new($false))
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.94.0"
+
+      - name: Cache Cargo dependencies
+        uses: Swatinem/rust-cache@v2
+
+      - name: Build adb-cli and set ADB_CLIENT (Unix)
+        if: runner.os != 'Windows'
+        run: |
+          cargo build -p adb-cli
+          echo "ADB_CLIENT=$(pwd)/target/debug/adb" >> $GITHUB_ENV
+
+      - name: Build adb-cli and set ADB_CLIENT (Windows)
+        if: runner.os == 'Windows'
+        shell: powershell
+        run: |
+          cargo build -p adb-cli
+          $clientPath = (Resolve-Path "target/debug/adb.exe").Path
+          [System.IO.File]::AppendAllText($env:GITHUB_ENV, "ADB_CLIENT=$clientPath`n", [System.Text.UTF8Encoding]::new($false))
+
+      - name: Run passing compatibility tests with Rust client
+        shell: bash
+        run: |
+          SKIP_ARGS=""
+          while IFS= read -r test_name || [ -n "$test_name" ]; do
+            test_name=$(echo "$test_name" | xargs)
+            if [[ -n "$test_name" && ! "$test_name" =~ ^# ]]; then
+              SKIP_ARGS="$SKIP_ARGS --skip $test_name"
+            fi
+          done < tests/compat/rust-client-known-failures.txt
+
+          cargo test -p compat -- $SKIP_ARGS
+
+      - name: Run known failing compatibility tests with Rust client (informational)
+        shell: bash
+        run: |
+          INCLUDE_ARGS=""
+          while IFS= read -r test_name || [ -n "$test_name" ]; do
+            test_name=$(echo "$test_name" | xargs)
+            if [[ -n "$test_name" && ! "$test_name" =~ ^# ]]; then
+              INCLUDE_ARGS="$INCLUDE_ARGS $test_name"
+            fi
+          done < tests/compat/rust-client-known-failures.txt
+
+          if [ -n "$INCLUDE_ARGS" ]; then
+            cargo test -p compat -- $INCLUDE_ARGS || true
+          fi
