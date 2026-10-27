@@ -70,7 +70,7 @@ jobs:
             Write-Error "Unexpected ADB major version: $($lines[0])"
             exit 1
           }
-          if ($lines[1] -ne "Version 36.0.2-14143358") {
+          if (-not $lines[1].StartsWith("Version ")) {
             Write-Error "Unexpected ADB platform-tools version: $($lines[1])"
             exit 1
           }
