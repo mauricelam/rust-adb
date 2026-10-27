@@ -1,0 +1,9 @@
+{
+  "args": [
+    "-h"
+  ],
+  "env": [],
+  "stdout": "",
+  "stderr": "<prog>: unknown command -h\n",
+  "exit_code": 1
+}

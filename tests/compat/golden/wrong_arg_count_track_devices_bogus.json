@@ -1,0 +1,10 @@
+{
+  "args": [
+    "track-devices",
+    "--bogus"
+  ],
+  "env": [],
+  "stdout": "",
+  "stderr": "<prog>: usage: adb track-devices [-l][--proto-text][--proto-binary]\n",
+  "exit_code": 1
+}

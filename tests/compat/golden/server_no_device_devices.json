@@ -1,0 +1,9 @@
+{
+  "args": [
+    "devices"
+  ],
+  "env": [],
+  "stdout": "List of devices attached\n\n",
+  "stderr": "",
+  "exit_code": 0
+}

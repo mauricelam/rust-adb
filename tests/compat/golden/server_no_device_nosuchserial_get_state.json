@@ -1,0 +1,11 @@
+{
+  "args": [
+    "-s",
+    "nosuchserial",
+    "get-state"
+  ],
+  "env": [],
+  "stdout": "",
+  "stderr": "error: device 'nosuchserial' not found\n",
+  "exit_code": 1
+}

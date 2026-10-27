@@ -1,0 +1,12 @@
+{
+  "args": [
+    "-L",
+    "tcp:localhost:5037",
+    "-H",
+    "localhost"
+  ],
+  "env": [],
+  "stdout": "",
+  "stderr": "<prog>: -L is incompatible with -H or -P\n",
+  "exit_code": 1
+}

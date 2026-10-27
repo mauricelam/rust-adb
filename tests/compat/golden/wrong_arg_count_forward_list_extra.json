@@ -1,0 +1,11 @@
+{
+  "args": [
+    "forward",
+    "--list",
+    "extra"
+  ],
+  "env": [],
+  "stdout": "",
+  "stderr": "<prog>: --list doesn't take any arguments\n",
+  "exit_code": 1
+}

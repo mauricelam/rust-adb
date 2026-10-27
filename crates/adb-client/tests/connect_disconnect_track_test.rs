@@ -281,6 +281,8 @@ async fn test_track_devices_drop_closes_connection() {
             .expect("Stream 1 error");
     }
 
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
     // Stream 2 stays active
     let stream2 = client
         .track_devices(TrackDevicesMode::Normal)

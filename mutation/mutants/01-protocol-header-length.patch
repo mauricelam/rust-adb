@@ -1,5 +1,3 @@
-# Mutation: Protocol Header String Framing Length
-# Breaks smart socket protocol framing by formatting length with 3 hex digits instead of 4
 diff --git a/adb_io.cpp b/adb_io.cpp
 index bdb8efa..72cb656 100644
 --- a/adb_io.cpp

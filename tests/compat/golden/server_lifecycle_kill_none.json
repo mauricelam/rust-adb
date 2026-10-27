@@ -1,0 +1,9 @@
+{
+  "args": [
+    "kill-server"
+  ],
+  "env": [],
+  "stdout": "",
+  "stderr": "cannot connect to daemon at tcp:<port>: Connection refused\n",
+  "exit_code": 0
+}

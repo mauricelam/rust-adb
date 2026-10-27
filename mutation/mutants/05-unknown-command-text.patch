@@ -1,0 +1,12 @@
+diff --git a/client/commandline.cpp b/client/commandline.cpp
+index 0e77793..79b97d3 100644
+--- a/client/commandline.cpp
++++ b/client/commandline.cpp
+@@ -2251,6 +2251,6 @@ int adb_commandline(int argc, const char** argv) {
+         return adb_connect_command("host:server-status", nullptr, &callback);
+     }
+
+-    error_exit("unknown command %s", argv[0]);
++    error_exit("unrecognized command %s", argv[0]);
+     __builtin_unreachable();
+ }

@@ -1,0 +1,9 @@
+{
+  "args": [
+    "--version"
+  ],
+  "env": [],
+  "stdout": "Android Debug Bridge version <version>\nVersion <version>\nInstalled as <path>\nRunning on <os>\n",
+  "stderr": "",
+  "exit_code": 0
+}

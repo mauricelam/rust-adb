@@ -1,0 +1,11 @@
+{
+  "args": [
+    "disconnect",
+    "a",
+    "b"
+  ],
+  "env": [],
+  "stdout": "",
+  "stderr": "<prog>: usage: adb disconnect [HOST[:PORT]]\n",
+  "exit_code": 1
+}
