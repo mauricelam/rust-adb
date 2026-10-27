@@ -1,0 +1,10 @@
+{
+  "args": [
+    "connect",
+    "127.0.0.1:59999"
+  ],
+  "env": [],
+  "stdout": "failed to connect to '<serial>': Connection refused\n",
+  "stderr": "",
+  "exit_code": 0
+}

@@ -1,0 +1,12 @@
+{
+  "args": [
+    "-s",
+    "<mock_addr>",
+    "forward",
+    "--remove-all"
+  ],
+  "env": [],
+  "stdout": "",
+  "stderr": "",
+  "exit_code": 0
+}

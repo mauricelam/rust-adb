@@ -1,0 +1,13 @@
+{
+  "args": [
+    "-s",
+    "<mock_addr>",
+    "shell",
+    "stderr",
+    "oops"
+  ],
+  "env": [],
+  "stdout": "",
+  "stderr": "oops\n",
+  "exit_code": 0
+}

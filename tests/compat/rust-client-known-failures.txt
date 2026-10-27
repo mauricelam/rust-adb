@@ -1,3 +1,17 @@
+test_connection_management
+test_device_list_and_properties
+test_failure_cases
+test_forward
+test_no_v2_shell_echo
+test_no_v2_shell_exec_in
+test_no_v2_shell_exec_out
+test_no_v2_shell_exit_3
+test_no_v2_shell_no_pty
+test_no_v2_shell_no_v2_flag
+test_no_v2_shell_stderr
+test_no_v2_shell_unsupported
+test_shell_v2
+test_sync
 # List of known failing compatibility tests when using the Rust adb client.
 # Phase 4 issues will incrementally implement commands and remove entries from this file.
 

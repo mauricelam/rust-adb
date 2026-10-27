@@ -1,0 +1,9 @@
+{
+  "args": [
+    "features"
+  ],
+  "env": [],
+  "stdout": "shell_v2\nstat_v2\nls_v2\nsendrecv_v2\n",
+  "stderr": "",
+  "exit_code": 0
+}

@@ -1,0 +1,12 @@
+{
+  "args": [
+    "-s",
+    "<mock_addr>",
+    "ls",
+    "/"
+  ],
+  "env": [],
+  "stdout": "000041ed 00000000 000003e8 data\n",
+  "stderr": "",
+  "exit_code": 0
+}

@@ -1,0 +1,10 @@
+{
+  "args": [
+    "-e",
+    "get-state"
+  ],
+  "env": [],
+  "stdout": "device\n",
+  "stderr": "",
+  "exit_code": 0
+}

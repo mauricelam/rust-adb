@@ -1,0 +1,9 @@
+{
+  "args": [
+    "get-serialno"
+  ],
+  "env": [],
+  "stdout": "<serial>\n",
+  "stderr": "",
+  "exit_code": 0
+}

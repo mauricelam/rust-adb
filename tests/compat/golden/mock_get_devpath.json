@@ -1,0 +1,9 @@
+{
+  "args": [
+    "get-devpath"
+  ],
+  "env": [],
+  "stdout": "unknown\n",
+  "stderr": "",
+  "exit_code": 0
+}

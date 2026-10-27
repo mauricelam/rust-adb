@@ -1,0 +1,12 @@
+diff --git a/client/transport_emulator.cpp b/client/transport_emulator.cpp
+index 83fb1e4..f5f6e32 100644
+--- a/client/transport_emulator.cpp
++++ b/client/transport_emulator.cpp
+@@ -143,7 +143,7 @@ void connect_device(const std::string& address, std::string* response) {
+                     android::base::StringPrintf("failed to connect to %s", transport_name.c_str());
+         }
+     } else {
+-        *response = android::base::StringPrintf("connected to %s", transport_name.c_str());
++        *response = android::base::StringPrintf("connected device %s", transport_name.c_str());
+     }
+ }

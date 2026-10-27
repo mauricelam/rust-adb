@@ -1,0 +1,10 @@
+{
+  "args": [
+    "devices",
+    "-l"
+  ],
+  "env": [],
+  "stdout": "List of devices attached\n<serial>        device product:mock_device model:mock_model device:mock_device transport_id:<transport_id>\n\n",
+  "stderr": "",
+  "exit_code": 0
+}

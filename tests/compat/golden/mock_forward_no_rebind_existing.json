@@ -1,0 +1,14 @@
+{
+  "args": [
+    "-s",
+    "<mock_addr>",
+    "forward",
+    "--no-rebind",
+    "tcp:<alloc_port>",
+    "tcp:1234"
+  ],
+  "env": [],
+  "stdout": "",
+  "stderr": "<prog>: error: cannot rebind existing socket\n",
+  "exit_code": 1
+}

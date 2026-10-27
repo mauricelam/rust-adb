@@ -1,0 +1,10 @@
+{
+  "args": [
+    "-d",
+    "get-state"
+  ],
+  "env": [],
+  "stdout": "",
+  "stderr": "error: no devices found\n",
+  "exit_code": 1
+}

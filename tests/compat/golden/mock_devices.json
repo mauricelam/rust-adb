@@ -1,0 +1,9 @@
+{
+  "args": [
+    "devices"
+  ],
+  "env": [],
+  "stdout": "List of devices attached\n<serial>\tdevice\n\n",
+  "stderr": "",
+  "exit_code": 0
+}
