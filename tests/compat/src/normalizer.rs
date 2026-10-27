@@ -117,7 +117,11 @@ pub fn normalize_os_differences(input: &str) -> String {
         }
         lines.push(line);
     }
-    let s = lines.join("\n").replace(",libusb", "");
+    let s = lines
+        .join("\n")
+        .replace(",libusb", "")
+        .replace(",openscreen_mdns", "")
+        .replace("openscreen_mdns,", "");
     let s = CONN_REFUSED_RE
         .replace_all(&s, "${1}Connection refused")
         .to_string();
