@@ -46,6 +46,7 @@ dependencies = [
  "tempfile",
  "tokio",
  "tokio-stream",
+ "windows-sys",
 ]
 
 [[package]]
