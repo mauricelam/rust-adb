@@ -252,7 +252,7 @@ async fn launch_binary(
     const CREATE_NO_WINDOW: u32 = 0x08000000;
 
     let (read_handle, write_handle) = {
-        let mut sa = SECURITY_ATTRIBUTES {
+        let sa = SECURITY_ATTRIBUTES {
             nLength: std::mem::size_of::<SECURITY_ATTRIBUTES>() as u32,
             lpSecurityDescriptor: std::ptr::null_mut(),
             bInheritHandle: 1, // TRUE
@@ -261,7 +261,7 @@ async fn launch_binary(
         let mut read_pipe: HANDLE = std::ptr::null_mut();
         let mut write_pipe: HANDLE = std::ptr::null_mut();
 
-        if unsafe { CreatePipe(&mut read_pipe, &mut write_pipe, &mut sa, 0) } == 0 {
+        if unsafe { CreatePipe(&mut read_pipe, &mut write_pipe, &sa, 0) } == 0 {
             return Err(std::io::Error::last_os_error().into());
         }
 

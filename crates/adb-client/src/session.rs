@@ -173,24 +173,49 @@ impl Session {
             host
         };
 
-        let conn_res = tokio::time::timeout(
-            config.connect_timeout,
-            TcpStream::connect((host, addr.port)),
-        )
-        .await;
+        let mut last_err = None;
+        for i in 0..5 {
+            let conn_res = tokio::time::timeout(
+                config.connect_timeout,
+                TcpStream::connect((host, addr.port)),
+            )
+            .await;
 
-        match conn_res {
-            Ok(Ok(stream)) => Ok(Self {
-                stream,
-                read_buf: Vec::new(),
-                config,
-            }),
-            Ok(Err(err)) => Err(SessionError::CannotConnect {
-                spec,
-                cause: err.to_string(),
-            }),
-            Err(_) => Err(SessionError::Timeout),
+            match conn_res {
+                Ok(Ok(stream)) => {
+                    return Ok(Self {
+                        stream,
+                        read_buf: Vec::new(),
+                        config,
+                    });
+                }
+                Ok(Err(err)) => {
+                    let retryable = matches!(
+                        err.kind(),
+                        std::io::ErrorKind::ConnectionReset
+                            | std::io::ErrorKind::ConnectionRefused
+                            | std::io::ErrorKind::ConnectionAborted
+                    );
+                    last_err = Some(SessionError::CannotConnect {
+                        spec: spec.clone(),
+                        cause: err.to_string(),
+                    });
+                    if retryable && i < 4 {
+                        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+                    } else {
+                        break;
+                    }
+                }
+                Err(_) => {
+                    return Err(SessionError::Timeout);
+                }
+            }
         }
+
+        Err(last_err.unwrap_or(SessionError::CannotConnect {
+            spec,
+            cause: "connection failed".to_string(),
+        }))
     }
 
     /// Selects a device transport on this connection.
