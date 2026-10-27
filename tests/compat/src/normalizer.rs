@@ -35,6 +35,11 @@ static CONN_REFUSED_RE: LazyLock<Regex> = LazyLock::new(|| {
         .unwrap()
 });
 
+static WIN_CONN_REFUSED_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"cannot connect to (<serial>|\S+): No connection could be made because the target machine actively refused it\..*")
+        .unwrap()
+});
+
 // Match standalone allocated port line like "37697\n"
 static STANDALONE_PORT_RE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"(?m)^[1-9]\d{3,5}$").unwrap());
@@ -112,9 +117,12 @@ pub fn normalize_os_differences(input: &str) -> String {
         }
         lines.push(line);
     }
-    let s = lines.join("\n");
-    CONN_REFUSED_RE
+    let s = lines.join("\n").replace(",libusb", "");
+    let s = CONN_REFUSED_RE
         .replace_all(&s, "${1}Connection refused")
+        .to_string();
+    WIN_CONN_REFUSED_RE
+        .replace_all(&s, "failed to connect to '${1}': Connection refused")
         .to_string()
 }
 
@@ -212,6 +220,18 @@ mod tests {
         assert_eq!(
             normalize_os_differences(win_err),
             "cannot connect to daemon at tcp:<port>: Connection refused\n"
+        );
+
+        let win_conn_err = "cannot connect to <serial>: No connection could be made because the target machine actively refused it. (10061)\n";
+        assert_eq!(
+            normalize_os_differences(win_conn_err),
+            "failed to connect to '<serial>': Connection refused\n"
+        );
+
+        let host_feat = "shell_v2,cmd,libusb,push_sync\n";
+        assert_eq!(
+            normalize_os_differences(host_feat),
+            "shell_v2,cmd,push_sync\n"
         );
 
         let help_text = "     --local-agent: locate agent files\n     uninstall [-k]\n";
