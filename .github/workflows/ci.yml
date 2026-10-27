@@ -48,13 +48,32 @@ jobs:
       - name: Verify reference ADB version (Unix)
         if: runner.os != 'Windows'
         run: |
-          "$ADB_REFERENCE" version
+          ver_out="$("$ADB_REFERENCE" version)"
+          line1=$(echo "$ver_out" | sed -n '1p')
+          line2=$(echo "$ver_out" | sed -n '2p')
+          if [ "$line1" != "Android Debug Bridge version 1.0.41" ]; then
+            echo "Unexpected ADB major version: $line1"
+            exit 1
+          fi
+          if [ "$line2" != "Version 36.0.2-14143358" ]; then
+            echo "Unexpected ADB platform-tools version: $line2"
+            exit 1
+          fi
 
       - name: Verify reference ADB version (Windows)
         if: runner.os == 'Windows'
         shell: powershell
         run: |
-          & "$env:ADB_REFERENCE" version
+          $ver_out = & "$env:ADB_REFERENCE" version
+          $lines = $ver_out -split "`r?`n"
+          if ($lines[0] -ne "Android Debug Bridge version 1.0.41") {
+            Write-Error "Unexpected ADB major version: $($lines[0])"
+            exit 1
+          }
+          if ($lines[1] -ne "Version 36.0.2-14143358") {
+            Write-Error "Unexpected ADB platform-tools version: $($lines[1])"
+            exit 1
+          }
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@master

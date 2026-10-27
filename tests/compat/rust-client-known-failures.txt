@@ -1,14 +1,6 @@
 # List of known failing compatibility tests when using the Rust adb client.
 # Phase 4 issues will incrementally implement commands and remove entries from this file.
 
-# Help and Version
-test_help
-test_version
-test_golden_help_output
-test_golden_version_output
-test_adb_version_standalone
-test_adb_version_with_server
-
 # Server commands and device lifecycle
 test_server_no_device
 test_server_lifecycle
