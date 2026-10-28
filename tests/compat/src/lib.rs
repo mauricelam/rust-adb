@@ -6,7 +6,7 @@ pub use normalizer::*;
 use std::env;
 use std::io::{Read, Write};
 use std::net::TcpListener;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::{Child, Command, ExitStatus};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -219,12 +219,30 @@ impl TestServer {
 
     /// Executes the ADB client binary against this server instance.
     pub fn run_client(&self, args: &[&str]) -> TestOutput {
-        let mut cmd = Command::new(&self.config.client_path);
-        cmd.arg("-P").arg(self.port.to_string());
-        cmd.args(args);
-        set_isolated_env(&mut cmd, self.home_dir.path(), self.port);
+        let port_str = self.port.to_string();
+        let mut full_args = vec!["-P", port_str.as_str()];
+        full_args.extend_from_slice(args);
 
-        execute_cmd_with_timeout(cmd, args)
+        let home_str = self.home_dir.path().to_string_lossy().to_string();
+        let socket_str = format!("tcp:localhost:{}", self.port);
+
+        let envs = [
+            ("HOME", home_str.as_str()),
+            ("USERPROFILE", home_str.as_str()),
+            ("ANDROID_ADB_HOME", home_str.as_str()),
+            ("ANDROID_USER_HOME", home_str.as_str()),
+            ("ADB_MDNS_AUTO_CONNECT", "0"),
+            ("ADB_MDNS_OPENSCREEN", "0"),
+            ("ANDROID_ADB_SERVER_PORT", port_str.as_str()),
+            ("ADB_SERVER_SOCKET", socket_str.as_str()),
+        ];
+
+        run_command_with_timeout(
+            &self.config.client_path,
+            &full_args,
+            &envs,
+            get_cmd_timeout(),
+        )
     }
 
     /// Sends a smart-socket request formatted as `4-hex-digit-len + service_name`,
@@ -324,25 +342,61 @@ pub fn run_client_with_config(config: &Config, args: &[&str]) -> TestOutput {
     let temp_dir = tempfile::tempdir().expect("Failed to create temporary directory for test home");
     let port = config.server_port.unwrap_or(0);
 
-    let mut cmd = Command::new(&config.client_path);
+    let mut full_args = Vec::new();
+    let port_str;
     if port != 0 {
-        cmd.arg("-P").arg(port.to_string());
+        port_str = port.to_string();
+        full_args.push("-P");
+        full_args.push(port_str.as_str());
     }
-    cmd.args(args);
-    set_isolated_env(&mut cmd, temp_dir.path(), port);
+    full_args.extend_from_slice(args);
 
-    execute_cmd_with_timeout(cmd, args)
+    let home_str = temp_dir.path().to_string_lossy().to_string();
+    let mut envs = vec![
+        ("HOME", home_str.as_str()),
+        ("USERPROFILE", home_str.as_str()),
+        ("ANDROID_ADB_HOME", home_str.as_str()),
+        ("ANDROID_USER_HOME", home_str.as_str()),
+        ("ADB_MDNS_AUTO_CONNECT", "0"),
+        ("ADB_MDNS_OPENSCREEN", "0"),
+    ];
+
+    let port_env_str;
+    let socket_env_str;
+    if port != 0 {
+        port_env_str = port.to_string();
+        socket_env_str = format!("tcp:localhost:{port}");
+        envs.push(("ANDROID_ADB_SERVER_PORT", port_env_str.as_str()));
+        envs.push(("ADB_SERVER_SOCKET", socket_env_str.as_str()));
+    }
+
+    run_command_with_timeout(&config.client_path, &full_args, &envs, get_cmd_timeout())
 }
 
 pub fn get_cmd_timeout() -> Duration {
-    env::var("COMPAT_CMD_TIMEOUT_SECS")
-        .ok()
-        .and_then(|v| v.parse::<u64>().ok())
-        .map(Duration::from_secs)
-        .unwrap_or(Duration::from_secs(60))
+    if let Ok(val) = env::var("COMPAT_CMD_TIMEOUT_SECS") {
+        match val.parse::<u64>() {
+            Ok(secs) => Duration::from_secs(secs),
+            Err(err) => panic!("Invalid COMPAT_CMD_TIMEOUT_SECS value '{val}': {err}"),
+        }
+    } else {
+        Duration::from_secs(60)
+    }
 }
 
-fn execute_cmd_with_timeout(mut cmd: Command, args_display: &[&str]) -> TestOutput {
+/// Executes an arbitrary command with arguments, environment variables, and timeout.
+pub fn run_command_with_timeout(
+    program: impl AsRef<Path>,
+    args: &[&str],
+    envs: &[(&str, &str)],
+    timeout: Duration,
+) -> TestOutput {
+    let mut cmd = Command::new(program.as_ref());
+    cmd.args(args);
+    for (k, v) in envs {
+        cmd.env(k, v);
+    }
+
     cmd.stdin(std::process::Stdio::null());
     cmd.stdout(std::process::Stdio::piped());
     cmd.stderr(std::process::Stdio::piped());
@@ -356,7 +410,7 @@ fn execute_cmd_with_timeout(mut cmd: Command, args_display: &[&str]) -> TestOutp
         });
     }
 
-    let mut child = cmd.spawn().expect("Failed to execute ADB client command");
+    let mut child = cmd.spawn().expect("Failed to execute command");
 
     let stdout = child.stdout.take().expect("Failed to open stdout");
     let stderr = child.stderr.take().expect("Failed to open stderr");
@@ -393,7 +447,6 @@ fn execute_cmd_with_timeout(mut cmd: Command, args_display: &[&str]) -> TestOutp
     });
 
     let start = Instant::now();
-    let timeout = get_cmd_timeout();
 
     let status = loop {
         match child.try_wait() {
@@ -418,7 +471,7 @@ fn execute_cmd_with_timeout(mut cmd: Command, args_display: &[&str]) -> TestOutp
 
                     panic!(
                         "Command timed out after {:?}.\nArguments: {:?}\nCaptured stdout:\n{}\nCaptured stderr:\n{}",
-                        timeout, args_display, out_str, err_str
+                        timeout, args, out_str, err_str
                     );
                 }
                 thread::sleep(Duration::from_millis(50));
@@ -438,6 +491,50 @@ fn execute_cmd_with_timeout(mut cmd: Command, args_display: &[&str]) -> TestOutp
         stderr,
         exit_code: status.code(),
         status,
+    }
+}
+
+/// Returns whether a process with the given PID is currently running.
+#[cfg(unix)]
+pub fn is_process_running(pid: u32) -> bool {
+    let ret = unsafe { libc::kill(pid as i32, 0) };
+    if ret == 0 {
+        true
+    } else {
+        let err = std::io::Error::last_os_error();
+        err.raw_os_error() != Some(libc::ESRCH)
+    }
+}
+
+/// Returns whether a process group with the given PGID is currently running.
+#[cfg(unix)]
+pub fn is_process_group_running(pgid: u32) -> bool {
+    let ret = unsafe { libc::kill(-(pgid as i32), 0) };
+    if ret == 0 {
+        true
+    } else {
+        let err = std::io::Error::last_os_error();
+        err.raw_os_error() != Some(libc::ESRCH)
+    }
+}
+
+/// Returns whether a process with the given PID is currently running.
+#[cfg(windows)]
+pub fn is_process_running(pid: u32) -> bool {
+    use windows_sys::Win32::Foundation::{CloseHandle, FALSE, STILL_ACTIVE};
+    use windows_sys::Win32::System::Threading::{
+        GetExitCodeProcess, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION,
+    };
+
+    unsafe {
+        let handle = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid);
+        if handle.is_null() {
+            return false;
+        }
+        let mut exit_code = 0u32;
+        let res = GetExitCodeProcess(handle, &mut exit_code);
+        CloseHandle(handle);
+        res != 0 && exit_code == (STILL_ACTIVE as u32)
     }
 }
 
