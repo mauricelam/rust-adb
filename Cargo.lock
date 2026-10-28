@@ -28,6 +28,7 @@ dependencies = [
  "adb-client",
  "adb-proto",
  "bytes",
+ "libc",
  "tokio",
  "tokio-stream",
 ]
