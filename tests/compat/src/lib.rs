@@ -531,10 +531,10 @@ pub fn is_process_running(pid: u32) -> bool {
         if handle.is_null() {
             return false;
         }
-        let mut exit_code = 0;
+        let mut exit_code = 0u32;
         let res = GetExitCodeProcess(handle, &mut exit_code);
         CloseHandle(handle);
-        res != 0 && exit_code == STILL_ACTIVE
+        res != 0 && exit_code == (STILL_ACTIVE as u32)
     }
 }
 
