@@ -745,7 +745,11 @@ where
                     0
                 }
                 Err(err) => {
-                    print_error(&err, &mut output.stderr);
+                    if err.kind() == adb_client::ClientErrorKind::Usage {
+                        let _ = writeln!(output.stderr, "adb: {err}");
+                    } else {
+                        let _ = writeln!(output.stderr, "adb: error: {err}");
+                    }
                     1
                 }
             }
@@ -761,7 +765,11 @@ where
                     0
                 }
                 Err(err) => {
-                    print_error(&err, &mut output.stderr);
+                    if err.kind() == adb_client::ClientErrorKind::Usage {
+                        let _ = writeln!(output.stderr, "adb: {err}");
+                    } else {
+                        let _ = writeln!(output.stderr, "adb: error: {err}");
+                    }
                     1
                 }
             }
@@ -813,7 +821,11 @@ where
                     0
                 }
                 Err(err) => {
-                    print_error(&err, &mut output.stderr);
+                    if err.kind() == adb_client::ClientErrorKind::Usage {
+                        let _ = writeln!(output.stderr, "adb: {err}");
+                    } else {
+                        let _ = writeln!(output.stderr, "adb: error: {err}");
+                    }
                     1
                 }
             }
