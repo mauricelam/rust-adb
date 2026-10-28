@@ -481,7 +481,7 @@ fn print_error(err: &ClientError, stderr: &mut Box<dyn Write + Send>) {
     if err.kind() == adb_client::ClientErrorKind::Usage {
         let _ = writeln!(stderr, "adb: {err}");
     } else {
-        let _ = writeln!(stderr, "adb: error: {err}");
+        let _ = writeln!(stderr, "error: {err}");
     }
 }
 
