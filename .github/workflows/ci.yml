@@ -45,7 +45,8 @@ jobs:
           $adbPath = (Resolve-Path "binaries/windows/adb.exe").Path
           [System.IO.File]::AppendAllText($env:GITHUB_ENV, "ADB_REFERENCE=$adbPath`n", [System.Text.UTF8Encoding]::new($false))
 
-      - name: Verify reference ADB version matches version.rs constants
+      - name: Verify reference ADB version matches version.rs constants (Unix)
+        if: runner.os != 'Windows'
         shell: bash
         run: |
           REF_LINE1=$("$ADB_REFERENCE" version | sed -n '1p' | tr -d '\r')
