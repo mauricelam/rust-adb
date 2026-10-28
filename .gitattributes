@@ -1,2 +1,1 @@
 *.bin binary
-tests/compat/fixtures/cli_stdout/* text eol=lf

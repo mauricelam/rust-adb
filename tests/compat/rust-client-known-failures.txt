@@ -2,9 +2,6 @@
 # Each entry is preceded by a comment indicating the issue that will fix or implement it.
 
 # Issue 41: Implement help and version flags and commands
-test_golden_help_output
-
-# Issue 41: Implement help and version flags and commands
 test_help
 
 # Issue 41: Implement help and version flags and commands
@@ -18,9 +15,6 @@ test_adb_version_standalone
 
 # Issue 40: Implement version command
 test_adb_version_with_server
-
-# Issue 40: Implement version command
-test_golden_version_output
 
 # Issue 40: Implement version command
 test_version

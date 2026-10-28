@@ -1,0 +1,11 @@
+# Mutation: Help General Commands Header Text
+# Breaks help output parsing by changing "general commands:\n" to "basic commands:\n" in help()
+diff --git a/client/commandline.cpp b/client/commandline.cpp
+index 0e77793..5566778 100644
+--- a/client/commandline.cpp
++++ b/client/commandline.cpp
+@@ -105,3 +105,3 @@ static void help() {
+         "\n"
+-        "general commands:\n"
++        "basic commands:\n"
+         " devices [-l]             list connected devices (-l for long output)\n"
