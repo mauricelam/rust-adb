@@ -1,14 +1,9 @@
 test_failure_cases
 test_forward
 test_no_v2_shell_echo
-test_no_v2_shell_exec_in
-test_no_v2_shell_exec_out
 test_no_v2_shell_exit_3
-test_no_v2_shell_no_pty
-test_no_v2_shell_no_v2_flag
 test_no_v2_shell_stderr
 test_no_v2_shell_unsupported
-test_shell_v2
 test_sync
 # List of known failing compatibility tests when using the Rust adb client.
 # Phase 4 issues will incrementally implement commands and remove entries from this file.
@@ -25,10 +20,7 @@ test_adb_version_with_server
 test_server_no_device
 
 # Mock ADBD services (shell, sync, etc.)
-test_mock_adbd_shell_v2_commands
-test_mock_adbd_no_shell_v2_fallback
 test_mock_adbd_sync_ls_pull_push
-test_mock_adbd_connect_and_shell
 test_mock_adbd_sync_v1_fallback_options
 
 # Client timeouts
