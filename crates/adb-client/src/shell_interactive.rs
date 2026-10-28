@@ -51,6 +51,8 @@ pub fn determine_pty_allocation(
 
     let effective_pty_mode = if options.no_pty {
         PtyMode::No
+    } else if options.pty_mode == PtyMode::Auto && !use_shell_protocol {
+        PtyMode::Definitely
     } else {
         options.pty_mode
     };
@@ -82,7 +84,7 @@ pub fn determine_pty_allocation(
     };
 
     let type_arg = if !use_shell_protocol {
-        if requested_type != "pty" {
+        if effective_pty_mode == PtyMode::No || !is_interactive {
             if !device_supports_shell2 {
                 return Err(ClientError::QueryFailed(
                     "device only supports allocating a pty".to_string(),
