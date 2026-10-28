@@ -245,11 +245,15 @@ async fn launch_binary(
     use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle};
     use std::process::Stdio;
     use tokio::io::AsyncReadExt;
-    use windows_sys::Win32::Foundation::HANDLE;
+    use windows_sys::Win32::Foundation::{
+        HANDLE, HANDLE_FLAG_INHERIT, INVALID_HANDLE_VALUE, SetHandleInformation,
+    };
     use windows_sys::Win32::Security::SECURITY_ATTRIBUTES;
+    use windows_sys::Win32::System::Console::{
+        GetStdHandle, STD_ERROR_HANDLE, STD_INPUT_HANDLE, STD_OUTPUT_HANDLE,
+    };
     use windows_sys::Win32::System::Pipes::CreatePipe;
-
-    const CREATE_NO_WINDOW: u32 = 0x08000000;
+    use windows_sys::Win32::System::Threading::{CREATE_NO_WINDOW, DETACHED_PROCESS};
 
     let (read_handle, write_handle) = {
         let sa = SECURITY_ATTRIBUTES {
@@ -270,6 +274,23 @@ async fn launch_binary(
         (read_handle, write_handle)
     };
 
+    // Make read_handle non-inheritable so child process does not inherit read end of pipe.
+    // Ports _make_handle_noninheritable(ack_read.get()) in C++ adb.cpp.
+    unsafe {
+        SetHandleInformation(read_handle.as_raw_handle() as HANDLE, HANDLE_FLAG_INHERIT, 0);
+    }
+
+    // Reset standard handles to non-inheritable prior to spawning process.
+    // Ports _try_make_handle_noninheritable(GetStdHandle(...)) in C++ adb.cpp.
+    unsafe {
+        for std_handle_id in [STD_INPUT_HANDLE, STD_OUTPUT_HANDLE, STD_ERROR_HANDLE] {
+            let h = GetStdHandle(std_handle_id);
+            if h != INVALID_HANDLE_VALUE && !h.is_null() {
+                SetHandleInformation(h, HANDLE_FLAG_INHERIT, 0);
+            }
+        }
+    }
+
     let write_handle_raw = write_handle.as_raw_handle() as usize;
 
     let mut cmd = tokio::process::Command::new(path);
@@ -282,7 +303,7 @@ async fn launch_binary(
         .arg("server")
         .arg("--reply-fd")
         .arg(write_handle_raw.to_string())
-        .creation_flags(CREATE_NO_WINDOW);
+        .creation_flags(DETACHED_PROCESS | CREATE_NO_WINDOW);
 
     if let Some(device) = one_device {
         cmd.arg("--one-device").arg(device);
