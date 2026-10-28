@@ -187,7 +187,7 @@ impl Session {
                         stream,
                         read_buf: Vec::new(),
                         config,
-                    })
+                    });
                 }
                 Ok(Err(err)) => {
                     let retryable = matches!(

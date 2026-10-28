@@ -1,8 +1,9 @@
 //! Argument parsing and CLI helpers for `adb`.
 
 use adb_client::{
-    resolve_server_address, AdbClient, ClientError, DeviceSelection, Outcome, ServerAddress,
-    ServerAddressEnv, ServerAddressOptions, TrackDevicesMode, TransportSelector,
+    resolve_server_address, AdbClient, ClientError, ClientEvent, DeviceSelection,
+    ExternalBinaryLauncher, Outcome, ServerAddress, ServerAddressEnv, ServerAddressOptions,
+    TrackDevicesMode, TransportSelector,
 };
 use std::io::Write;
 use std::pin::Pin;
@@ -410,7 +411,6 @@ fn is_recognized_unimplemented_command(name: &str) -> bool {
             | "shell"
             | "exec-in"
             | "exec-out"
-            | "kill-server"
             | "sideload"
             | "rescue"
             | "tcpip"
@@ -440,7 +440,6 @@ fn is_recognized_unimplemented_command(name: &str) -> bool {
             | "logcat"
             | "lolcat"
             | "longcat"
-            | "start-server"
             | "backup"
             | "restore"
             | "keygen"
@@ -466,6 +465,20 @@ fn is_recognized_unimplemented_command(name: &str) -> bool {
     )
 }
 
+fn print_events(events: &[ClientEvent], stderr: &mut Box<dyn Write + Send>) {
+    for event in events {
+        let _ = writeln!(stderr, "{event}");
+    }
+}
+
+fn print_error(err: &ClientError, stderr: &mut Box<dyn Write + Send>) {
+    if err.kind() == adb_client::ClientErrorKind::Usage {
+        let _ = writeln!(stderr, "adb: {err}");
+    } else {
+        let _ = writeln!(stderr, "error: {err}");
+    }
+}
+
 /// Executes the CLI binary dispatcher using the given arguments, environment, and output streams.
 pub async fn run_cli<E>(args: &[String], env: E, output: &mut Output) -> i32
 where
@@ -487,61 +500,102 @@ where
     let cmd_name = remaining[0].as_str();
     let cmd_args: Vec<&str> = remaining[1..].iter().map(|s| s.as_str()).collect();
 
-    let client = AdbClient::builder(global_opts.server_address.clone()).build();
+    let mut builder = AdbClient::builder(global_opts.server_address.clone());
+    if let Some(server_bin) = env("ADB_SERVER_BIN") {
+        if !server_bin.is_empty() {
+            builder = builder.launcher(ExternalBinaryLauncher::new(server_bin));
+        }
+    }
+    let client = builder.build();
 
     match cmd_name {
+        // Cites `start-server` branch in original/client/commandline.cpp:2102
+        "start-server" => {
+            let outcome = client.check_server_version().await;
+            print_events(&outcome.events, &mut output.stderr);
+            match outcome.result {
+                Ok(()) => 0,
+                Err(err) => {
+                    print_error(&err, &mut output.stderr);
+                    1
+                }
+            }
+        }
+        // Cites `kill-server` branch in original/client/commandline.cpp:1844
+        "kill-server" => {
+            let outcome = client.kill_server().await;
+            print_events(&outcome.events, &mut output.stderr);
+            match outcome.result {
+                Ok(()) => 0,
+                Err(err) => {
+                    print_error(&err, &mut output.stderr);
+                    1
+                }
+            }
+        }
+        // Cites `devices` branch in original/client/commandline.cpp:1758
         "devices" => {
-            let res = parse_and_exec_devices(&client, &cmd_args).await;
-            match res.result {
+            let outcome = parse_and_exec_devices(&client, &cmd_args).await;
+            print_events(&outcome.events, &mut output.stderr);
+            match outcome.result {
                 Ok(stdout) => {
                     let _ = write!(output.stdout, "{stdout}");
                     0
                 }
                 Err(err) => {
-                    let _ = writeln!(output.stderr, "adb: {err}");
+                    print_error(&err, &mut output.stderr);
                     1
                 }
             }
         }
+        // Cites `connect` branch in original/client/commandline.cpp:1784
         "connect" => {
-            let res = parse_and_exec_connect(&client, &cmd_args).await;
-            match res.result {
+            let outcome = parse_and_exec_connect(&client, &cmd_args).await;
+            print_events(&outcome.events, &mut output.stderr);
+            match outcome.result {
                 Ok(stdout) => {
-                    let _ = write!(output.stdout, "{stdout}");
+                    let _ = writeln!(output.stdout, "{stdout}");
                     0
                 }
                 Err(err) => {
-                    let _ = writeln!(output.stderr, "adb: {err}");
+                    print_error(&err, &mut output.stderr);
                     1
                 }
             }
         }
+        // Cites `disconnect` branch in original/client/commandline.cpp:1789
         "disconnect" => {
-            let res = parse_and_exec_disconnect(&client, &cmd_args).await;
-            match res.result {
+            let outcome = parse_and_exec_disconnect(&client, &cmd_args).await;
+            print_events(&outcome.events, &mut output.stderr);
+            match outcome.result {
                 Ok(stdout) => {
-                    let _ = write!(output.stdout, "{stdout}");
+                    let _ = writeln!(output.stdout, "{stdout}");
                     0
                 }
                 Err(err) => {
-                    let _ = writeln!(output.stderr, "adb: {err}");
+                    print_error(&err, &mut output.stderr);
                     1
                 }
             }
         }
+        // Cites `track-devices` branch in original/client/commandline.cpp:2142
         "track-devices" => {
-            let res = parse_and_exec_track_devices(&client, &cmd_args).await;
-            match res.result {
+            let outcome = parse_and_exec_track_devices(&client, &cmd_args).await;
+            print_events(&outcome.events, &mut output.stderr);
+            match outcome.result {
                 Ok(mut stream) => {
                     use tokio_stream::StreamExt;
                     while let Some(chunk_res) = stream.next().await {
                         match chunk_res {
                             Ok(chunk) => {
-                                let _ = output.stdout.write_all(&chunk);
-                                let _ = output.stdout.flush();
+                                if output.stdout.write_all(&chunk).is_err()
+                                    || output.stdout.flush().is_err()
+                                {
+                                    return 1;
+                                }
                             }
                             Err(err) => {
-                                let _ = writeln!(output.stderr, "adb: {err}");
+                                print_error(&err, &mut output.stderr);
                                 return 1;
                             }
                         }
@@ -549,22 +603,23 @@ where
                     0
                 }
                 Err(err) => {
-                    let _ = writeln!(output.stderr, "adb: {err}");
+                    print_error(&err, &mut output.stderr);
                     1
                 }
             }
         }
         "forward" => {
-            let res =
+            let outcome =
                 parse_and_exec_forward(&client, &global_opts.device_selection.selector, &cmd_args)
                     .await;
-            match res.result {
+            print_events(&outcome.events, &mut output.stderr);
+            match outcome.result {
                 Ok(stdout) => {
                     let _ = write!(output.stdout, "{stdout}");
                     0
                 }
                 Err(err) => {
-                    let _ = writeln!(output.stderr, "adb: {err}");
+                    print_error(&err, &mut output.stderr);
                     1
                 }
             }

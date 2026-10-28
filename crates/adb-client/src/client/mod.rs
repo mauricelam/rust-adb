@@ -240,14 +240,39 @@ async fn launch_binary(
     path: &std::path::Path,
     spec: &str,
     one_device: Option<&str>,
-    _config: LaunchConfig,
+    config: LaunchConfig,
 ) -> Result<(), LaunchError> {
-    use std::os::windows::process::CommandExt;
+    use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle};
     use std::process::Stdio;
+    use tokio::io::AsyncReadExt;
+    use windows_sys::Win32::Foundation::HANDLE;
+    use windows_sys::Win32::Security::SECURITY_ATTRIBUTES;
+    use windows_sys::Win32::System::Pipes::CreatePipe;
 
     const CREATE_NO_WINDOW: u32 = 0x08000000;
 
-    let mut cmd = std::process::Command::new(path);
+    let (read_handle, write_handle) = {
+        let sa = SECURITY_ATTRIBUTES {
+            nLength: std::mem::size_of::<SECURITY_ATTRIBUTES>() as u32,
+            lpSecurityDescriptor: std::ptr::null_mut(),
+            bInheritHandle: 1, // TRUE
+        };
+
+        let mut read_pipe: HANDLE = std::ptr::null_mut();
+        let mut write_pipe: HANDLE = std::ptr::null_mut();
+
+        if unsafe { CreatePipe(&mut read_pipe, &mut write_pipe, &sa, 0) } == 0 {
+            return Err(std::io::Error::last_os_error().into());
+        }
+
+        let read_handle = unsafe { OwnedHandle::from_raw_handle(read_pipe as _) };
+        let write_handle = unsafe { OwnedHandle::from_raw_handle(write_pipe as _) };
+        (read_handle, write_handle)
+    };
+
+    let write_handle_raw = write_handle.as_raw_handle() as usize;
+
+    let mut cmd = tokio::process::Command::new(path);
     cmd.stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null())
@@ -255,14 +280,40 @@ async fn launch_binary(
         .arg(spec)
         .arg("fork-server")
         .arg("server")
+        .arg("--reply-fd")
+        .arg(write_handle_raw.to_string())
         .creation_flags(CREATE_NO_WINDOW);
 
     if let Some(device) = one_device {
         cmd.arg("--one-device").arg(device);
     }
 
-    cmd.spawn()?;
-    Ok(())
+    let mut child = cmd.spawn()?;
+
+    // Explicitly drop write_handle in parent so pipe closure signals EOF if child terminates early.
+    drop(write_handle);
+
+    let read_file = std::fs::File::from(read_handle);
+    let mut async_read = tokio::fs::File::from_std(read_file);
+
+    let mut buf = [0u8; 3];
+    let read_res = tokio::time::timeout(config.ack_timeout, async_read.read_exact(&mut buf)).await;
+
+    match read_res {
+        Ok(Ok(3)) if &buf == b"OK\n" => Ok(()),
+        Ok(_) => {
+            let _ = child.kill().await;
+            Err(LaunchError::FailedToReadAck(
+                "could not read ok from ADB Server".to_string(),
+            ))
+        }
+        Err(_) => {
+            let _ = child.kill().await;
+            Err(LaunchError::Timeout(
+                "could not read ok from ADB Server: timed out".to_string(),
+            ))
+        }
+    }
 }
 
 #[cfg(not(any(unix, windows)))]

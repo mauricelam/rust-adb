@@ -1,4 +1,3 @@
-test_connection_management
 test_device_list_and_properties
 test_failure_cases
 test_forward
@@ -25,7 +24,6 @@ test_adb_version_with_server
 
 # Server commands and device lifecycle
 test_server_no_device
-test_server_lifecycle
 
 # Mock ADBD services (shell, sync, etc.)
 test_mock_adbd_shell_v2_commands
