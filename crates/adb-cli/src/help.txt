@@ -100,7 +100,6 @@ app installation (see also `adb shell cmd package help`):
      --force-agent: force update of deployment agent when using fast deploy
      --date-check-agent: update deployment agent when local version is newer and using fast deploy
      --version-check-agent: update deployment agent when local version has different version code and using fast deploy
-     --local-agent: locate agent files from local source build (instead of SDK location)
      (See also `adb shell pm help` for more options.)
  uninstall [-k] PACKAGE
      remove this app package from the device

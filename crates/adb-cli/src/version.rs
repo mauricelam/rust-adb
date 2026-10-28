@@ -62,7 +62,7 @@ pub fn get_os_version() -> String {
         let module = windows_sys::Win32::System::LibraryLoader::GetModuleHandleA(
             ntdll_name.as_ptr() as *const u8,
         );
-        if module == 0 {
+        if module.is_null() {
             return "<Could not get handle to ntdll.dll>".to_string();
         }
         let proc_name = CString::new("RtlGetVersion").unwrap();
@@ -70,9 +70,9 @@ pub fn get_os_version() -> String {
             module,
             proc_name.as_ptr() as *const u8,
         );
-        if proc.is_none() {
+        let Some(proc) = proc else {
             return "<Could not get handle to RtlGetVersion in ntdll.dll>".to_string();
-        }
+        };
         let rtl_get_version: RtlGetVersionFn = std::mem::transmute(proc);
 
         let mut info: OSVERSIONINFOW = std::mem::zeroed();
