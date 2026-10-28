@@ -198,11 +198,11 @@ jobs:
           while IFS= read -r test_name || [ -n "$test_name" ]; do
             test_name=$(echo "$test_name" | xargs)
             if [[ -n "$test_name" && ! "$test_name" =~ ^# ]]; then
-              SKIP_ARGS="$SKIP_ARGS --skip $test_name --exact"
+              SKIP_ARGS="$SKIP_ARGS --skip $test_name"
             fi
           done < tests/compat/rust-client-known-failures.txt
 
-          cargo test -p compat -- $SKIP_ARGS
+          cargo test -p compat -- --exact $SKIP_ARGS
 
       - name: Check known failing compatibility tests with Rust client
         shell: bash
