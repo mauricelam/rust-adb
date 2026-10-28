@@ -7,7 +7,6 @@ publish.workspace = true
 
 [dependencies]
 adb-client = { path = "../adb-client" }
-adb-proto = { path = "../adb-proto" }
 bytes = "1"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "io-util", "process", "net"] }
 tokio-stream = "0.1"

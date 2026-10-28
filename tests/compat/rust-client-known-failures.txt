@@ -1,3 +1,4 @@
+test_device_list_and_properties
 test_failure_cases
 test_forward
 test_no_v2_shell_echo

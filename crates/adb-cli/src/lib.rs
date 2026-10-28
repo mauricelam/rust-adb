@@ -277,6 +277,9 @@ fn is_recognized_unimplemented_command(name: &str) -> bool {
             | "install-multi-package"
             | "uninstall"
             | "sync"
+            | "get-state"
+            | "get-serialno"
+            | "get-devpath"
             | "logcat"
             | "lolcat"
             | "longcat"
@@ -288,18 +291,14 @@ fn is_recognized_unimplemented_command(name: &str) -> bool {
             | "track-jdwp"
             | "track-app"
             | "raw"
+            | "features"
+            | "host-features"
             | "reconnect"
             | "inc-server"
             | "attach"
             | "detach"
             | "server-status"
             | "transport-id"
-            | "help"
-            | "--help"
-            | "-h"
-            | "/?"
-            | "version"
-            | "--version"
     )
 }
 
@@ -315,10 +314,6 @@ fn print_error(err: &ClientError, stderr: &mut Box<dyn Write + Send>) {
     } else {
         let _ = writeln!(stderr, "error: {err}");
     }
-}
-
-fn print_error_prog(err: &ClientError, stderr: &mut Box<dyn Write + Send>) {
-    let _ = writeln!(stderr, "adb: {err}");
 }
 
 /// Executes the CLI binary dispatcher using the given arguments, environment, and output streams.
@@ -370,107 +365,6 @@ where
             print_events(&outcome.events, &mut output.stderr);
             match outcome.result {
                 Ok(()) => 0,
-                Err(err) => {
-                    print_error(&err, &mut output.stderr);
-                    1
-                }
-            }
-        }
-        // Cites `get-state`, `get-serialno`, `get-devpath` in original/client/commandline.cpp:2094
-        "get-state" => {
-            let outcome = client
-                .get_state(&global_opts.device_selection.selector)
-                .await;
-            print_events(&outcome.events, &mut output.stderr);
-            match outcome.result {
-                Ok(stdout) => {
-                    let _ = write!(output.stdout, "{stdout}");
-                    0
-                }
-                Err(err) => {
-                    print_error(&err, &mut output.stderr);
-                    1
-                }
-            }
-        }
-        "get-serialno" => {
-            let outcome = client
-                .get_serialno(&global_opts.device_selection.selector)
-                .await;
-            print_events(&outcome.events, &mut output.stderr);
-            match outcome.result {
-                Ok(stdout) => {
-                    let _ = write!(output.stdout, "{stdout}");
-                    0
-                }
-                Err(err) => {
-                    print_error(&err, &mut output.stderr);
-                    1
-                }
-            }
-        }
-        "get-devpath" => {
-            let outcome = client
-                .get_devpath(&global_opts.device_selection.selector)
-                .await;
-            print_events(&outcome.events, &mut output.stderr);
-            match outcome.result {
-                Ok(stdout) => {
-                    let _ = write!(output.stdout, "{stdout}");
-                    0
-                }
-                Err(err) => {
-                    print_error(&err, &mut output.stderr);
-                    1
-                }
-            }
-        }
-        // Cites `transport-id` in original/client/commandline.cpp:1775
-        "transport-id" => {
-            let outcome = client
-                .transport_id(&global_opts.device_selection.selector)
-                .await;
-            print_events(&outcome.events, &mut output.stderr);
-            match outcome.result {
-                Ok(stdout) => {
-                    let _ = write!(output.stdout, "{stdout}");
-                    0
-                }
-                Err(err) => {
-                    print_error_prog(&err, &mut output.stderr);
-                    1
-                }
-            }
-        }
-        // Cites `features` in original/client/commandline.cpp:2173
-        "features" => {
-            let outcome = client
-                .features(
-                    &global_opts.device_selection.selector,
-                    &adb_proto::FeatureOptions::default(),
-                )
-                .await;
-            print_events(&outcome.events, &mut output.stderr);
-            match outcome.result {
-                Ok(stdout) => {
-                    let _ = write!(output.stdout, "{stdout}");
-                    0
-                }
-                Err(err) => {
-                    print_error_prog(&err, &mut output.stderr);
-                    1
-                }
-            }
-        }
-        // Cites `host-features` in original/client/commandline.cpp:2183
-        "host-features" => {
-            let outcome = client.host_features().await;
-            print_events(&outcome.events, &mut output.stderr);
-            match outcome.result {
-                Ok(stdout) => {
-                    let _ = write!(output.stdout, "{stdout}");
-                    0
-                }
                 Err(err) => {
                     print_error(&err, &mut output.stderr);
                     1
@@ -780,48 +674,6 @@ mod tests {
             err,
             "$ANDROID_ADB_SERVER_PORT must be a positive number less than 65535: got \"99999\""
         );
-    }
-
-    #[test]
-    fn test_selector_precedence() {
-        let env_with_serial = |k: &str| {
-            if k == "ANDROID_SERIAL" {
-                Some("env_serial_123".to_string())
-            } else {
-                None
-            }
-        };
-
-        // 1. ANDROID_SERIAL fallback when no flags passed
-        let (opts, _) = parse_global(vec!["get-state"], env_with_serial).unwrap();
-        assert_eq!(
-            opts.device_selection.selector,
-            TransportSelector::Serial("env_serial_123".to_string())
-        );
-
-        // 2. -d overrides ANDROID_SERIAL
-        let (opts, _) = parse_global(vec!["-d", "get-state"], env_with_serial).unwrap();
-        assert_eq!(opts.device_selection.selector, TransportSelector::Usb);
-
-        // 3. -e overrides ANDROID_SERIAL
-        let (opts, _) = parse_global(vec!["-e", "get-state"], env_with_serial).unwrap();
-        assert_eq!(opts.device_selection.selector, TransportSelector::Local);
-
-        // 4. -s overrides ANDROID_SERIAL and -d/-e
-        let (opts, _) =
-            parse_global(vec!["-d", "-s", "cli_serial", "get-state"], env_with_serial).unwrap();
-        assert_eq!(
-            opts.device_selection.selector,
-            TransportSelector::Serial("cli_serial".to_string())
-        );
-
-        // 5. -t overrides -s, -d, -e, and ANDROID_SERIAL
-        let (opts, _) = parse_global(
-            vec!["-d", "-s", "cli_serial", "-t", "42", "get-state"],
-            env_with_serial,
-        )
-        .unwrap();
-        assert_eq!(opts.device_selection.selector, TransportSelector::Id(42));
     }
 
     #[tokio::test]
