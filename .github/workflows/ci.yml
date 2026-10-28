@@ -45,16 +45,31 @@ jobs:
           $adbPath = (Resolve-Path "binaries/windows/adb.exe").Path
           [System.IO.File]::AppendAllText($env:GITHUB_ENV, "ADB_REFERENCE=$adbPath`n", [System.Text.UTF8Encoding]::new($false))
 
-      - name: Verify reference ADB version (Unix)
-        if: runner.os != 'Windows'
+      - name: Verify reference ADB version matches version.rs
+        shell: bash
         run: |
-          "$ADB_REFERENCE" version
+          VERSION_RS="crates/adb-cli/src/version.rs"
+          MAJOR=$(grep "pub const ADB_VERSION_MAJOR" "$VERSION_RS" | sed -E "s/.*= ([0-9]+);/\1/")
+          MINOR=$(grep "pub const ADB_VERSION_MINOR" "$VERSION_RS" | sed -E "s/.*= ([0-9]+);/\1/")
+          SERVER=$(grep "pub const ADB_SERVER_VERSION" "$VERSION_RS" | sed -E "s/.*= ([0-9]+);/\1/")
+          PT_VER=$(grep "pub const PLATFORM_TOOLS_VERSION" "$VERSION_RS" | sed -E "s/.*= \"([^\"]+)\";/\1/")
+          BUILD_NO=$(grep "pub const BUILD_NUMBER" "$VERSION_RS" | sed -E "s/.*= \"([^\"]+)\";/\1/")
 
-      - name: Verify reference ADB version (Windows)
-        if: runner.os == 'Windows'
-        shell: powershell
-        run: |
-          & "$env:ADB_REFERENCE" version
+          EXPECTED_LINE1="Android Debug Bridge version ${MAJOR}.${MINOR}.${SERVER}"
+          EXPECTED_LINE2="Version ${PT_VER}-${BUILD_NO}"
+
+          ACTUAL_LINE1=$("$ADB_REFERENCE" version | sed -n "1p" | tr -d "\r")
+          ACTUAL_LINE2=$("$ADB_REFERENCE" version | sed -n "2p" | tr -d "\r")
+
+          echo "Actual Line 1: $ACTUAL_LINE1"
+          echo "Actual Line 2: $ACTUAL_LINE2"
+          echo "Expected Line 1: $EXPECTED_LINE1"
+          echo "Expected Line 2: $EXPECTED_LINE2"
+
+          if [ "$ACTUAL_LINE1" != "$EXPECTED_LINE1" ] || [ "$ACTUAL_LINE2" != "$EXPECTED_LINE2" ]; then
+            echo "Error: Reference ADB version output does not match constants in version.rs"
+            exit 1
+          fi
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@master
