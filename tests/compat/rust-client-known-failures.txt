@@ -1,5 +1,4 @@
 test_failure_cases
-test_forward
 test_no_v2_shell_echo
 test_no_v2_shell_exit_3
 test_no_v2_shell_stderr
