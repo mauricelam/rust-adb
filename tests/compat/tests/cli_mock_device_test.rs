@@ -96,6 +96,40 @@ fn assert_matches_golden(case_name: &str, actual: &TestOutput) {
     );
 }
 
+fn run_client_with_env(
+    server: &TestServer,
+    args: &[&str],
+    extra_env: &[(&str, &str)],
+) -> TestOutput {
+    let config = Config::from_env();
+    let mut cmd = Command::new(&config.client_path);
+    cmd.arg("-P").arg(server.port.to_string());
+    cmd.args(args);
+    cmd.env("HOME", server.home_dir.path());
+    cmd.env("USERPROFILE", server.home_dir.path());
+    cmd.env("ANDROID_ADB_HOME", server.home_dir.path());
+    cmd.env("ANDROID_USER_HOME", server.home_dir.path());
+    cmd.env("ADB_MDNS_AUTO_CONNECT", "0");
+    cmd.env("ADB_MDNS_OPENSCREEN", "0");
+    cmd.env(
+        "ADB_SERVER_SOCKET",
+        format!("tcp:localhost:{}", server.port),
+    );
+    for (k, v) in extra_env {
+        cmd.env(k, v);
+    }
+    cmd.stdout(Stdio::piped());
+    cmd.stderr(Stdio::piped());
+
+    let output = cmd.output().expect("Failed to run adb client");
+    TestOutput {
+        stdout: String::from_utf8_lossy(&output.stdout).to_string(),
+        stderr: String::from_utf8_lossy(&output.stderr).to_string(),
+        exit_code: output.status.code(),
+        status: output.status,
+    }
+}
+
 fn run_client_with_stdin(server: &TestServer, args: &[&str], input: &[u8]) -> TestOutput {
     let config = Config::from_env();
     let mut cmd = Command::new(&config.client_path);
@@ -173,6 +207,10 @@ fn test_device_list_and_properties() {
 
     let e_variant = server.run_client(&["-e", "get-state"]);
     assert_matches_golden("mock_e_get_state", &e_variant);
+
+    let env_serial_variant =
+        run_client_with_env(&server, &["get-state"], &[("ANDROID_SERIAL", &mock.addr)]);
+    assert_matches_golden("mock_s_get_state", &env_serial_variant);
 }
 
 #[test]

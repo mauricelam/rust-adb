@@ -26,6 +26,7 @@ name = "adb-cli"
 version = "0.0.0"
 dependencies = [
  "adb-client",
+ "adb-proto",
  "bytes",
  "libc",
  "tokio",
