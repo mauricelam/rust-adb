@@ -198,23 +198,20 @@ jobs:
           while IFS= read -r test_name || [ -n "$test_name" ]; do
             test_name=$(echo "$test_name" | xargs)
             if [[ -n "$test_name" && ! "$test_name" =~ ^# ]]; then
-              SKIP_ARGS="$SKIP_ARGS --skip $test_name"
+              SKIP_ARGS="$SKIP_ARGS --skip $test_name --exact"
             fi
           done < tests/compat/rust-client-known-failures.txt
 
           cargo test -p compat -- $SKIP_ARGS
 
-      - name: Run known failing compatibility tests with Rust client (informational)
+      - name: Check known failing compatibility tests with Rust client
         shell: bash
         run: |
-          INCLUDE_ARGS=""
-          while IFS= read -r test_name || [ -n "$test_name" ]; do
-            test_name=$(echo "$test_name" | xargs)
-            if [[ -n "$test_name" && ! "$test_name" =~ ^# ]]; then
-              INCLUDE_ARGS="$INCLUDE_ARGS $test_name"
-            fi
-          done < tests/compat/rust-client-known-failures.txt
+          ./scripts/check-known-failures.sh
 
-          if [ -n "$INCLUDE_ARGS" ]; then
-            cargo test -p compat -- $INCLUDE_ARGS || true
-          fi
+      - name: Upload known failures report artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: known-failures-report-${{ matrix.os }}
+          path: target/known_failures_report.md

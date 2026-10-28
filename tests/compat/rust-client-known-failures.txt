@@ -1,27 +1,53 @@
-test_failure_cases
-test_forward
-test_no_v2_shell_echo
-test_no_v2_shell_exit_3
-test_no_v2_shell_stderr
-test_no_v2_shell_unsupported
-test_sync
-# List of known failing compatibility tests when using the Rust adb client.
-# Phase 4 issues will incrementally implement commands and remove entries from this file.
+# Known failing compatibility tests when using the Rust adb client.
+# Each entry is preceded by a comment indicating the issue that will fix or implement it.
 
-# Help and Version
-test_help
-test_version
+# Issue 41: Implement help and version flags and commands
 test_golden_help_output
-test_golden_version_output
+
+# Issue 41: Implement help and version flags and commands
+test_help
+
+# Issue 41: Implement help and version flags and commands
+test_help_long
+
+# Issue 41: Implement help and version flags and commands
+test_help_short
+
+# Issue 40: Implement version command
 test_adb_version_standalone
+
+# Issue 40: Implement version command
 test_adb_version_with_server
 
-# Server commands and device lifecycle
-test_server_no_device
+# Issue 40: Implement version command
+test_golden_version_output
 
-# Mock ADBD services (shell, sync, etc.)
+# Issue 40: Implement version command
+test_version
+
+# Issue 40: Implement version command
+test_version_long
+
+# Issue 42: Server commands and device lifecycle
+test_server_no_device_shell_echo_hi
+
+# Issue 43: Forward socket management
+test_mock_forward_no_rebind_existing
+
+# Issue 44: Sync service commands
 test_mock_adbd_sync_ls_pull_push
+
+# Issue 44: Sync service commands
 test_mock_adbd_sync_v1_fallback_options
 
-# Client timeouts
-test_run_client_timeout_panics
+# Issue 44: Sync service commands
+test_sync_ls_data_v1
+
+# Issue 44: Sync service commands
+test_sync_ls_data_v2
+
+# Issue 44: Sync service commands
+test_sync_ls_root_v1
+
+# Issue 44: Sync service commands
+test_sync_ls_root_v2

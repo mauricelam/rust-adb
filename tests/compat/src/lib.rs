@@ -1,4 +1,6 @@
+pub mod known_failures;
 pub mod normalizer;
+pub use known_failures::*;
 pub use normalizer::*;
 
 use std::env;

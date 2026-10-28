@@ -164,49 +164,98 @@ fn run_client_with_stdin(server: &TestServer, args: &[&str], input: &[u8]) -> Te
     }
 }
 
-#[test]
-fn test_device_list_and_properties() {
+// Helper to run a command on a connected mock ADB server and assert golden output
+fn check_mock_adbd_cmd(args: &[&str], case_name: &str) {
     let mock = MockAdbdProcess::start();
     let server = TestServer::start();
+    let _ = server.run_client(&["connect", &mock.addr]);
 
-    let conn = server.run_client(&["connect", &mock.addr]);
-    assert!(conn.success(), "failed to connect to mock adbd");
+    let res = server.run_client(args);
+    assert_matches_golden(case_name, &res);
+}
 
-    let devices = server.run_client(&["devices"]);
-    assert_matches_golden("mock_devices", &devices);
+// Helper to run a command targeting a mock ADB server with explicit serial/target flag
+fn check_mock_adbd_cmd_target(target_args: &[&str], case_name: &str) {
+    let mock = MockAdbdProcess::start();
+    let server = TestServer::start();
+    let _ = server.run_client(&["connect", &mock.addr]);
 
-    let devices_l = server.run_client(&["devices", "-l"]);
-    assert_matches_golden("mock_devices_l", &devices_l);
+    let mut full_args = Vec::new();
+    full_args.extend_from_slice(target_args);
+    let res = server.run_client(&full_args);
+    assert_matches_golden(case_name, &res);
+}
 
-    let get_state = server.run_client(&["get-state"]);
-    assert_matches_golden("mock_get_state", &get_state);
+#[test]
+fn test_mock_devices() {
+    check_mock_adbd_cmd(&["devices"], "mock_devices");
+}
 
-    let get_serialno = server.run_client(&["get-serialno"]);
-    assert_matches_golden("mock_get_serialno", &get_serialno);
+#[test]
+fn test_mock_devices_l() {
+    check_mock_adbd_cmd(&["devices", "-l"], "mock_devices_l");
+}
 
-    let get_devpath = server.run_client(&["get-devpath"]);
-    assert_matches_golden("mock_get_devpath", &get_devpath);
+#[test]
+fn test_mock_get_state() {
+    check_mock_adbd_cmd(&["get-state"], "mock_get_state");
+}
 
-    let transport_id = server.run_client(&["transport-id"]);
-    assert_matches_golden("mock_transport_id", &transport_id);
+#[test]
+fn test_mock_get_serialno() {
+    check_mock_adbd_cmd(&["get-serialno"], "mock_get_serialno");
+}
 
-    let features = server.run_client(&["features"]);
-    assert_matches_golden("mock_features", &features);
+#[test]
+fn test_mock_get_devpath() {
+    check_mock_adbd_cmd(&["get-devpath"], "mock_get_devpath");
+}
 
-    let host_features = server.run_client(&["host-features"]);
-    assert_matches_golden("mock_host_features", &host_features);
+#[test]
+fn test_mock_transport_id() {
+    check_mock_adbd_cmd(&["transport-id"], "mock_transport_id");
+}
+
+#[test]
+fn test_mock_features() {
+    check_mock_adbd_cmd(&["features"], "mock_features");
+}
+
+#[test]
+fn test_mock_host_features() {
+    check_mock_adbd_cmd(&["host-features"], "mock_host_features");
+}
+
+#[test]
+fn test_mock_s_get_state() {
+    let mock = MockAdbdProcess::start();
+    let server = TestServer::start();
+    let _ = server.run_client(&["connect", &mock.addr]);
 
     let s_variant = server.run_client(&["-s", &mock.addr, "get-state"]);
     assert_matches_golden("mock_s_get_state", &s_variant);
+}
 
-    let t_variant = server.run_client(&["-t", "1", "get-state"]);
-    assert_matches_golden("mock_t_get_state", &t_variant);
+#[test]
+fn test_mock_t_get_state() {
+    check_mock_adbd_cmd_target(&["-t", "1", "get-state"], "mock_t_get_state");
+}
 
-    let d_variant = server.run_client(&["-d", "get-state"]);
-    assert_matches_golden("mock_d_get_state", &d_variant);
+#[test]
+fn test_mock_d_get_state() {
+    check_mock_adbd_cmd_target(&["-d", "get-state"], "mock_d_get_state");
+}
 
-    let e_variant = server.run_client(&["-e", "get-state"]);
-    assert_matches_golden("mock_e_get_state", &e_variant);
+#[test]
+fn test_mock_e_get_state() {
+    check_mock_adbd_cmd_target(&["-e", "get-state"], "mock_e_get_state");
+}
+
+#[test]
+fn test_mock_env_serial_get_state() {
+    let mock = MockAdbdProcess::start();
+    let server = TestServer::start();
+    let _ = server.run_client(&["connect", &mock.addr]);
 
     let env_serial_variant =
         run_client_with_env(&server, &["get-state"], &[("ANDROID_SERIAL", &mock.addr)]);
@@ -214,55 +263,125 @@ fn test_device_list_and_properties() {
 }
 
 #[test]
-fn test_connection_management() {
+fn test_mock_connect_first() {
     let mock = MockAdbdProcess::start();
     let server = TestServer::start();
 
     let conn1 = server.run_client(&["connect", &mock.addr]);
     assert_matches_golden("mock_connect_first", &conn1);
+}
 
+#[test]
+fn test_mock_connect_second() {
+    let mock = MockAdbdProcess::start();
+    let server = TestServer::start();
+
+    let _ = server.run_client(&["connect", &mock.addr]);
     let conn2 = server.run_client(&["connect", &mock.addr]);
     assert_matches_golden("mock_connect_second", &conn2);
+}
+
+#[test]
+fn test_mock_connect_closed_port() {
+    let server = TestServer::start();
 
     let conn_closed = server.run_client(&["connect", "127.0.0.1:59999"]);
     assert_matches_golden("mock_connect_closed_port", &conn_closed);
+}
+
+#[test]
+fn test_mock_disconnect_unknown() {
+    let server = TestServer::start();
 
     let disconn_unknown = server.run_client(&["disconnect", "127.0.0.1:59999"]);
     assert_matches_golden("mock_disconnect_unknown", &disconn_unknown);
+}
 
+#[test]
+fn test_mock_disconnect_serial() {
+    let mock = MockAdbdProcess::start();
+    let server = TestServer::start();
+
+    let _ = server.run_client(&["connect", &mock.addr]);
     let disconn_serial = server.run_client(&["disconnect", &mock.addr]);
     assert_matches_golden("mock_disconnect_serial", &disconn_serial);
+}
 
-    // Reconnect to test disconnect (no arg)
+#[test]
+fn test_mock_disconnect_all() {
+    let mock = MockAdbdProcess::start();
+    let server = TestServer::start();
+
     let _ = server.run_client(&["connect", &mock.addr]);
     let disconn_all = server.run_client(&["disconnect"]);
     assert_matches_golden("mock_disconnect_all", &disconn_all);
 }
 
 #[test]
-fn test_shell_v2() {
+fn test_mock_shell_echo() {
     let mock = MockAdbdProcess::start();
     let server = TestServer::start();
-
     let _ = server.run_client(&["connect", &mock.addr]);
 
     let echo = server.run_client(&["-s", &mock.addr, "shell", "echo", "hello"]);
     assert_matches_golden("mock_shell_echo", &echo);
+}
+
+#[test]
+fn test_mock_shell_exit_3() {
+    let mock = MockAdbdProcess::start();
+    let server = TestServer::start();
+    let _ = server.run_client(&["connect", &mock.addr]);
 
     let exit_3 = server.run_client(&["-s", &mock.addr, "shell", "exit", "3"]);
     assert_matches_golden("mock_shell_exit_3", &exit_3);
+}
+
+#[test]
+fn test_mock_shell_stderr() {
+    let mock = MockAdbdProcess::start();
+    let server = TestServer::start();
+    let _ = server.run_client(&["connect", &mock.addr]);
 
     let stderr_cmd = server.run_client(&["-s", &mock.addr, "shell", "stderr", "oops"]);
     assert_matches_golden("mock_shell_stderr", &stderr_cmd);
+}
+
+#[test]
+fn test_mock_shell_no_pty_echo() {
+    let mock = MockAdbdProcess::start();
+    let server = TestServer::start();
+    let _ = server.run_client(&["connect", &mock.addr]);
 
     let no_pty = server.run_client(&["-s", &mock.addr, "shell", "-T", "echo", "hi"]);
     assert_matches_golden("mock_shell_no_pty_echo", &no_pty);
+}
+
+#[test]
+fn test_mock_shell_no_v2_flag_echo() {
+    let mock = MockAdbdProcess::start();
+    let server = TestServer::start();
+    let _ = server.run_client(&["connect", &mock.addr]);
 
     let no_v2_flag = server.run_client(&["-s", &mock.addr, "shell", "-x", "echo", "hi"]);
     assert_matches_golden("mock_shell_no_v2_flag_echo", &no_v2_flag);
+}
+
+#[test]
+fn test_mock_shell_n_cat() {
+    let mock = MockAdbdProcess::start();
+    let server = TestServer::start();
+    let _ = server.run_client(&["connect", &mock.addr]);
 
     let n_cat = server.run_client(&["-s", &mock.addr, "shell", "-n", "cat"]);
     assert_matches_golden("mock_shell_n_cat", &n_cat);
+}
+
+#[test]
+fn test_mock_shell_piped_cat() {
+    let mock = MockAdbdProcess::start();
+    let server = TestServer::start();
+    let _ = server.run_client(&["connect", &mock.addr]);
 
     let piped_cat = run_client_with_stdin(
         &server,
@@ -270,9 +389,23 @@ fn test_shell_v2() {
         b"hello from stdin\n",
     );
     assert_matches_golden("mock_shell_piped_cat", &piped_cat);
+}
+
+#[test]
+fn test_mock_exec_out_echo() {
+    let mock = MockAdbdProcess::start();
+    let server = TestServer::start();
+    let _ = server.run_client(&["connect", &mock.addr]);
 
     let exec_out = server.run_client(&["-s", &mock.addr, "exec-out", "echo", "hi"]);
     assert_matches_golden("mock_exec_out_echo", &exec_out);
+}
+
+#[test]
+fn test_mock_exec_in_cat() {
+    let mock = MockAdbdProcess::start();
+    let server = TestServer::start();
+    let _ = server.run_client(&["connect", &mock.addr]);
 
     let exec_in = run_client_with_stdin(
         &server,
@@ -280,6 +413,13 @@ fn test_shell_v2() {
         b"exec-in payload\n",
     );
     assert_matches_golden("mock_exec_in_cat", &exec_in);
+}
+
+#[test]
+fn test_mock_shell_unsupported() {
+    let mock = MockAdbdProcess::start();
+    let server = TestServer::start();
+    let _ = server.run_client(&["connect", &mock.addr]);
 
     let unsupported = server.run_client(&["-s", &mock.addr, "shell", "unsupported_cmd"]);
     assert_matches_golden("mock_shell_unsupported", &unsupported);
@@ -362,22 +502,36 @@ fn test_no_v2_shell_unsupported() {
 }
 
 #[test]
-fn test_forward() {
+fn test_mock_forward_list_empty() {
     let mock = MockAdbdProcess::start();
     let server = TestServer::start();
-
     let _ = server.run_client(&["connect", &mock.addr]);
 
     let fwd_list_empty = server.run_client(&["-s", &mock.addr, "forward", "--list"]);
     assert_matches_golden("mock_forward_list_empty", &fwd_list_empty);
+}
+
+#[test]
+fn test_mock_forward_add_zero_and_list_one() {
+    let mock = MockAdbdProcess::start();
+    let server = TestServer::start();
+    let _ = server.run_client(&["connect", &mock.addr]);
 
     let fwd_add = server.run_client(&["-s", &mock.addr, "forward", "tcp:0", "tcp:1234"]);
     assert_matches_golden("mock_forward_add_zero", &fwd_add);
 
-    let alloc_port = fwd_add.stdout.trim().to_string();
-
     let fwd_list_one = server.run_client(&["-s", &mock.addr, "forward", "--list"]);
     assert_matches_golden("mock_forward_list_one", &fwd_list_one);
+}
+
+#[test]
+fn test_mock_forward_no_rebind_existing() {
+    let mock = MockAdbdProcess::start();
+    let server = TestServer::start();
+    let _ = server.run_client(&["connect", &mock.addr]);
+
+    let fwd_add = server.run_client(&["-s", &mock.addr, "forward", "tcp:0", "tcp:1234"]);
+    let alloc_port = fwd_add.stdout.trim().to_string();
 
     let fwd_no_rebind = server.run_client(&[
         "-s",
@@ -388,6 +542,16 @@ fn test_forward() {
         "tcp:1234",
     ]);
     assert_matches_golden("mock_forward_no_rebind_existing", &fwd_no_rebind);
+}
+
+#[test]
+fn test_mock_forward_remove() {
+    let mock = MockAdbdProcess::start();
+    let server = TestServer::start();
+    let _ = server.run_client(&["connect", &mock.addr]);
+
+    let fwd_add = server.run_client(&["-s", &mock.addr, "forward", "tcp:0", "tcp:1234"]);
+    let alloc_port = fwd_add.stdout.trim().to_string();
 
     let fwd_remove = server.run_client(&[
         "-s",
@@ -397,6 +561,13 @@ fn test_forward() {
         &format!("tcp:{alloc_port}"),
     ]);
     assert_matches_golden("mock_forward_remove", &fwd_remove);
+}
+
+#[test]
+fn test_mock_forward_remove_all() {
+    let mock = MockAdbdProcess::start();
+    let server = TestServer::start();
+    let _ = server.run_client(&["connect", &mock.addr]);
 
     let _ = server.run_client(&["-s", &mock.addr, "forward", "tcp:0", "tcp:1234"]);
     let fwd_remove_all = server.run_client(&["-s", &mock.addr, "forward", "--remove-all"]);
@@ -404,60 +575,71 @@ fn test_forward() {
 }
 
 #[test]
-fn test_sync() {
+fn test_sync_ls_root_v2() {
     let mock_v2 = MockAdbdProcess::start();
     let server1 = TestServer::start();
     let _ = server1.run_client(&["connect", &mock_v2.addr]);
 
     let ls_root_v2 = server1.run_client(&["-s", &mock_v2.addr, "ls", "/"]);
     assert_matches_golden("mock_sync_ls_root_v2", &ls_root_v2);
+}
+
+#[test]
+fn test_sync_ls_data_v2() {
+    let mock_v2 = MockAdbdProcess::start();
+    let server1 = TestServer::start();
+    let _ = server1.run_client(&["connect", &mock_v2.addr]);
 
     let ls_data_v2 = server1.run_client(&["-s", &mock_v2.addr, "ls", "/data"]);
     assert_matches_golden("mock_sync_ls_data_v2", &ls_data_v2);
+}
 
+#[test]
+fn test_sync_ls_root_v1() {
     let mock_v1 = MockAdbdProcess::start_with_args(&["--no-ls-v2", "--no-stat-v2"]);
     let server2 = TestServer::start();
     let _ = server2.run_client(&["connect", &mock_v1.addr]);
 
     let ls_root_v1 = server2.run_client(&["-s", &mock_v1.addr, "ls", "/"]);
     assert_matches_golden("mock_sync_ls_root_v1", &ls_root_v1);
+}
+
+#[test]
+fn test_sync_ls_data_v1() {
+    let mock_v1 = MockAdbdProcess::start_with_args(&["--no-ls-v2", "--no-stat-v2"]);
+    let server2 = TestServer::start();
+    let _ = server2.run_client(&["connect", &mock_v1.addr]);
 
     let ls_data_v1 = server2.run_client(&["-s", &mock_v1.addr, "ls", "/data"]);
     assert_matches_golden("mock_sync_ls_data_v1", &ls_data_v1);
 }
 
 #[test]
-fn test_failure_cases() {
-    // 1. Two devices connected and no selector
-    {
-        let mock1 = MockAdbdProcess::start();
-        let mock2 = MockAdbdProcess::start();
-        let server = TestServer::start();
+fn test_failure_two_devices_no_selector() {
+    let mock1 = MockAdbdProcess::start();
+    let mock2 = MockAdbdProcess::start();
+    let server = TestServer::start();
 
-        let _ = server.run_client(&["connect", &mock1.addr]);
-        let _ = server.run_client(&["connect", &mock2.addr]);
+    let _ = server.run_client(&["connect", &mock1.addr]);
+    let _ = server.run_client(&["connect", &mock2.addr]);
 
-        let two_devs = server.run_client(&["get-state"]);
-        assert_matches_golden("mock_two_devices_no_selector", &two_devs);
-    }
+    let two_devs = server.run_client(&["get-state"]);
+    assert_matches_golden("mock_two_devices_no_selector", &two_devs);
+}
 
-    // 2. Offline device: mock-adbd handles CNXN handshake upon TCP connection and does not simulate an offline state.
-    // Therefore, offline device testing with mock-adbd is skipped as noted in task scope.
+#[test]
+fn test_failure_shell_closed_connection() {
+    let mut mock = MockAdbdProcess::start();
+    let server = TestServer::start();
+    let mock_addr = mock.addr.clone();
 
-    // 3. Device that closes connection in middle of shell
-    {
-        let mut mock = MockAdbdProcess::start();
-        let server = TestServer::start();
-        let mock_addr = mock.addr.clone();
+    let _ = server.run_client(&["connect", &mock_addr]);
 
-        let _ = server.run_client(&["connect", &mock_addr]);
+    std::thread::spawn(move || {
+        std::thread::sleep(std::time::Duration::from_millis(200));
+        let _ = mock.child.kill();
+    });
 
-        std::thread::spawn(move || {
-            std::thread::sleep(std::time::Duration::from_millis(200));
-            let _ = mock.child.kill();
-        });
-
-        let closed_shell = server.run_client(&["-s", &mock_addr, "shell", "cat"]);
-        assert_matches_golden("mock_shell_closed_connection", &closed_shell);
-    }
+    let closed_shell = server.run_client(&["-s", &mock_addr, "shell", "cat"]);
+    assert_matches_golden("mock_shell_closed_connection", &closed_shell);
 }
