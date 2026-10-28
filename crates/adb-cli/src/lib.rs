@@ -2,8 +2,8 @@
 
 use adb_client::{
     resolve_server_address, AdbClient, ClientError, ClientEvent, DeviceSelection,
-    ExternalBinaryLauncher, Outcome, ServerAddress, ServerAddressEnv, ServerAddressOptions,
-    TrackDevicesMode, TransportSelector,
+    ExternalBinaryLauncher, Outcome, PtyMode, ServerAddress, ServerAddressEnv,
+    ServerAddressOptions, ShellOptions, TrackDevicesMode, TransportSelector,
 };
 use std::io::Write;
 use std::pin::Pin;
@@ -196,8 +196,9 @@ pub struct GlobalOptions {
 /// Shared thread-safe byte buffer for test output assertions.
 pub type MemoryStream = Arc<Mutex<Vec<u8>>>;
 
-/// Abstract output streams for stdout and stderr injection.
+/// Abstract streams for stdin, stdout, and stderr injection.
 pub struct Output {
+    pub stdin: Option<Box<dyn std::io::Read + Send>>,
     pub stdout: Box<dyn Write + Send>,
     pub stderr: Box<dyn Write + Send>,
 }
@@ -211,6 +212,7 @@ impl Default for Output {
 impl Output {
     pub fn stdio() -> Self {
         Self {
+            stdin: Some(Box::new(std::io::stdin())),
             stdout: Box::new(std::io::stdout()),
             stderr: Box::new(std::io::stderr()),
         }
@@ -221,7 +223,20 @@ impl Output {
         let err_buf = Arc::new(Mutex::new(Vec::new()));
         let stdout = Box::new(SharedWriter(out_buf.clone()));
         let stderr = Box::new(SharedWriter(err_buf.clone()));
-        (Self { stdout, stderr }, out_buf, err_buf)
+        (
+            Self {
+                stdin: None,
+                stdout,
+                stderr,
+            },
+            out_buf,
+            err_buf,
+        )
+    }
+
+    pub fn with_stdin<R: std::io::Read + Send + 'static>(mut self, stdin: R) -> Self {
+        self.stdin = Some(Box::new(stdin));
+        self
     }
 }
 
@@ -408,9 +423,6 @@ fn is_recognized_unimplemented_command(name: &str) -> bool {
         "abb"
             | "pair"
             | "emu"
-            | "shell"
-            | "exec-in"
-            | "exec-out"
             | "sideload"
             | "rescue"
             | "tcpip"
@@ -513,6 +525,188 @@ where
             print_events(&outcome.events, &mut output.stderr);
             match outcome.result {
                 Ok(()) => 0,
+                Err(err) => {
+                    print_error(&err, &mut output.stderr);
+                    1
+                }
+            }
+        }
+        "shell" => {
+            let (shell_opts, command_args) = match parse_shell_args(&cmd_args) {
+                Ok(res) => res,
+                Err(err) => {
+                    let _ = writeln!(output.stderr, "adb: {err}");
+                    return 1;
+                }
+            };
+            let cmd_refs: Vec<&str> = command_args.iter().map(|s| s.as_str()).collect();
+
+            let handle = tokio::runtime::Handle::current();
+            let stdin_reader = output.stdin.take().map(|std_r| {
+                let (async_r, mut async_w) = tokio::io::duplex(8192);
+                let mut std_r = std_r;
+                let handle_clone = handle.clone();
+                std::thread::spawn(move || {
+                    let mut buf = [0u8; 8192];
+                    loop {
+                        match std_r.read(&mut buf) {
+                            Ok(0) => break,
+                            Ok(n) => {
+                                use tokio::io::AsyncWriteExt;
+                                if handle_clone.block_on(async_w.write_all(&buf[..n])).is_err()
+                                    || handle_clone.block_on(async_w.flush()).is_err()
+                                {
+                                    break;
+                                }
+                            }
+                            Err(_) => break,
+                        }
+                    }
+                });
+                async_r
+            });
+
+            let mut stdout_target =
+                std::mem::replace(&mut output.stdout, Box::new(std::io::sink()));
+            let (stdout_r, stdout_w) = tokio::io::duplex(8192);
+            let handle_clone1 = handle.clone();
+            let stdout_thread = std::thread::spawn(move || {
+                let mut stdout_r = stdout_r;
+                let mut buf = [0u8; 8192];
+                loop {
+                    let n = match handle_clone1
+                        .block_on(tokio::io::AsyncReadExt::read(&mut stdout_r, &mut buf))
+                    {
+                        Ok(0) | Err(_) => break,
+                        Ok(n) => n,
+                    };
+                    if stdout_target.write_all(&buf[..n]).is_err() || stdout_target.flush().is_err()
+                    {
+                        break;
+                    }
+                }
+                stdout_target
+            });
+
+            let mut stderr_target =
+                std::mem::replace(&mut output.stderr, Box::new(std::io::sink()));
+            let (stderr_r, stderr_w) = tokio::io::duplex(8192);
+            let handle_clone2 = handle.clone();
+            let stderr_thread = std::thread::spawn(move || {
+                let mut stderr_r = stderr_r;
+                let mut buf = [0u8; 8192];
+                loop {
+                    let n = match handle_clone2
+                        .block_on(tokio::io::AsyncReadExt::read(&mut stderr_r, &mut buf))
+                    {
+                        Ok(0) | Err(_) => break,
+                        Ok(n) => n,
+                    };
+                    if stderr_target.write_all(&buf[..n]).is_err() || stderr_target.flush().is_err()
+                    {
+                        break;
+                    }
+                }
+                stderr_target
+            });
+
+            let outcome = client
+                .shell(
+                    &global_opts.device_selection.selector,
+                    &cmd_refs,
+                    &shell_opts,
+                    stdin_reader,
+                    Some(stdout_w),
+                    Some(stderr_w),
+                )
+                .await;
+
+            if let Ok(target) = stdout_thread.join() {
+                output.stdout = target;
+            }
+            if let Ok(target) = stderr_thread.join() {
+                output.stderr = target;
+            }
+
+            print_events(&outcome.events, &mut output.stderr);
+            match outcome.result {
+                Ok(code) => code,
+                Err(err) => {
+                    print_error(&err, &mut output.stderr);
+                    1
+                }
+            }
+        }
+        "exec-in" => {
+            let handle = tokio::runtime::Handle::current();
+            let (async_r, mut async_w) = tokio::io::duplex(8192);
+            if let Some(mut std_r) = output.stdin.take() {
+                std::thread::spawn(move || {
+                    let mut buf = [0u8; 8192];
+                    loop {
+                        match std_r.read(&mut buf) {
+                            Ok(0) => break,
+                            Ok(n) => {
+                                use tokio::io::AsyncWriteExt;
+                                if handle.block_on(async_w.write_all(&buf[..n])).is_err()
+                                    || handle.block_on(async_w.flush()).is_err()
+                                {
+                                    break;
+                                }
+                            }
+                            Err(_) => break,
+                        }
+                    }
+                });
+            }
+
+            let outcome = client
+                .exec_in(&global_opts.device_selection.selector, &cmd_args, async_r)
+                .await;
+
+            print_events(&outcome.events, &mut output.stderr);
+            match outcome.result {
+                Ok(_) => 0,
+                Err(err) => {
+                    print_error(&err, &mut output.stderr);
+                    1
+                }
+            }
+        }
+        "exec-out" => {
+            let handle = tokio::runtime::Handle::current();
+            let mut stdout_target =
+                std::mem::replace(&mut output.stdout, Box::new(std::io::sink()));
+            let (stdout_r, stdout_w) = tokio::io::duplex(8192);
+            let stdout_thread = std::thread::spawn(move || {
+                let mut stdout_r = stdout_r;
+                let mut buf = [0u8; 8192];
+                loop {
+                    let n = match handle
+                        .block_on(tokio::io::AsyncReadExt::read(&mut stdout_r, &mut buf))
+                    {
+                        Ok(0) | Err(_) => break,
+                        Ok(n) => n,
+                    };
+                    if stdout_target.write_all(&buf[..n]).is_err() || stdout_target.flush().is_err()
+                    {
+                        break;
+                    }
+                }
+                stdout_target
+            });
+
+            let outcome = client
+                .exec_out(&global_opts.device_selection.selector, &cmd_args, stdout_w)
+                .await;
+
+            if let Ok(target) = stdout_thread.join() {
+                output.stdout = target;
+            }
+
+            print_events(&outcome.events, &mut output.stderr);
+            match outcome.result {
+                Ok(_) => 0,
                 Err(err) => {
                     print_error(&err, &mut output.stderr);
                     1
@@ -801,6 +995,93 @@ pub async fn parse_and_exec_track_devices(
     client.track_devices(mode).await
 }
 
+/// Parses options and arguments for `adb shell`.
+///
+/// Ports option loop at `original/client/commandline.cpp:adb_shell` (`+e:ntTx`).
+pub fn parse_shell_args(args: &[&str]) -> Result<(ShellOptions, Vec<String>), String> {
+    let mut options = ShellOptions::default();
+    let mut command_args = Vec::new();
+    let mut iter = args.iter().peekable();
+
+    while let Some(&arg) = iter.next() {
+        if arg == "--" {
+            for &rem in iter {
+                command_args.push(rem.to_string());
+            }
+            break;
+        } else if arg.starts_with('-') && arg.len() > 1 && !arg.starts_with("--") {
+            let mut chars = arg[1..].chars().peekable();
+            let mut stop = false;
+            while let Some(c) = chars.next() {
+                match c {
+                    'e' => {
+                        let val = if let Some(rest) = chars.collect::<String>().into() {
+                            let rest_str: String = rest;
+                            if !rest_str.is_empty() {
+                                rest_str
+                            } else if let Some(&next_arg) = iter.next() {
+                                next_arg.to_string()
+                            } else {
+                                return Err("-e requires an argument".to_string());
+                            }
+                        } else {
+                            return Err("-e requires an argument".to_string());
+                        };
+                        if !(val.len() == 1 || val == "none") {
+                            return Err(
+                                "-e requires a single-character argument or 'none'".to_string()
+                            );
+                        }
+                        options.escape_char = if val == "none" {
+                            None
+                        } else {
+                            val.chars().next()
+                        };
+                        break;
+                    }
+                    'n' => {
+                        options.close_stdin = true;
+                    }
+                    'x' => {
+                        options.disable_shell_protocol = true;
+                        options.pty_mode = PtyMode::Definitely;
+                        options.escape_char = Some('~');
+                    }
+                    't' => {
+                        options.pty_mode = match options.pty_mode {
+                            PtyMode::Yes | PtyMode::Definitely => PtyMode::Definitely,
+                            _ => PtyMode::Yes,
+                        };
+                    }
+                    'T' => {
+                        options.pty_mode = PtyMode::No;
+                        options.no_pty = true;
+                    }
+                    _ => {
+                        stop = true;
+                        break;
+                    }
+                }
+            }
+            if stop {
+                command_args.push(arg.to_string());
+                for &rem in iter {
+                    command_args.push(rem.to_string());
+                }
+                break;
+            }
+        } else {
+            command_args.push(arg.to_string());
+            for &rem in iter {
+                command_args.push(rem.to_string());
+            }
+            break;
+        }
+    }
+
+    Ok((options, command_args))
+}
+
 /// Parses arguments for `adb forward` and executes appropriate forward method on `client`.
 pub async fn parse_and_exec_forward(
     client: &AdbClient,
@@ -965,6 +1246,41 @@ mod tests {
         )
         .unwrap();
         assert_eq!(opts.device_selection.selector, TransportSelector::Id(42));
+    }
+
+    #[test]
+    fn test_parse_shell_args() {
+        // Default options, no command
+        let (opts, cmd) = parse_shell_args(&[]).unwrap();
+        assert!(!opts.close_stdin);
+        assert!(!opts.disable_shell_protocol);
+        assert_eq!(opts.pty_mode, PtyMode::Auto);
+        assert_eq!(opts.escape_char, Some('~'));
+        assert!(cmd.is_empty());
+
+        // -n -T echo hello
+        let (opts, cmd) = parse_shell_args(&["-n", "-T", "echo", "hello"]).unwrap();
+        assert!(opts.close_stdin);
+        assert!(opts.no_pty);
+        assert_eq!(opts.pty_mode, PtyMode::No);
+        assert_eq!(cmd, vec!["echo", "hello"]);
+
+        // -x echo hi
+        let (opts, cmd) = parse_shell_args(&["-x", "echo", "hi"]).unwrap();
+        assert!(opts.disable_shell_protocol);
+        assert_eq!(opts.pty_mode, PtyMode::Definitely);
+        assert_eq!(cmd, vec!["echo", "hi"]);
+
+        // -tt -e none cat
+        let (opts, cmd) = parse_shell_args(&["-tt", "-e", "none", "cat"]).unwrap();
+        assert_eq!(opts.pty_mode, PtyMode::Definitely);
+        assert_eq!(opts.escape_char, None);
+        assert_eq!(cmd, vec!["cat"]);
+
+        // Stop at first non-option
+        let (opts, cmd) = parse_shell_args(&["-n", "ls", "-l"]).unwrap();
+        assert!(opts.close_stdin);
+        assert_eq!(cmd, vec!["ls", "-l"]);
     }
 
     #[tokio::test]

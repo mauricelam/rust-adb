@@ -51,6 +51,8 @@ pub fn determine_pty_allocation(
 
     let effective_pty_mode = if options.no_pty {
         PtyMode::No
+    } else if options.pty_mode == PtyMode::Auto && !use_shell_protocol {
+        PtyMode::Definitely
     } else {
         options.pty_mode
     };
@@ -409,16 +411,32 @@ mod tests {
         assert!(dec.raw_stdin);
         assert!(!dec.use_shell_protocol);
 
-        // v1 (no shell2 on device), non-interactive (requests raw) -> device only supports allocating a pty
-        let err = determine_pty_allocation(&opt, false, true, false).unwrap_err();
+        // v1 (no shell2 on device), Auto, non-interactive -> defaults to kPtyDefinitely for v1, so type_arg = ""
+        let dec = determine_pty_allocation(&opt, false, true, false).unwrap();
+        assert_eq!(dec.type_arg, "");
+        assert!(!dec.raw_stdin);
+
+        // v1 (no shell2 on device) with -T (requests raw) -> device only supports allocating a pty
+        let err = determine_pty_allocation(&opt_no_pty, false, true, false).unwrap_err();
         assert_eq!(err.to_string(), "device only supports allocating a pty");
 
-        // -x (disable shell protocol), non-interactive -> -x only supports allocating a pty
+        // -x (disable shell protocol), non-interactive -> defaults to kPtyDefinitely for -x, so type_arg = ""
         let opt_x = ShellOptions {
             disable_shell_protocol: true,
             ..Default::default()
         };
-        let err = determine_pty_allocation(&opt_x, false, true, true).unwrap_err();
+        let dec = determine_pty_allocation(&opt_x, false, true, true).unwrap();
+        assert_eq!(dec.type_arg, "");
+        assert!(!dec.raw_stdin);
+
+        // -x with -T (requests raw) -> -x only supports allocating a pty
+        let opt_x_no_pty = ShellOptions {
+            disable_shell_protocol: true,
+            no_pty: true,
+            pty_mode: PtyMode::No,
+            ..Default::default()
+        };
+        let err = determine_pty_allocation(&opt_x_no_pty, false, true, true).unwrap_err();
         assert_eq!(err.to_string(), "-x only supports allocating a pty");
     }
 
