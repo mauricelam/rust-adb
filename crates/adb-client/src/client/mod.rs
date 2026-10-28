@@ -246,7 +246,7 @@ async fn launch_binary(
     use std::process::Stdio;
     use tokio::io::AsyncReadExt;
     use windows_sys::Win32::Foundation::{
-        HANDLE, HANDLE_FLAG_INHERIT, INVALID_HANDLE_VALUE, SetHandleInformation,
+        SetHandleInformation, HANDLE, HANDLE_FLAG_INHERIT, INVALID_HANDLE_VALUE,
     };
     use windows_sys::Win32::Security::SECURITY_ATTRIBUTES;
     use windows_sys::Win32::System::Console::{
@@ -277,7 +277,11 @@ async fn launch_binary(
     // Make read_handle non-inheritable so child process does not inherit read end of pipe.
     // Ports _make_handle_noninheritable(ack_read.get()) in C++ adb.cpp.
     unsafe {
-        SetHandleInformation(read_handle.as_raw_handle() as HANDLE, HANDLE_FLAG_INHERIT, 0);
+        SetHandleInformation(
+            read_handle.as_raw_handle() as HANDLE,
+            HANDLE_FLAG_INHERIT,
+            0,
+        );
     }
 
     // Reset standard handles to non-inheritable prior to spawning process.
