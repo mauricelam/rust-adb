@@ -667,9 +667,23 @@ fn connect_with_retry(port: u16, timeout: Duration) -> std::io::Result<std::net:
 }
 
 fn get_free_port() -> std::io::Result<u16> {
-    let listener = TcpListener::bind("127.0.0.1:0")?;
-    let port = listener.local_addr()?.port();
-    drop(listener);
-    thread::sleep(Duration::from_millis(20));
-    Ok(port)
+    static RECENT_PORTS: std::sync::Mutex<Vec<u16>> = std::sync::Mutex::new(Vec::new());
+    let mut listeners = Vec::new();
+    loop {
+        let listener = TcpListener::bind("127.0.0.1:0")?;
+        let port = listener.local_addr()?.port();
+        let mut recent = RECENT_PORTS.lock().unwrap();
+        if !recent.contains(&port) {
+            recent.push(port);
+            if recent.len() > 100 {
+                recent.remove(0);
+            }
+            drop(recent);
+            drop(listener);
+            drop(listeners);
+            thread::sleep(Duration::from_millis(20));
+            return Ok(port);
+        }
+        listeners.push(listener);
+    }
 }
