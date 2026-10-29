@@ -80,7 +80,7 @@ pub fn get_os_version() -> String {
             let ntdll_name: Vec<u16> = "ntdll.dll\0".encode_utf16().collect();
             let module = GetModuleHandleW(ntdll_name.as_ptr());
             if !module.is_null() {
-                let proc = GetProcAddress(module, b"RtlGetVersion\0".as_ptr());
+                let proc = GetProcAddress(module, c"RtlGetVersion".as_ptr());
                 if let Some(rtl_get_version) = proc {
                     let rtl_get_version: RtlGetVersionFn = std::mem::transmute(rtl_get_version);
                     let mut info = std::mem::zeroed::<OsVersionInfoW>();
