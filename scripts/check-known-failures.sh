@@ -4,7 +4,7 @@ set -euo pipefail
 # check-known-failures.sh
 # Checks known-failures list in tests/compat/rust-client-known-failures.txt:
 # 1. Parses test names and comments.
-# 2. Ensures every listed test exists in cargo test -p compat -- --list.
+# 2. Ensures every listed test exists in cargo nextest list -p compat.
 # 3. Runs each listed test with --exact.
 # 4. Outputs markdown table of results to target/known_failures_report.md and stdout.
 # 5. Fails if any listed test passes or if a test name matches no test.
@@ -20,7 +20,7 @@ if [ ! -f "$KNOWN_FAILURES_FILE" ]; then
 fi
 
 echo "=== Getting list of available tests in compat crate ==="
-AVAILABLE_TESTS=$(cargo test -p compat -- --list 2>/dev/null | grep ': test$' | awk '{print $1}' | sed 's/:$//')
+AVAILABLE_TESTS=$(cargo nextest list -p compat 2>/dev/null | awk '{print $NF}')
 
 # Collect tests and their reasons
 # Reason is the comment line(s) directly preceding the test line.
@@ -70,7 +70,7 @@ for test_name in "${TEST_NAMES[@]}"; do
 done
 
 if [ ${#MISSING_TESTS[@]} -ne 0 ]; then
-    echo "Error: The following tests listed in $KNOWN_FAILURES_FILE do not exist in cargo test -p compat:" >&2
+    echo "Error: The following tests listed in $KNOWN_FAILURES_FILE do not exist in cargo nextest list -p compat:" >&2
     for missing in "${MISSING_TESTS[@]}"; do
         echo "  - $missing" >&2
     done
@@ -90,7 +90,7 @@ for i in "${!TEST_NAMES[@]}"; do
     echo "Running test [$((i+1))/${#TEST_NAMES[@]}]: $test_name ..."
 
     # Run test
-    if cargo test -p compat -- "$test_name" --exact > /dev/null 2>&1; then
+    if cargo nextest run -p compat -- "$test_name" --exact > /dev/null 2>&1; then
         TEST_RESULTS+=("PASS (Unexpected)")
         UNEXPECTED_PASSES+=("$test_name")
     else
