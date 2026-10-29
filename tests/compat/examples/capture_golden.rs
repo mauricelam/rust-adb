@@ -836,7 +836,13 @@ fn main() {
         save_golden(
             &golden_dir,
             "sync_v2_push_fail_device",
-            &["-s", "<mock_addr>", "push", "<src>", "/nonexistent_dir/file.bin"],
+            &[
+                "-s",
+                "<mock_addr>",
+                "push",
+                "<src>",
+                "/nonexistent_dir/file.bin",
+            ],
             &push_fail_out,
         );
     }
@@ -1178,7 +1184,13 @@ fn main() {
         save_golden(
             &golden_dir,
             "sync_v1_push_fail_device",
-            &["-s", "<mock_addr>", "push", "<src>", "/nonexistent_dir/file.bin"],
+            &[
+                "-s",
+                "<mock_addr>",
+                "push",
+                "<src>",
+                "/nonexistent_dir/file.bin",
+            ],
             &push_fail_out,
         );
     }
