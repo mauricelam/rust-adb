@@ -3,7 +3,7 @@
 use adb_client::{
     resolve_server_address, AdbClient, ClientError, ClientEvent, DeviceSelection,
     ExternalBinaryLauncher, Outcome, PtyMode, ServerAddress, ServerAddressEnv,
-    ServerAddressOptions, ShellOptions, TrackDevicesMode, TransportSelector,
+    ServerAddressOptions, ShellOptions, SyncSession, TrackDevicesMode, TransportSelector,
 };
 use std::io::Write;
 use std::pin::Pin;
@@ -412,6 +412,28 @@ where
         },
         remaining,
     ))
+}
+
+fn parse_compression_type(
+    str: &str,
+    allow_numbers: bool,
+) -> Result<adb_client::CompressionType, String> {
+    if allow_numbers {
+        if str == "0" {
+            return Ok(adb_client::CompressionType::None);
+        } else if str == "1" {
+            return Ok(adb_client::CompressionType::Any);
+        }
+    }
+
+    match str {
+        "any" => Ok(adb_client::CompressionType::Any),
+        "none" => Ok(adb_client::CompressionType::None),
+        "brotli" => Ok(adb_client::CompressionType::Brotli),
+        "lz4" => Ok(adb_client::CompressionType::LZ4),
+        "zstd" => Ok(adb_client::CompressionType::Zstd),
+        _ => Err(format!("unexpected compression type {str}")),
+    }
 }
 
 fn is_recognized_unimplemented_command(name: &str) -> bool {
@@ -917,6 +939,344 @@ where
                     } else {
                         let _ = writeln!(output.stderr, "adb: error: {err}");
                     }
+                    1
+                }
+            }
+        }
+        // Cites `ls` branch in original/client/commandline.cpp:1994
+        "ls" => {
+            if cmd_args.len() != 1 {
+                let _ = writeln!(output.stderr, "adb: ls requires an argument");
+                return 1;
+            }
+            let selector = &global_opts.device_selection.selector;
+            let outcome = SyncSession::connect_with_selector(&client, selector).await;
+            print_events(&outcome.events, &mut output.stderr);
+            let mut sync = match outcome.result {
+                Ok(s) => s,
+                Err(err) => {
+                    let _ = writeln!(output.stderr, "adb: error: {err}");
+                    return 1;
+                }
+            };
+            match sync.ls(cmd_args[0]).await {
+                Ok(entries) => {
+                    for entry in entries {
+                        let _ = write!(output.stdout, "{}", entry.format_line());
+                    }
+                    0
+                }
+                Err(err) => {
+                    let _ = writeln!(output.stderr, "adb: error: {err}");
+                    1
+                }
+            }
+        }
+        // Cites `push` branch in original/client/commandline.cpp:1998 and `do_sync_push` in original/client/file_sync_client.cpp:1448
+        "push" => {
+            let mut _copy_attrs = false;
+            let mut sync_flag = false;
+            let mut dry_run = false;
+            let mut quiet = false;
+            let mut compression = adb_client::CompressionType::Any;
+            let mut srcs = Vec::new();
+            let mut dst = None;
+
+            if let Some(adb_comp) = env("ADB_COMPRESSION") {
+                if let Ok(c) = parse_compression_type(&adb_comp, true) {
+                    compression = c;
+                }
+            }
+
+            let mut i = 0;
+            let mut ignore_flags = false;
+            while i < cmd_args.len() {
+                let arg = cmd_args[i];
+                if ignore_flags || !arg.starts_with('-') || arg == "-" {
+                    srcs.push(arg);
+                } else if arg == "--" {
+                    ignore_flags = true;
+                } else if arg == "-p" {
+                    // Silently ignore
+                } else if arg == "-a" {
+                    _copy_attrs = true;
+                } else if arg == "-z" {
+                    if i + 1 >= cmd_args.len() {
+                        let _ = writeln!(output.stderr, "adb: -z requires an argument");
+                        return 1;
+                    }
+                    i += 1;
+                    match parse_compression_type(cmd_args[i], false) {
+                        Ok(c) => compression = c,
+                        Err(err) => {
+                            let _ = writeln!(output.stderr, "adb: {err}");
+                            return 1;
+                        }
+                    }
+                } else if arg == "-Z" {
+                    compression = adb_client::CompressionType::None;
+                } else if arg == "-n" {
+                    dry_run = true;
+                } else if arg == "--sync" {
+                    sync_flag = true;
+                } else if arg == "-q" {
+                    quiet = true;
+                } else {
+                    let _ = writeln!(output.stderr, "adb: unrecognized option '{arg}'");
+                    return 1;
+                }
+                i += 1;
+            }
+
+            if srcs.len() > 1 {
+                dst = srcs.pop();
+            }
+
+            let dst_path = match dst {
+                Some(d) => d,
+                None => {
+                    let _ = writeln!(
+                        output.stderr,
+                        "adb: push requires <source> and <destination> arguments"
+                    );
+                    return 1;
+                }
+            };
+
+            if srcs.is_empty() {
+                let _ = writeln!(
+                    output.stderr,
+                    "adb: push requires <source> and <destination> arguments"
+                );
+                return 1;
+            }
+
+            let selector = &global_opts.device_selection.selector;
+            let outcome = SyncSession::connect_with_selector(&client, selector).await;
+            print_events(&outcome.events, &mut output.stderr);
+            let mut sync = match outcome.result {
+                Ok(s) => s,
+                Err(err) => {
+                    let _ = writeln!(output.stderr, "adb: error: {err}");
+                    return 1;
+                }
+            };
+
+            let effective_compression = if compression == adb_client::CompressionType::Any {
+                adb_client::CompressionType::None
+            } else {
+                compression
+            };
+
+            let push_opts = adb_client::PushOptions {
+                sync: sync_flag,
+                compression: effective_compression,
+                dry_run,
+            };
+
+            let start_time = std::time::Instant::now();
+            match sync.push(&srcs, dst_path, &push_opts).await {
+                Ok(res) => {
+                    for warning in &res.warnings {
+                        let _ = writeln!(output.stderr, "adb: warning: {warning}");
+                    }
+                    for error in &res.errors {
+                        let _ = writeln!(output.stderr, "adb: error: {error}");
+                    }
+                    if !quiet {
+                        let elapsed = start_time.elapsed().as_secs_f64();
+                        for outcome in &res.outcomes {
+                            if outcome.success {
+                                let display_name = if let Some(out) = env("ANDROID_PRODUCT_OUT") {
+                                    outcome.source.strip_prefix(&out).unwrap_or(&outcome.source)
+                                } else {
+                                    &outcome.source
+                                };
+                                let rate_str = if outcome.bytes_transferred > 0 && elapsed > 0.0 {
+                                    let rate = (outcome.bytes_transferred as f64 / elapsed)
+                                        / (1024.0 * 1024.0);
+                                    format!(
+                                        " {:.1} MB/s ({} bytes in {:.3}s)",
+                                        rate, outcome.bytes_transferred, elapsed
+                                    )
+                                } else {
+                                    "".to_string()
+                                };
+                                let _ = writeln!(
+                                    output.stderr,
+                                    "{display_name}: 1 file pushed, 0 skipped.{rate_str}"
+                                );
+                            }
+                        }
+                        if res.outcomes.len() > 1 {
+                            let total_success = res.outcomes.iter().filter(|o| o.success).count();
+                            let total_failed = res.outcomes.iter().filter(|o| !o.success).count();
+                            let files_word = if total_success == 1 { "file" } else { "files" };
+                            let rate_str = if res.bytes_transferred > 0 && elapsed > 0.0 {
+                                let rate =
+                                    (res.bytes_transferred as f64 / elapsed) / (1024.0 * 1024.0);
+                                format!(
+                                    " {:.1} MB/s ({} bytes in {:.3}s)",
+                                    rate, res.bytes_transferred, elapsed
+                                )
+                            } else {
+                                "".to_string()
+                            };
+                            let _ = writeln!(
+                                output.stderr,
+                                "{total_success} {files_word} pushed, {total_failed} skipped.{rate_str}"
+                            );
+                        }
+                    }
+                    if res.success {
+                        0
+                    } else {
+                        1
+                    }
+                }
+                Err(err) => {
+                    let _ = writeln!(output.stderr, "adb: error: {err}");
+                    1
+                }
+            }
+        }
+        // Cites `pull` branch in original/client/commandline.cpp:2012 and `do_sync_pull` in original/client/file_sync_client.cpp:1671
+        "pull" => {
+            let mut copy_attrs = false;
+            let mut quiet = false;
+            let mut compression = adb_client::CompressionType::None;
+            let mut srcs = Vec::new();
+            let mut dst = ".";
+
+            if let Some(adb_comp) = env("ADB_COMPRESSION") {
+                if let Ok(c) = parse_compression_type(&adb_comp, true) {
+                    compression = c;
+                }
+            }
+
+            let mut i = 0;
+            let mut ignore_flags = false;
+            while i < cmd_args.len() {
+                let arg = cmd_args[i];
+                if ignore_flags || !arg.starts_with('-') || arg == "-" {
+                    srcs.push(arg);
+                } else if arg == "--" {
+                    ignore_flags = true;
+                } else if arg == "-p" {
+                    // Silently ignore
+                } else if arg == "-a" {
+                    copy_attrs = true;
+                } else if arg == "-z" {
+                    if i + 1 >= cmd_args.len() {
+                        let _ = writeln!(output.stderr, "adb: -z requires an argument");
+                        return 1;
+                    }
+                    i += 1;
+                    match parse_compression_type(cmd_args[i], false) {
+                        Ok(c) => compression = c,
+                        Err(err) => {
+                            let _ = writeln!(output.stderr, "adb: {err}");
+                            return 1;
+                        }
+                    }
+                } else if arg == "-Z" {
+                    compression = adb_client::CompressionType::None;
+                } else if arg == "-q" {
+                    quiet = true;
+                } else {
+                    let _ = writeln!(output.stderr, "adb: unrecognized option '{arg}'");
+                    return 1;
+                }
+                i += 1;
+            }
+
+            if srcs.is_empty() {
+                let _ = writeln!(output.stderr, "adb: pull requires an argument");
+                return 1;
+            }
+
+            if srcs.len() > 1 {
+                dst = srcs.pop().unwrap();
+            }
+
+            let selector = &global_opts.device_selection.selector;
+            let outcome = SyncSession::connect_with_selector(&client, selector).await;
+            print_events(&outcome.events, &mut output.stderr);
+            let mut sync = match outcome.result {
+                Ok(s) => s,
+                Err(err) => {
+                    let _ = writeln!(output.stderr, "adb: error: {err}");
+                    return 1;
+                }
+            };
+
+            let pull_opts = adb_client::PullOptions {
+                copy_attrs,
+                compression,
+            };
+
+            let start_time = std::time::Instant::now();
+            match sync.pull(&srcs, dst, &pull_opts).await {
+                Ok(res) => {
+                    for warning in &res.warnings {
+                        let _ = writeln!(output.stderr, "adb: warning: {warning}");
+                    }
+                    for error in &res.errors {
+                        let _ = writeln!(output.stderr, "adb: error: {error}");
+                    }
+                    if !quiet {
+                        let elapsed = start_time.elapsed().as_secs_f64();
+                        for outcome in &res.outcomes {
+                            if outcome.success {
+                                let display_name = if let Some(out) = env("ANDROID_PRODUCT_OUT") {
+                                    outcome.source.strip_prefix(&out).unwrap_or(&outcome.source)
+                                } else {
+                                    &outcome.source
+                                };
+                                let rate_str = if outcome.bytes_transferred > 0 && elapsed > 0.0 {
+                                    let rate = (outcome.bytes_transferred as f64 / elapsed)
+                                        / (1024.0 * 1024.0);
+                                    format!(
+                                        " {:.1} MB/s ({} bytes in {:.3}s)",
+                                        rate, outcome.bytes_transferred, elapsed
+                                    )
+                                } else {
+                                    "".to_string()
+                                };
+                                let _ = writeln!(
+                                    output.stderr,
+                                    "{display_name}: 1 file pulled, 0 skipped.{rate_str}"
+                                );
+                            }
+                        }
+                        if res.outcomes.len() > 1 {
+                            let total_success = res.outcomes.iter().filter(|o| o.success).count();
+                            let total_failed = res.outcomes.iter().filter(|o| !o.success).count();
+                            let files_word = if total_success == 1 { "file" } else { "files" };
+                            let rate_str = if res.bytes_transferred > 0 && elapsed > 0.0 {
+                                let rate =
+                                    (res.bytes_transferred as f64 / elapsed) / (1024.0 * 1024.0);
+                                format!(
+                                    " {:.1} MB/s ({} bytes in {:.3}s)",
+                                    rate, res.bytes_transferred, elapsed
+                                )
+                            } else {
+                                "".to_string()
+                            };
+                            let _ = writeln!(
+                                output.stderr,
+                                "{total_success} {files_word} pulled, {total_failed} skipped.{rate_str}"
+                            );
+                        }
+                    }
+                    if res.success {
+                        0
+                    } else {
+                        1
+                    }
+                }
+                Err(err) => {
+                    let _ = writeln!(output.stderr, "adb: error: {err}");
                     1
                 }
             }

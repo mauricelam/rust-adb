@@ -632,6 +632,213 @@ fn main() {
             &["-s", "<mock_addr>", "ls", "/data"],
             &server.run_client(&["-s", &mock.addr, "ls", "/data"]),
         );
+
+        let tmp_dir = TempDir::new().expect("temp dir");
+
+        let test_files = [
+            ("f_0_bin", "f_0.bin", vec![]),
+            ("f_1_bin", "f_1.bin", vec![0x42]),
+            ("f_65535_bin", "f_65535.bin", vec![0xAA; 65535]),
+            ("f_65536_bin", "f_65536.bin", vec![0xBB; 65536]),
+            (
+                "f_300k_bin",
+                "f_300k.bin",
+                (0..307200).map(|i| (i % 256) as u8).collect(),
+            ),
+        ];
+
+        for (file_key, filename, expected_bytes) in &test_files {
+            let remote_path = format!("/data/{filename}");
+            let local_path = tmp_dir.path().join(filename);
+
+            let pull_out = server.run_client(&[
+                "-s",
+                &mock.addr,
+                "pull",
+                &remote_path,
+                local_path.to_str().unwrap(),
+            ]);
+            save_golden(
+                &golden_dir,
+                &format!("sync_v2_pull_{file_key}"),
+                &["-s", "<mock_addr>", "pull", &remote_path, "<local_path>"],
+                &pull_out,
+            );
+
+            let pushed_filename = format!("pushed_{filename}");
+            let local_src = tmp_dir.path().join(&pushed_filename);
+            fs::write(&local_src, expected_bytes).unwrap();
+
+            let remote_dest = format!("/data/{pushed_filename}");
+            let push_out = server.run_client(&[
+                "-s",
+                &mock.addr,
+                "push",
+                local_src.to_str().unwrap(),
+                &remote_dest,
+            ]);
+            save_golden(
+                &golden_dir,
+                &format!("sync_v2_push_{file_key}"),
+                &["-s", "<mock_addr>", "push", "<local_src>", &remote_dest],
+                &push_out,
+            );
+        }
+
+        let pull_a_local = tmp_dir.path().join("pull_a.bin");
+        let pull_a_out = server.run_client(&[
+            "-s",
+            &mock.addr,
+            "pull",
+            "-a",
+            "/data/f_1.bin",
+            pull_a_local.to_str().unwrap(),
+        ]);
+        save_golden(
+            &golden_dir,
+            "sync_v2_pull_a",
+            &[
+                "-s",
+                "<mock_addr>",
+                "pull",
+                "-a",
+                "/data/f_1.bin",
+                "<local_path>",
+            ],
+            &pull_a_out,
+        );
+
+        let missing_remote_local = tmp_dir.path().join("missing_remote.bin");
+        let missing_pull_out = server.run_client(&[
+            "-s",
+            &mock.addr,
+            "pull",
+            "/data/nonexistent.bin",
+            missing_remote_local.to_str().unwrap(),
+        ]);
+        save_golden(
+            &golden_dir,
+            "sync_v2_pull_missing_remote",
+            &[
+                "-s",
+                "<mock_addr>",
+                "pull",
+                "/data/nonexistent.bin",
+                "<local_path>",
+            ],
+            &missing_pull_out,
+        );
+
+        let missing_local_out = server.run_client(&[
+            "-s",
+            &mock.addr,
+            "push",
+            tmp_dir.path().join("nosuchlocal.bin").to_str().unwrap(),
+            "/data/nosuchlocal.bin",
+        ]);
+        save_golden(
+            &golden_dir,
+            "sync_v2_push_missing_local",
+            &[
+                "-s",
+                "<mock_addr>",
+                "push",
+                "<missing_local>",
+                "/data/nosuchlocal.bin",
+            ],
+            &missing_local_out,
+        );
+
+        let bad_dst_pull_out = server.run_client(&[
+            "-s",
+            &mock.addr,
+            "pull",
+            "/data/f_1.bin",
+            tmp_dir
+                .path()
+                .join("nonexistent_dir")
+                .join("file.bin")
+                .to_str()
+                .unwrap(),
+        ]);
+        save_golden(
+            &golden_dir,
+            "sync_v2_pull_bad_dst_dir",
+            &[
+                "-s",
+                "<mock_addr>",
+                "pull",
+                "/data/f_1.bin",
+                "<bad_dst_dir>",
+            ],
+            &bad_dst_pull_out,
+        );
+
+        let two_src_file = tmp_dir.path().join("single_target.bin");
+        fs::write(&two_src_file, b"data").unwrap();
+        let two_src_pull_out = server.run_client(&[
+            "-s",
+            &mock.addr,
+            "pull",
+            "/data/f_0.bin",
+            "/data/f_1.bin",
+            two_src_file.to_str().unwrap(),
+        ]);
+        save_golden(
+            &golden_dir,
+            "sync_v2_pull_two_sources_into_file",
+            &[
+                "-s",
+                "<mock_addr>",
+                "pull",
+                "/data/f_0.bin",
+                "/data/f_1.bin",
+                "<single_file>",
+            ],
+            &two_src_pull_out,
+        );
+
+        let src1 = tmp_dir.path().join("src1.bin");
+        let src2 = tmp_dir.path().join("src2.bin");
+        fs::write(&src1, b"1").unwrap();
+        fs::write(&src2, b"2").unwrap();
+        let two_src_push_out = server.run_client(&[
+            "-s",
+            &mock.addr,
+            "push",
+            src1.to_str().unwrap(),
+            src2.to_str().unwrap(),
+            "/data/f_0.bin",
+        ]);
+        save_golden(
+            &golden_dir,
+            "sync_v2_push_two_sources_into_file",
+            &[
+                "-s",
+                "<mock_addr>",
+                "push",
+                "<src1>",
+                "<src2>",
+                "/data/f_0.bin",
+            ],
+            &two_src_push_out,
+        );
+
+        let push_fail_src = tmp_dir.path().join("push_fail.bin");
+        fs::write(&push_fail_src, b"fail content").unwrap();
+        let push_fail_out = server.run_client(&[
+            "-s",
+            &mock.addr,
+            "push",
+            push_fail_src.to_str().unwrap(),
+            "/data/fail.bin",
+        ]);
+        save_golden(
+            &golden_dir,
+            "sync_v2_push_fail_device",
+            &["-s", "<mock_addr>", "push", "<src>", "/data/fail.bin"],
+            &push_fail_out,
+        );
     }
 
     // 5. Connection management specs
@@ -766,6 +973,213 @@ fn main() {
             "mock_sync_ls_data_v1",
             &["-s", "<mock_addr>", "ls", "/data"],
             &server.run_client(&["-s", &mock.addr, "ls", "/data"]),
+        );
+
+        let tmp_dir = TempDir::new().expect("temp dir");
+
+        let test_files = [
+            ("f_0_bin", "f_0.bin", vec![]),
+            ("f_1_bin", "f_1.bin", vec![0x42]),
+            ("f_65535_bin", "f_65535.bin", vec![0xAA; 65535]),
+            ("f_65536_bin", "f_65536.bin", vec![0xBB; 65536]),
+            (
+                "f_300k_bin",
+                "f_300k.bin",
+                (0..307200).map(|i| (i % 256) as u8).collect(),
+            ),
+        ];
+
+        for (file_key, filename, expected_bytes) in &test_files {
+            let remote_path = format!("/data/{filename}");
+            let local_path = tmp_dir.path().join(filename);
+
+            let pull_out = server.run_client(&[
+                "-s",
+                &mock.addr,
+                "pull",
+                &remote_path,
+                local_path.to_str().unwrap(),
+            ]);
+            save_golden(
+                &golden_dir,
+                &format!("sync_v1_pull_{file_key}"),
+                &["-s", "<mock_addr>", "pull", &remote_path, "<local_path>"],
+                &pull_out,
+            );
+
+            let pushed_filename = format!("pushed_{filename}");
+            let local_src = tmp_dir.path().join(&pushed_filename);
+            fs::write(&local_src, expected_bytes).unwrap();
+
+            let remote_dest = format!("/data/{pushed_filename}");
+            let push_out = server.run_client(&[
+                "-s",
+                &mock.addr,
+                "push",
+                local_src.to_str().unwrap(),
+                &remote_dest,
+            ]);
+            save_golden(
+                &golden_dir,
+                &format!("sync_v1_push_{file_key}"),
+                &["-s", "<mock_addr>", "push", "<local_src>", &remote_dest],
+                &push_out,
+            );
+        }
+
+        let pull_a_local = tmp_dir.path().join("pull_a.bin");
+        let pull_a_out = server.run_client(&[
+            "-s",
+            &mock.addr,
+            "pull",
+            "-a",
+            "/data/f_1.bin",
+            pull_a_local.to_str().unwrap(),
+        ]);
+        save_golden(
+            &golden_dir,
+            "sync_v1_pull_a",
+            &[
+                "-s",
+                "<mock_addr>",
+                "pull",
+                "-a",
+                "/data/f_1.bin",
+                "<local_path>",
+            ],
+            &pull_a_out,
+        );
+
+        let missing_remote_local = tmp_dir.path().join("missing_remote.bin");
+        let missing_pull_out = server.run_client(&[
+            "-s",
+            &mock.addr,
+            "pull",
+            "/data/nonexistent.bin",
+            missing_remote_local.to_str().unwrap(),
+        ]);
+        save_golden(
+            &golden_dir,
+            "sync_v1_pull_missing_remote",
+            &[
+                "-s",
+                "<mock_addr>",
+                "pull",
+                "/data/nonexistent.bin",
+                "<local_path>",
+            ],
+            &missing_pull_out,
+        );
+
+        let missing_local_out = server.run_client(&[
+            "-s",
+            &mock.addr,
+            "push",
+            tmp_dir.path().join("nosuchlocal.bin").to_str().unwrap(),
+            "/data/nosuchlocal.bin",
+        ]);
+        save_golden(
+            &golden_dir,
+            "sync_v1_push_missing_local",
+            &[
+                "-s",
+                "<mock_addr>",
+                "push",
+                "<missing_local>",
+                "/data/nosuchlocal.bin",
+            ],
+            &missing_local_out,
+        );
+
+        let bad_dst_pull_out = server.run_client(&[
+            "-s",
+            &mock.addr,
+            "pull",
+            "/data/f_1.bin",
+            tmp_dir
+                .path()
+                .join("nonexistent_dir")
+                .join("file.bin")
+                .to_str()
+                .unwrap(),
+        ]);
+        save_golden(
+            &golden_dir,
+            "sync_v1_pull_bad_dst_dir",
+            &[
+                "-s",
+                "<mock_addr>",
+                "pull",
+                "/data/f_1.bin",
+                "<bad_dst_dir>",
+            ],
+            &bad_dst_pull_out,
+        );
+
+        let two_src_file = tmp_dir.path().join("single_target.bin");
+        fs::write(&two_src_file, b"data").unwrap();
+        let two_src_pull_out = server.run_client(&[
+            "-s",
+            &mock.addr,
+            "pull",
+            "/data/f_0.bin",
+            "/data/f_1.bin",
+            two_src_file.to_str().unwrap(),
+        ]);
+        save_golden(
+            &golden_dir,
+            "sync_v1_pull_two_sources_into_file",
+            &[
+                "-s",
+                "<mock_addr>",
+                "pull",
+                "/data/f_0.bin",
+                "/data/f_1.bin",
+                "<single_file>",
+            ],
+            &two_src_pull_out,
+        );
+
+        let src1 = tmp_dir.path().join("src1.bin");
+        let src2 = tmp_dir.path().join("src2.bin");
+        fs::write(&src1, b"1").unwrap();
+        fs::write(&src2, b"2").unwrap();
+        let two_src_push_out = server.run_client(&[
+            "-s",
+            &mock.addr,
+            "push",
+            src1.to_str().unwrap(),
+            src2.to_str().unwrap(),
+            "/data/f_0.bin",
+        ]);
+        save_golden(
+            &golden_dir,
+            "sync_v1_push_two_sources_into_file",
+            &[
+                "-s",
+                "<mock_addr>",
+                "push",
+                "<src1>",
+                "<src2>",
+                "/data/f_0.bin",
+            ],
+            &two_src_push_out,
+        );
+
+        let push_fail_src = tmp_dir.path().join("push_fail.bin");
+        fs::write(&push_fail_src, b"fail content").unwrap();
+        let push_fail_out = server.run_client(&[
+            "-s",
+            &mock.addr,
+            "push",
+            push_fail_src.to_str().unwrap(),
+            "/data/fail.bin",
+        ]);
+        save_golden(
+            &golden_dir,
+            "sync_v1_push_fail_device",
+            &["-s", "<mock_addr>", "push", "<src>", "/data/fail.bin"],
+            &push_fail_out,
         );
     }
 

@@ -631,12 +631,10 @@ impl SyncSession {
             let mtime = u32::from_le_bytes(buf[12..16].try_into().unwrap());
 
             if mode == 0 && size == 0 && mtime == 0 {
-                let host_errno = errno_from_wire(2);
-                let message = errno_to_string(host_errno);
                 return Err(SyncError::Errno {
-                    wire: 2,
-                    errno: host_errno,
-                    message,
+                    wire: 92, // ENOPROTOOPT
+                    errno: 92,
+                    message: "Option not supported by protocol".to_string(),
                 });
             }
 
@@ -759,7 +757,13 @@ impl SyncSession {
             let src_st = match self.stat_with_fallback(src_path).await {
                 Ok(st) => st,
                 Err(SyncError::Errno { errno: 2, .. }) | Err(SyncError::Errno { wire: 2, .. }) => {
-                    let msg = format!("remote object '{src_path}' does not exist");
+                    let msg = if !self.have_stat_v2 {
+                        format!("remote object '{src_path}' does not exist")
+                    } else {
+                        format!(
+                            "failed to stat remote object '{src_path}': No such file or directory"
+                        )
+                    };
                     res.errors.push(msg.clone());
                     res.success = false;
                     res.outcomes.push(PullSourceOutcome {
@@ -1069,11 +1073,28 @@ impl SyncSession {
             let local_path_buf = local_path.to_path_buf();
             let sym_meta_res =
                 tokio::task::spawn_blocking(move || std::fs::symlink_metadata(&local_path_buf))
-                    .await
-                    .map_err(|e| SyncError::Io(std::io::Error::other(e)))?;
+                    .await;
 
             let local_st = match sym_meta_res {
-                Ok(st) => st,
+                Ok(Ok(st)) => st,
+                Ok(Err(e)) => {
+                    let raw_err = if let Some(code) = e.raw_os_error() {
+                        errno_to_string(code)
+                    } else {
+                        e.to_string()
+                    };
+                    let msg = format!("cannot stat '{src_path}': {raw_err}");
+                    res.errors.push(msg.clone());
+                    res.success = false;
+                    res.outcomes.push(PushSourceOutcome {
+                        source: src_path.to_string(),
+                        destination: dst_str.clone(),
+                        bytes_transferred: 0,
+                        success: false,
+                        error: Some(msg),
+                    });
+                    continue;
+                }
                 Err(e) => {
                     let msg = format!("cannot stat '{src_path}': {e}");
                     res.errors.push(msg.clone());
