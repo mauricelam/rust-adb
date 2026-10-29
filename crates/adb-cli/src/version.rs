@@ -15,16 +15,16 @@ pub const ADB_VERSION_MINOR: u32 = 0;
 pub const ADB_SERVER_VERSION: u32 = 41;
 
 /// Platform tools version string (`PLATFORM_TOOLS_VERSION` in `original/adb.cpp`).
-pub const PLATFORM_TOOLS_VERSION: &str = "36.0.2";
+pub const PLATFORM_TOOLS_VERSION: &str = "37.0.1";
 
 /// Build number string (`android::build::GetBuildNumber()` in `original/adb.cpp`).
-pub const BUILD_NUMBER: &str = "14143358";
+pub const BUILD_NUMBER: &str = "15733141";
 
 /// Header line 1 for version output, e.g. "Android Debug Bridge version 1.0.41".
 pub const VERSION_LINE_1: &str = "Android Debug Bridge version 1.0.41";
 
-/// Header line 2 for version output, e.g. "Version 36.0.2-14143358".
-pub const VERSION_LINE_2: &str = "Version 36.0.2-14143358";
+/// Header line 2 for version output, e.g. "Version 37.0.1-15733141".
+pub const VERSION_LINE_2: &str = "Version 37.0.1-15733141";
 
 /// Returns the operating system description string matching `GetOSVersion()` in upstream C++:
 /// - Unix/Linux/macOS (`original/sysdeps_unix.cpp:105`): `StringPrintf("%s %s (%s)", name.sysname, name.release, name.machine)`
