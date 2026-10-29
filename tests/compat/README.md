@@ -16,19 +16,19 @@ The harness configures client/server processes using the following environment v
 To run all compatibility tests using the reference binary:
 
 ```bash
-cargo test -p compat
+cargo nextest run -p compat
 ```
 
 To run compatibility tests against a custom client binary:
 
 ```bash
-ADB_CLIENT=/path/to/adb cargo test -p compat
+ADB_CLIENT=/path/to/adb cargo nextest run -p compat
 ```
 
 To run compatibility tests against a custom server binary:
 
 ```bash
-ADB_SERVER_BIN=/path/to/adb cargo test -p compat
+ADB_SERVER_BIN=/path/to/adb cargo nextest run -p compat
 ```
 
 ## Isolation & Parallel Execution

@@ -36,7 +36,7 @@ for patch_file in "${PATCH_FILES[@]}"; do
   BUILT_ADB="$("${REPO_ROOT}/scripts/build-cpp-adb.sh" --patch "${patch_file}")"
 
   # Run compat test suite against the mutant binary
-  if ADB_CLIENT="${BUILT_ADB}" ADB_SERVER_BIN="${BUILT_ADB}" ADB_REFERENCE="${BUILT_ADB}" cargo test -p compat -- --test-threads=1 > /dev/null 2>&1; then
+  if ADB_CLIENT="${BUILT_ADB}" ADB_SERVER_BIN="${BUILT_ADB}" ADB_REFERENCE="${BUILT_ADB}" cargo nextest run -p compat > /dev/null 2>&1; then
     echo "Result for ${patch_name}: SURVIVED"
     echo "${patch_name},survived" >> "${RESULTS_FILE}"
   else

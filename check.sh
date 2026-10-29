@@ -43,9 +43,9 @@ echo "=== Step 3: Clippy check ==="
 cargo clippy --workspace --all-targets -- -D warnings
 
 echo "=== Step 4: Workspace tests ==="
-cargo test --workspace
+cargo nextest run --workspace
 
 echo "=== Step 5: Compatibility suite ==="
-cargo test -p compat
+cargo nextest run -p compat
 
 echo "=== All CI checks passed successfully! ==="
