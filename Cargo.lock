@@ -28,8 +28,10 @@ dependencies = [
  "adb-client",
  "adb-proto",
  "bytes",
+ "libc",
  "tokio",
  "tokio-stream",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
