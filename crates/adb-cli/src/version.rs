@@ -31,6 +31,7 @@ pub fn get_os_version() -> String {
     #[cfg(windows)]
     {
         #[repr(C)]
+        #[allow(non_snake_case, clippy::upper_case_acronyms)]
         struct OSVERSIONINFOW {
             dwOSVersionInfoSize: u32,
             dwMajorVersion: u32,
