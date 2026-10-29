@@ -97,7 +97,7 @@ pub fn normalize_temp_paths(input: &str) -> String {
     let win_temp_re = Regex::new(r"(?i)[a-z]:\\(?:[^\\]+\\)*temp\\[a-zA-Z0-9._-]+").unwrap();
     s = win_temp_re.replace_all(&s, "<tmp>").to_string();
 
-    s
+    s.replace("<tmp>\\", "<tmp>/")
 }
 
 /// Rule 5: Replace version numbers and build ids in version output with `<version>`,
@@ -118,6 +118,10 @@ pub fn normalize_transfer_summary(input: &str) -> String {
         .to_string()
 }
 
+// Match OS error details in parentheses like "(os error 2)"
+static OS_ERROR_PAREN_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r" \(os error \d+\)").unwrap());
+
 /// Rule 6: Remove OS-specific help lines (e.g. `--local-agent` on Linux/macOS vs Windows)
 /// and normalize connection refused OS error text.
 pub fn normalize_os_differences(input: &str) -> String {
@@ -136,9 +140,10 @@ pub fn normalize_os_differences(input: &str) -> String {
     let s = CONN_REFUSED_RE
         .replace_all(&s, "${1}Connection refused")
         .to_string();
-    WIN_CONN_REFUSED_RE
+    let s = WIN_CONN_REFUSED_RE
         .replace_all(&s, "failed to connect to '${1}': Connection refused")
-        .to_string()
+        .to_string();
+    OS_ERROR_PAREN_RE.replace_all(&s, "").to_string()
 }
 
 /// Master normalizer combining all rules in sequence.
