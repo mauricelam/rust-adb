@@ -384,6 +384,86 @@ pub fn get_cmd_timeout() -> Duration {
     }
 }
 
+/// Managed ADB server environment isolated from host environment and other test instances.
+pub struct IsolatedServer {
+    pub port: u16,
+    pub home_dir: TempDir,
+    pub config: Config,
+}
+
+impl IsolatedServer {
+    /// Creates a new isolated server environment using `Config::from_env()`.
+    pub fn new() -> Self {
+        Self::with_config(Config::from_env())
+    }
+
+    /// Creates a new isolated server environment with the given `Config`.
+    pub fn with_config(config: Config) -> Self {
+        let home_dir =
+            tempfile::tempdir().expect("Failed to create temporary directory for test home");
+        let port = match config.server_port {
+            Some(p) => p,
+            None => get_free_port().expect("Failed to find free TCP port for ADB server"),
+        };
+        IsolatedServer {
+            port,
+            home_dir,
+            config,
+        }
+    }
+
+    /// Executes the ADB client binary against this isolated server environment.
+    pub fn run_client(&self, args: &[&str]) -> TestOutput {
+        let port_str = self.port.to_string();
+        let mut full_args = vec!["-P", port_str.as_str()];
+        full_args.extend_from_slice(args);
+
+        let home_str = self.home_dir.path().to_string_lossy().to_string();
+        let socket_str = format!("tcp:localhost:{}", self.port);
+        let server_bin_str = self.config.server_bin_path.to_string_lossy().to_string();
+
+        let envs = [
+            ("HOME", home_str.as_str()),
+            ("USERPROFILE", home_str.as_str()),
+            ("ANDROID_ADB_HOME", home_str.as_str()),
+            ("ANDROID_USER_HOME", home_str.as_str()),
+            ("ADB_MDNS_AUTO_CONNECT", "0"),
+            ("ADB_MDNS_OPENSCREEN", "0"),
+            ("ANDROID_ADB_SERVER_PORT", port_str.as_str()),
+            ("ADB_SERVER_SOCKET", socket_str.as_str()),
+            ("ADB_SERVER_BIN", server_bin_str.as_str()),
+        ];
+
+        run_command_with_timeout(
+            &self.config.client_path,
+            &full_args,
+            &envs,
+            get_cmd_timeout(),
+        )
+    }
+}
+
+impl Default for IsolatedServer {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl Drop for IsolatedServer {
+    fn drop(&mut self) {
+        if std::net::TcpStream::connect(("127.0.0.1", self.port)).is_ok() {
+            let _ = self.run_client(&["kill-server"]);
+            let start = Instant::now();
+            while start.elapsed() < Duration::from_secs(5) {
+                if std::net::TcpStream::connect(("127.0.0.1", self.port)).is_err() {
+                    break;
+                }
+                thread::sleep(Duration::from_millis(50));
+            }
+        }
+    }
+}
+
 /// Executes an arbitrary command with arguments, environment variables, and timeout.
 pub fn run_command_with_timeout(
     program: impl AsRef<Path>,
@@ -392,6 +472,7 @@ pub fn run_command_with_timeout(
     timeout: Duration,
 ) -> TestOutput {
     let mut cmd = Command::new(program.as_ref());
+    cmd.env_remove("ANDROID_SERIAL");
     cmd.args(args);
     for (k, v) in envs {
         cmd.env(k, v);
