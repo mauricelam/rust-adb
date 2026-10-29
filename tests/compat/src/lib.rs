@@ -384,6 +384,105 @@ pub fn get_cmd_timeout() -> Duration {
     }
 }
 
+/// Managed ADB server environment isolated from host environment and other test instances.
+pub struct IsolatedServer {
+    pub port: u16,
+    pub home_dir: TempDir,
+    pub config: Config,
+}
+
+impl IsolatedServer {
+    /// Creates a new isolated server environment using `Config::from_env()`.
+    pub fn new() -> Self {
+        Self::with_config(Config::from_env())
+    }
+
+    /// Creates a new isolated server environment with the given `Config`.
+    pub fn with_config(config: Config) -> Self {
+        let home_dir =
+            tempfile::tempdir().expect("Failed to create temporary directory for test home");
+        let port = match config.server_port {
+            Some(p) => p,
+            None => get_free_port().expect("Failed to find free TCP port for ADB server"),
+        };
+        IsolatedServer {
+            port,
+            home_dir,
+            config,
+        }
+    }
+
+    /// Starts the server on an isolated free port, retrying with a new port if port binding fails.
+    pub fn start_server(&mut self) -> TestOutput {
+        let mut attempts = 0;
+        loop {
+            attempts += 1;
+            let output = self.run_client(&["start-server"]);
+            if output.success() {
+                return output;
+            }
+            if attempts < 10 {
+                if let Ok(new_port) = get_free_port() {
+                    self.port = new_port;
+                    continue;
+                }
+            }
+            return output;
+        }
+    }
+
+    /// Executes the ADB client binary against this isolated server environment.
+    pub fn run_client(&self, args: &[&str]) -> TestOutput {
+        let port_str = self.port.to_string();
+        let mut full_args = vec!["-P", port_str.as_str()];
+        full_args.extend_from_slice(args);
+
+        let home_str = self.home_dir.path().to_string_lossy().to_string();
+        let socket_str = format!("tcp:localhost:{}", self.port);
+        let server_bin_str = self.config.server_bin_path.to_string_lossy().to_string();
+
+        let envs = [
+            ("HOME", home_str.as_str()),
+            ("USERPROFILE", home_str.as_str()),
+            ("ANDROID_ADB_HOME", home_str.as_str()),
+            ("ANDROID_USER_HOME", home_str.as_str()),
+            ("ADB_MDNS_AUTO_CONNECT", "0"),
+            ("ADB_MDNS_OPENSCREEN", "0"),
+            ("ANDROID_ADB_SERVER_PORT", port_str.as_str()),
+            ("ADB_SERVER_SOCKET", socket_str.as_str()),
+            ("ADB_SERVER_BIN", server_bin_str.as_str()),
+        ];
+
+        run_command_with_timeout(
+            &self.config.client_path,
+            &full_args,
+            &envs,
+            get_cmd_timeout(),
+        )
+    }
+}
+
+impl Default for IsolatedServer {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl Drop for IsolatedServer {
+    fn drop(&mut self) {
+        if std::net::TcpStream::connect(("127.0.0.1", self.port)).is_ok() {
+            let _ = self.run_client(&["kill-server"]);
+            let start = Instant::now();
+            while start.elapsed() < Duration::from_secs(5) {
+                if std::net::TcpStream::connect(("127.0.0.1", self.port)).is_err() {
+                    break;
+                }
+                thread::sleep(Duration::from_millis(50));
+            }
+        }
+    }
+}
+
 /// Executes an arbitrary command with arguments, environment variables, and timeout.
 pub fn run_command_with_timeout(
     program: impl AsRef<Path>,
@@ -392,6 +491,7 @@ pub fn run_command_with_timeout(
     timeout: Duration,
 ) -> TestOutput {
     let mut cmd = Command::new(program.as_ref());
+    cmd.env_remove("ANDROID_SERIAL");
     cmd.args(args);
     for (k, v) in envs {
         cmd.env(k, v);
@@ -567,8 +667,23 @@ fn connect_with_retry(port: u16, timeout: Duration) -> std::io::Result<std::net:
 }
 
 fn get_free_port() -> std::io::Result<u16> {
-    let listener = TcpListener::bind("127.0.0.1:0")?;
-    let port = listener.local_addr()?.port();
-    drop(listener);
-    Ok(port)
+    static RECENT_PORTS: std::sync::Mutex<Vec<u16>> = std::sync::Mutex::new(Vec::new());
+    let mut listeners = Vec::new();
+    loop {
+        let listener = TcpListener::bind("127.0.0.1:0")?;
+        let port = listener.local_addr()?.port();
+        let mut recent = RECENT_PORTS.lock().unwrap();
+        if !recent.contains(&port) {
+            recent.push(port);
+            if recent.len() > 100 {
+                recent.remove(0);
+            }
+            drop(recent);
+            drop(listener);
+            drop(listeners);
+            thread::sleep(Duration::from_millis(20));
+            return Ok(port);
+        }
+        listeners.push(listener);
+    }
 }

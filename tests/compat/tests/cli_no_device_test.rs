@@ -1,7 +1,6 @@
-use compat::{normalize_output, Config, GoldenCase, TestOutput, TestServer};
+use compat::{normalize_output, Config, GoldenCase, IsolatedServer, TestOutput, TestServer};
 use std::fs;
 use std::path::PathBuf;
-use tempfile::TempDir;
 
 fn load_golden(case_name: &str) -> GoldenCase {
     let manifest_dir = std::env::var("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR not set");
@@ -219,77 +218,36 @@ fn test_server_no_device_t99_get_state() {
 
 #[test]
 fn test_server_lifecycle_kill_running() {
-    let config = Config::from_env();
-    let server = TestServer::start_with_config(config);
+    let mut server = IsolatedServer::new();
+    let start_output = server.start_server();
+    assert!(
+        start_output.success(),
+        "start-server failed: stdout='{}', stderr='{}'",
+        start_output.stdout,
+        start_output.stderr
+    );
     let output = server.run_client(&["kill-server"]);
     assert_matches_golden("server_lifecycle_kill_running", &output);
 }
 
 #[test]
 fn test_server_lifecycle_kill_none() {
-    let config = Config::from_env();
-    let temp_dir = TempDir::new().expect("temp dir");
-    let mut cmd = std::process::Command::new(&config.client_path);
-    cmd.args(["-P", "58273", "kill-server"]);
-    cmd.env("HOME", temp_dir.path());
-    cmd.env("USERPROFILE", temp_dir.path());
-    cmd.env("ANDROID_ADB_HOME", temp_dir.path());
-    cmd.env("ANDROID_USER_HOME", temp_dir.path());
-    cmd.env("ADB_MDNS_AUTO_CONNECT", "0");
-    cmd.env("ADB_MDNS_OPENSCREEN", "0");
-    cmd.env("ANDROID_ADB_SERVER_PORT", "58273");
-    cmd.env("ADB_SERVER_SOCKET", "tcp:localhost:58273");
-
-    let out = cmd.output().expect("execute kill-server");
-    let test_out = TestOutput {
-        stdout: String::from_utf8_lossy(&out.stdout).to_string(),
-        stderr: String::from_utf8_lossy(&out.stderr).to_string(),
-        exit_code: out.status.code(),
-        status: out.status,
-    };
-    assert_matches_golden("server_lifecycle_kill_none", &test_out);
+    let server = IsolatedServer::new();
+    let output = server.run_client(&["kill-server"]);
+    assert_matches_golden("server_lifecycle_kill_none", &output);
 }
 
 #[test]
 fn test_server_lifecycle_start_twice() {
-    let config = Config::from_env();
-    let temp_dir = TempDir::new().expect("temp dir");
-    let port = 58274;
-    let mut cmd1 = std::process::Command::new(&config.client_path);
-    cmd1.args(["-P", &port.to_string(), "start-server"]);
-    cmd1.env("HOME", temp_dir.path());
-    cmd1.env("USERPROFILE", temp_dir.path());
-    cmd1.env("ANDROID_ADB_HOME", temp_dir.path());
-    cmd1.env("ANDROID_USER_HOME", temp_dir.path());
-    cmd1.env("ADB_MDNS_AUTO_CONNECT", "0");
-    cmd1.env("ADB_MDNS_OPENSCREEN", "0");
-    cmd1.env("ANDROID_ADB_SERVER_PORT", port.to_string());
-    cmd1.env("ADB_SERVER_SOCKET", format!("tcp:localhost:{port}"));
-    let _ = cmd1.output();
+    let mut server = IsolatedServer::new();
+    let start1 = server.start_server();
+    assert!(
+        start1.success(),
+        "first start-server failed: stdout='{}', stderr='{}'",
+        start1.stdout,
+        start1.stderr
+    );
 
-    let mut cmd2 = std::process::Command::new(&config.client_path);
-    cmd2.args(["-P", &port.to_string(), "start-server"]);
-    cmd2.env("HOME", temp_dir.path());
-    cmd2.env("USERPROFILE", temp_dir.path());
-    cmd2.env("ANDROID_ADB_HOME", temp_dir.path());
-    cmd2.env("ANDROID_USER_HOME", temp_dir.path());
-    cmd2.env("ADB_MDNS_AUTO_CONNECT", "0");
-    cmd2.env("ADB_MDNS_OPENSCREEN", "0");
-    cmd2.env("ANDROID_ADB_SERVER_PORT", port.to_string());
-    cmd2.env("ADB_SERVER_SOCKET", format!("tcp:localhost:{port}"));
-    let out2 = cmd2.output().expect("execute second start-server");
-
-    // Cleanup server on port
-    let mut kill_cmd = std::process::Command::new(&config.client_path);
-    kill_cmd.args(["-P", &port.to_string(), "kill-server"]);
-    kill_cmd.env("HOME", temp_dir.path());
-    let _ = kill_cmd.output();
-
-    let test_out = TestOutput {
-        stdout: String::from_utf8_lossy(&out2.stdout).to_string(),
-        stderr: String::from_utf8_lossy(&out2.stderr).to_string(),
-        exit_code: out2.status.code(),
-        status: out2.status,
-    };
-    assert_matches_golden("server_lifecycle_start_twice", &test_out);
+    let start2 = server.run_client(&["start-server"]);
+    assert_matches_golden("server_lifecycle_start_twice", &start2);
 }
