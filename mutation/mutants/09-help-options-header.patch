@@ -1,0 +1,11 @@
+# Mutation: Help Global Options Header Text
+# Breaks help output parsing by changing "global options:\n" to "options:\n" in help()
+diff --git a/client/commandline.cpp b/client/commandline.cpp
+index 0e77793..1122334 100644
+--- a/client/commandline.cpp
++++ b/client/commandline.cpp
+@@ -89,3 +89,3 @@ static void help() {
+     fprintf(stdout,
+-        "global options:\n"
++        "options:\n"
+         " -a                       listen on all network interfaces, not just localhost\n"
