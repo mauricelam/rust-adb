@@ -218,8 +218,8 @@ fn test_server_no_device_t99_get_state() {
 
 #[test]
 fn test_server_lifecycle_kill_running() {
-    let server = IsolatedServer::new();
-    let start_output = server.run_client(&["start-server"]);
+    let mut server = IsolatedServer::new();
+    let start_output = server.start_server();
     assert!(
         start_output.success(),
         "start-server failed: stdout='{}', stderr='{}'",
@@ -239,8 +239,8 @@ fn test_server_lifecycle_kill_none() {
 
 #[test]
 fn test_server_lifecycle_start_twice() {
-    let server = IsolatedServer::new();
-    let start1 = server.run_client(&["start-server"]);
+    let mut server = IsolatedServer::new();
+    let start1 = server.start_server();
     assert!(
         start1.success(),
         "first start-server failed: stdout='{}', stderr='{}'",

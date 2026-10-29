@@ -412,6 +412,25 @@ impl IsolatedServer {
         }
     }
 
+    /// Starts the server on an isolated free port, retrying with a new port if port binding fails.
+    pub fn start_server(&mut self) -> TestOutput {
+        let mut attempts = 0;
+        loop {
+            attempts += 1;
+            let output = self.run_client(&["start-server"]);
+            if output.success() {
+                return output;
+            }
+            if attempts < 10 {
+                if let Ok(new_port) = get_free_port() {
+                    self.port = new_port;
+                    continue;
+                }
+            }
+            return output;
+        }
+    }
+
     /// Executes the ADB client binary against this isolated server environment.
     pub fn run_client(&self, args: &[&str]) -> TestOutput {
         let port_str = self.port.to_string();
@@ -651,5 +670,6 @@ fn get_free_port() -> std::io::Result<u16> {
     let listener = TcpListener::bind("127.0.0.1:0")?;
     let port = listener.local_addr()?.port();
     drop(listener);
+    thread::sleep(Duration::from_millis(20));
     Ok(port)
 }

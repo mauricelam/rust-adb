@@ -45,10 +45,10 @@ fn test_isolated_server_drop_cleanup_on_panic() {
     let captured_port_clone = captured_port.clone();
 
     let result = std::panic::catch_unwind(move || {
-        let server = IsolatedServer::new();
+        let mut server = IsolatedServer::new();
         captured_port_clone.store(server.port, Ordering::SeqCst);
 
-        let start_out = server.run_client(&["start-server"]);
+        let start_out = server.start_server();
         assert!(
             start_out.success(),
             "start-server failed: stdout='{}', stderr='{}'",
