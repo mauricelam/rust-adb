@@ -20,7 +20,13 @@ if [ ! -f "$KNOWN_FAILURES_FILE" ]; then
 fi
 
 echo "=== Getting list of available tests in compat crate ==="
-AVAILABLE_TESTS=$(cargo nextest list -p compat 2>/dev/null | awk '{print $NF}')
+AVAILABLE_TESTS=$(cargo nextest list -p compat --message-format json 2>/dev/null | python3 -c '
+import json, sys
+data = json.load(sys.stdin)
+for binary in data.get("rust-suites", {}).values():
+    for testcase_name in binary.get("testcases", {}).keys():
+        print(testcase_name)
+')
 
 # Collect tests and their reasons
 # Reason is the comment line(s) directly preceding the test line.
