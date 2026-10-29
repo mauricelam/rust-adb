@@ -4,10 +4,10 @@
     "<mock_addr>",
     "push",
     "<src>",
-    "/data/fail.bin"
+    "/nonexistent_dir/file.bin"
   ],
   "env": [],
   "stdout": "",
-  "stderr": "<tmp>/push_fail.bin: 1 file pushed, 0 skipped. <rate> MB/s (<bytes> bytes in <time>s)\n",
-  "exit_code": 0
+  "stderr": "<tmp>/push_fail.bin: 1 file pushed, 0 skipped. <rate> MB/s (<bytes> bytes in <time>s)\n<prog>: error: failed to copy '<tmp>/push_fail.bin' to '/nonexistent_dir/file.bin': remote failed to create file '/nonexistent_dir/file.bin': No such file or directory\n",
+  "exit_code": 1
 }

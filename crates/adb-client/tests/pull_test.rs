@@ -334,9 +334,7 @@ async fn test_pull_remote_missing_and_fail_and_cleanup() {
         .expect("pull missing remote returned err");
     assert!(!res_missing.success);
     assert!(
-        res_missing.errors[0].contains("remote object '/data/no_such_file.bin' does not exist")
-            || res_missing.errors[0]
-                .contains("failed to stat remote object '/data/no_such_file.bin'"),
+        res_missing.errors[0].contains("remote object '/data/no_such_file.bin' does not exist"),
         "unexpected error: {:?}",
         res_missing.errors
     );

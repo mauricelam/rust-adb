@@ -758,9 +758,7 @@ impl SyncSession {
 
             let src_st = match self.stat_with_fallback(src_path).await {
                 Ok(st) => st,
-                Err(SyncError::Errno { errno: 2, .. }) | Err(SyncError::Errno { wire: 2, .. })
-                    if !self.have_stat_v2 =>
-                {
+                Err(SyncError::Errno { errno: 2, .. }) | Err(SyncError::Errno { wire: 2, .. }) => {
                     let msg = format!("remote object '{src_path}' does not exist");
                     res.errors.push(msg.clone());
                     res.success = false;

@@ -84,6 +84,8 @@ pub fn normalize_transport_ids(input: &str) -> String {
         .to_string()
 }
 
+static TMP_PATH_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"<tmp>[^'\s\n\x22]*").unwrap());
+
 /// Rule 4: Replace temporary directory paths with `<tmp>`.
 pub fn normalize_temp_paths(input: &str) -> String {
     let mut s = input.to_string();
@@ -97,7 +99,9 @@ pub fn normalize_temp_paths(input: &str) -> String {
     let win_temp_re = Regex::new(r"(?i)[a-z]:\\(?:[^\\]+\\)*temp\\[a-zA-Z0-9._-]+").unwrap();
     s = win_temp_re.replace_all(&s, "<tmp>").to_string();
 
-    s.replace("<tmp>\\", "<tmp>/")
+    TMP_PATH_RE
+        .replace_all(&s, |caps: &regex::Captures| caps[0].replace('\\', "/"))
+        .to_string()
 }
 
 /// Rule 5: Replace version numbers and build ids in version output with `<version>`,
@@ -143,6 +147,15 @@ pub fn normalize_os_differences(input: &str) -> String {
     let s = WIN_CONN_REFUSED_RE
         .replace_all(&s, "failed to connect to '${1}': Connection refused")
         .to_string();
+    let s = s
+        .replace(
+            "The system cannot find the file specified.",
+            "No such file or directory",
+        )
+        .replace(
+            "The system cannot find the path specified.",
+            "No such file or directory",
+        );
     OS_ERROR_PAREN_RE.replace_all(&s, "").to_string()
 }
 

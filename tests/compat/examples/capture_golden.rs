@@ -831,12 +831,12 @@ fn main() {
             &mock.addr,
             "push",
             push_fail_src.to_str().unwrap(),
-            "/data/fail.bin",
+            "/nonexistent_dir/file.bin",
         ]);
         save_golden(
             &golden_dir,
             "sync_v2_push_fail_device",
-            &["-s", "<mock_addr>", "push", "<src>", "/data/fail.bin"],
+            &["-s", "<mock_addr>", "push", "<src>", "/nonexistent_dir/file.bin"],
             &push_fail_out,
         );
     }
@@ -1173,12 +1173,12 @@ fn main() {
             &mock.addr,
             "push",
             push_fail_src.to_str().unwrap(),
-            "/data/fail.bin",
+            "/nonexistent_dir/file.bin",
         ]);
         save_golden(
             &golden_dir,
             "sync_v1_push_fail_device",
-            &["-s", "<mock_addr>", "push", "<src>", "/data/fail.bin"],
+            &["-s", "<mock_addr>", "push", "<src>", "/nonexistent_dir/file.bin"],
             &push_fail_out,
         );
     }

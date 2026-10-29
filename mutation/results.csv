@@ -1,1 +1,6 @@
 patch,status
+01-protocol-header-length.patch,killed
+02-version-output-text.patch,killed
+03-version-exit-code.patch,killed
+11-sync-summary-text.patch,killed
+12-push-failure-exit-code.patch,killed
