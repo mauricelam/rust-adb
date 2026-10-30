@@ -1,27 +1,6 @@
 # Known failing compatibility tests when using the Rust adb client.
 # Each entry is preceded by a comment indicating the issue that will fix or implement it.
 
-# Issue 41: Implement help and version flags and commands
-test_help
-
-# Issue 41: Implement help and version flags and commands
-test_help_long
-
-# Issue 41: Implement help and version flags and commands
-test_help_short
-
-# Issue 40: Implement version command
-test_adb_version_standalone
-
-# Issue 40: Implement version command
-test_adb_version_with_server
-
-# Issue 40: Implement version command
-test_version
-
-# Issue 40: Implement version command
-test_version_long
-
 # Issue 42: Server commands and device lifecycle
 test_server_no_device_shell_echo_hi
 

@@ -48,13 +48,28 @@ jobs:
       - name: Verify reference ADB version (Unix)
         if: runner.os != 'Windows'
         run: |
-          "$ADB_REFERENCE" version
+          REF_VERSION_OUTPUT="$("$ADB_REFERENCE" version)"
+          echo "$REF_VERSION_OUTPUT"
+          REF_LINE_1="$(echo "$REF_VERSION_OUTPUT" | sed -n '1p')"
+          REF_LINE_2="$(echo "$REF_VERSION_OUTPUT" | sed -n '2p')"
+          grep -qF "VERSION_LINE_1: &str = \"$REF_LINE_1\";" crates/adb-cli/src/version.rs
+          grep -qF "VERSION_LINE_2: &str = \"$REF_LINE_2\";" crates/adb-cli/src/version.rs
 
       - name: Verify reference ADB version (Windows)
         if: runner.os == 'Windows'
         shell: powershell
         run: |
-          & "$env:ADB_REFERENCE" version
+          $refOut = & "$env:ADB_REFERENCE" version
+          $refOut | Write-Output
+          $line1 = $refOut[0]
+          $line2 = $refOut[1]
+          $versionFile = Get-Content "crates/adb-cli/src/version.rs" -Raw
+          if (-not $versionFile.Contains("VERSION_LINE_1: &str = `"$line1`";")) {
+            throw "VERSION_LINE_1 does not match reference: $line1"
+          }
+          if (-not $versionFile.Contains("VERSION_LINE_2: &str = `"$line2`";")) {
+            throw "VERSION_LINE_2 does not match reference: $line2"
+          }
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@master
