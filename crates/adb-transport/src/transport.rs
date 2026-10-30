@@ -83,13 +83,7 @@ impl Packet {
         } else {
             calculate_checksum(&payload)
         };
-        let header = Header::new(
-            command,
-            arg0,
-            arg1,
-            payload.len() as u32,
-            data_crc32,
-        );
+        let header = Header::new(command, arg0, arg1, payload.len() as u32, data_crc32);
         Self { header, payload }
     }
 }

@@ -1,6 +1,4 @@
-use adb_proto::{
-    Command, Feature, FeatureOptions, Header, A_VERSION, MAX_PAYLOAD,
-};
+use adb_proto::{Command, Feature, FeatureOptions, Header, A_VERSION, MAX_PAYLOAD};
 use adb_transport::{
     perform_cnxn_handshake, AsyncStreamTransport, Packet, Transport, TransportError,
 };
@@ -100,7 +98,10 @@ async fn test_cnxn_handshake_android10_12_14_15() {
 
         server_task.await.unwrap();
 
-        assert_eq!(result.negotiated_version, A_VERSION, "Version check for {name}");
+        assert_eq!(
+            result.negotiated_version, A_VERSION,
+            "Version check for {name}"
+        );
         assert_eq!(
             result.negotiated_max_payload, MAX_PAYLOAD,
             "Max payload check for {name}"
@@ -168,8 +169,7 @@ async fn test_malformed_banner_and_invalid_magic() {
             server_stream.write_all(&encoded).await.unwrap();
         });
 
-        let err = perform_cnxn_handshake(&mut client_transport, &FeatureOptions::default())
-            .await;
+        let err = perform_cnxn_handshake(&mut client_transport, &FeatureOptions::default()).await;
 
         server_task.await.unwrap();
 
