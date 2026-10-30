@@ -1,0 +1,13 @@
+diff --git a/transport.cpp b/transport.cpp
+index 09d7d20..a8d4726 100644
+--- a/transport.cpp
++++ b/transport.cpp
+@@ -1176,7 +1176,7 @@ void atransport::HandleError(const std::string& error) {
+
+ void atransport::update_version(int version, size_t payload) {
+     protocol_version = std::min(version, A_VERSION);
+-    max_payload = std::min(payload, MAX_PAYLOAD);
++    max_payload = MAX_PAYLOAD;
+ }
+
+ int atransport::get_protocol_version() const {
