@@ -256,7 +256,7 @@ fn run_sync_test_matrix(v2_args: &[&str], prefix: &str) {
         &two_src_push_out,
     );
 
-    // 8. Push failure on device (/data/fail.bin triggers FAIL in mock-adbd)
+    // 8. Push failure on device
     let push_fail_src = tmp_dir.path().join("push_fail.bin");
     std::fs::write(&push_fail_src, b"fail content").unwrap();
     let push_fail_out = server.run_client(&[
@@ -264,7 +264,7 @@ fn run_sync_test_matrix(v2_args: &[&str], prefix: &str) {
         &mock.addr,
         "push",
         push_fail_src.to_str().unwrap(),
-        "/data/fail.bin",
+        "/nonexistent_dir/file.bin",
     ]);
     assert_matches_golden(&format!("{prefix}_push_fail_device"), &push_fail_out);
 }
