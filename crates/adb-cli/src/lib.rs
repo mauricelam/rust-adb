@@ -414,28 +414,6 @@ where
     ))
 }
 
-fn parse_compression_type(
-    str: &str,
-    allow_numbers: bool,
-) -> Result<adb_client::CompressionType, String> {
-    if allow_numbers {
-        if str == "0" {
-            return Ok(adb_client::CompressionType::None);
-        } else if str == "1" {
-            return Ok(adb_client::CompressionType::Any);
-        }
-    }
-
-    match str {
-        "any" => Ok(adb_client::CompressionType::Any),
-        "none" => Ok(adb_client::CompressionType::None),
-        "brotli" => Ok(adb_client::CompressionType::Brotli),
-        "lz4" => Ok(adb_client::CompressionType::LZ4),
-        "zstd" => Ok(adb_client::CompressionType::Zstd),
-        _ => Err(format!("unexpected compression type {str}")),
-    }
-}
-
 fn is_recognized_unimplemented_command(name: &str) -> bool {
     if name.starts_with("wait-for-") {
         return true;
@@ -460,9 +438,6 @@ fn is_recognized_unimplemented_command(name: &str) -> bool {
             | "bugreport"
             | "reverse"
             | "mdns"
-            | "ls"
-            | "push"
-            | "pull"
             | "install"
             | "install-multiple"
             | "install-multi-package"
@@ -509,6 +484,28 @@ fn print_error(err: &ClientError, stderr: &mut Box<dyn Write + Send>) {
 
 fn print_error_prog(err: &ClientError, stderr: &mut Box<dyn Write + Send>) {
     let _ = writeln!(stderr, "adb: {err}");
+}
+
+fn parse_compression_type(
+    str: &str,
+    allow_numbers: bool,
+) -> Result<adb_client::CompressionType, String> {
+    if allow_numbers {
+        if str == "0" {
+            return Ok(adb_client::CompressionType::None);
+        } else if str == "1" {
+            return Ok(adb_client::CompressionType::Any);
+        }
+    }
+
+    match str {
+        "any" => Ok(adb_client::CompressionType::Any),
+        "none" => Ok(adb_client::CompressionType::None),
+        "brotli" => Ok(adb_client::CompressionType::Brotli),
+        "lz4" => Ok(adb_client::CompressionType::LZ4),
+        "zstd" => Ok(adb_client::CompressionType::Zstd),
+        _ => Err(format!("unexpected compression type {str}")),
+    }
 }
 
 /// Executes the CLI binary dispatcher using the given arguments, environment, and output streams.
@@ -1080,33 +1077,28 @@ where
                     for warning in &res.warnings {
                         let _ = writeln!(output.stderr, "adb: warning: {warning}");
                     }
-                    for error in &res.errors {
-                        let _ = writeln!(output.stderr, "adb: error: {error}");
-                    }
                     if !quiet {
                         let elapsed = start_time.elapsed().as_secs_f64();
                         for outcome in &res.outcomes {
-                            if outcome.success {
-                                let display_name = if let Some(out) = env("ANDROID_PRODUCT_OUT") {
-                                    outcome.source.strip_prefix(&out).unwrap_or(&outcome.source)
-                                } else {
-                                    &outcome.source
-                                };
-                                let rate_str = if outcome.bytes_transferred > 0 && elapsed > 0.0 {
-                                    let rate = (outcome.bytes_transferred as f64 / elapsed)
-                                        / (1024.0 * 1024.0);
-                                    format!(
-                                        " {:.1} MB/s ({} bytes in {:.3}s)",
-                                        rate, outcome.bytes_transferred, elapsed
-                                    )
-                                } else {
-                                    "".to_string()
-                                };
-                                let _ = writeln!(
-                                    output.stderr,
-                                    "{display_name}: 1 file pushed, 0 skipped.{rate_str}"
-                                );
-                            }
+                            let display_name = if let Some(out) = env("ANDROID_PRODUCT_OUT") {
+                                outcome.source.strip_prefix(&out).unwrap_or(&outcome.source)
+                            } else {
+                                &outcome.source
+                            };
+                            let rate_str = if outcome.bytes_transferred > 0 && elapsed > 0.0 {
+                                let rate = (outcome.bytes_transferred as f64 / elapsed)
+                                    / (1024.0 * 1024.0);
+                                format!(
+                                    " {:.1} MB/s ({} bytes in {:.3}s)",
+                                    rate, outcome.bytes_transferred, elapsed
+                                )
+                            } else {
+                                "".to_string()
+                            };
+                            let _ = writeln!(
+                                output.stderr,
+                                "{display_name}: 1 file pushed, 0 skipped.{rate_str}"
+                            );
                         }
                         if res.outcomes.len() > 1 {
                             let total_success = res.outcomes.iter().filter(|o| o.success).count();
@@ -1127,6 +1119,9 @@ where
                                 "{total_success} {files_word} pushed, {total_failed} skipped.{rate_str}"
                             );
                         }
+                    }
+                    for error in &res.errors {
+                        let _ = writeln!(output.stderr, "adb: error: {error}");
                     }
                     if res.success {
                         0
@@ -1222,7 +1217,21 @@ where
                         let _ = writeln!(output.stderr, "adb: warning: {warning}");
                     }
                     for error in &res.errors {
-                        let _ = writeln!(output.stderr, "adb: error: {error}");
+                        let formatted_err = if sync.have_stat_v2()
+                            && error.contains("remote object '")
+                            && error.contains("' does not exist")
+                        {
+                            let path = error
+                                .strip_prefix("remote object '")
+                                .and_then(|s| s.strip_suffix("' does not exist"))
+                                .unwrap_or("");
+                            format!(
+                                "failed to stat remote object '{path}': No such file or directory"
+                            )
+                        } else {
+                            error.clone()
+                        };
+                        let _ = writeln!(output.stderr, "adb: error: {formatted_err}");
                     }
                     if !quiet {
                         let elapsed = start_time.elapsed().as_secs_f64();
