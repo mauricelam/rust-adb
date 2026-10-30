@@ -173,6 +173,11 @@ impl Session {
             host
         };
 
+        crate::adb_trace!(
+            crate::trace::TraceCategory::Sockets,
+            "connecting to daemon at {spec}"
+        );
+
         let mut last_err = None;
         for i in 0..5 {
             let conn_res = tokio::time::timeout(
@@ -279,6 +284,11 @@ impl Session {
         if service.is_empty() || service.len() > MAX_PAYLOAD {
             return Err(SessionError::BadServiceLength(service.len()));
         }
+
+        crate::adb_trace!(
+            crate::trace::TraceCategory::Services,
+            "sending service request: {service}"
+        );
 
         let req_bytes = adb_proto::smart_socket::encode_request(service)
             .map_err(|_| SessionError::BadServiceLength(service.len()))?;

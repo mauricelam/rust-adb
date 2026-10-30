@@ -93,6 +93,7 @@ impl ServerLauncher for DummyLauncher {
     fn launch<'a>(
         &'a self,
         _spec: &'a str,
+        _listen_all: bool,
         _one_device: Option<&'a str>,
     ) -> Pin<Box<dyn Future<Output = Result<(), LaunchError>> + Send + 'a>> {
         Box::pin(async move {

@@ -70,7 +70,7 @@ async fn test_launcher_ack_timeout_kills_child_and_fails() {
     };
 
     let launcher = ExternalBinaryLauncher::with_config(&helper_bin, launch_config);
-    let res = launcher.launch("tcp:5037 --no-ack", None).await;
+    let res = launcher.launch("tcp:5037 --no-ack", false, None).await;
 
     assert!(res.is_err());
     let err = res.unwrap_err();
