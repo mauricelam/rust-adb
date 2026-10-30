@@ -1,0 +1,13 @@
+{
+  "args": [
+    "-s",
+    "<mock_addr>",
+    "pull",
+    "/data/nonexistent.bin",
+    "<local_path>"
+  ],
+  "env": [],
+  "stdout": "",
+  "stderr": "<prog>: error: failed to stat remote object '/data/nonexistent.bin': No such file or directory\n",
+  "exit_code": 1
+}

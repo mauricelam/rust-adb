@@ -25,20 +25,3 @@ test_version_long
 # Issue 42: Server commands and device lifecycle
 test_server_no_device_shell_echo_hi
 
-# Issue 44: Sync service commands
-test_mock_adbd_sync_ls_pull_push
-
-# Issue 44: Sync service commands
-test_mock_adbd_sync_v1_fallback_options
-
-# Issue 44: Sync service commands
-test_sync_ls_data_v1
-
-# Issue 44: Sync service commands
-test_sync_ls_data_v2
-
-# Issue 44: Sync service commands
-test_sync_ls_root_v1
-
-# Issue 44: Sync service commands
-test_sync_ls_root_v2

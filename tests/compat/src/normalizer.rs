@@ -52,6 +52,10 @@ static SERIAL_RE: LazyLock<Regex> =
 static TRANSPORT_ID_PROP_RE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"transport_id:[1-9]\d*").unwrap());
 
+// Match transfer summary rate, bytes, and time: " 2480.9 MB/s (307200 bytes in 0.000s)"
+static TRANSFER_SUMMARY_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"\b\d+(?:\.\d+)? MB/s \(\d+ bytes in \d+(?:\.\d+)?s\)").unwrap());
+
 /// Rule 1: Normalize line endings CRLF -> LF.
 pub fn normalize_line_endings(input: &str) -> String {
     input.replace("\r\n", "\n")
@@ -80,6 +84,8 @@ pub fn normalize_transport_ids(input: &str) -> String {
         .to_string()
 }
 
+static TMP_PATH_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"<tmp>[^'\s\n\x22]*").unwrap());
+
 /// Rule 4: Replace temporary directory paths with `<tmp>`.
 pub fn normalize_temp_paths(input: &str) -> String {
     let mut s = input.to_string();
@@ -93,7 +99,9 @@ pub fn normalize_temp_paths(input: &str) -> String {
     let win_temp_re = Regex::new(r"(?i)[a-z]:\\(?:[^\\]+\\)*temp\\[a-zA-Z0-9._-]+").unwrap();
     s = win_temp_re.replace_all(&s, "<tmp>").to_string();
 
-    s
+    TMP_PATH_RE
+        .replace_all(&s, |caps: &regex::Captures| caps[0].replace('\\', "/"))
+        .to_string()
 }
 
 /// Rule 5: Replace version numbers and build ids in version output with `<version>`,
@@ -106,6 +114,17 @@ pub fn normalize_version(input: &str) -> String {
     let s = INSTALLED_AS_RE.replace_all(&s, "${1}<path>").to_string();
     RUNNING_ON_RE.replace_all(&s, "${1}<os>").to_string()
 }
+
+/// Rule 9: Replace transfer rate, byte count, and elapsed time in summary lines with placeholders.
+pub fn normalize_transfer_summary(input: &str) -> String {
+    TRANSFER_SUMMARY_RE
+        .replace_all(input, "<rate> MB/s (<bytes> bytes in <time>s)")
+        .to_string()
+}
+
+// Match OS error details in parentheses like "(os error 2)"
+static OS_ERROR_PAREN_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r" \(os error \d+\)").unwrap());
 
 /// Rule 6: Remove OS-specific help lines (e.g. `--local-agent` on Linux/macOS vs Windows)
 /// and normalize connection refused OS error text.
@@ -125,9 +144,19 @@ pub fn normalize_os_differences(input: &str) -> String {
     let s = CONN_REFUSED_RE
         .replace_all(&s, "${1}Connection refused")
         .to_string();
-    WIN_CONN_REFUSED_RE
+    let s = WIN_CONN_REFUSED_RE
         .replace_all(&s, "failed to connect to '${1}': Connection refused")
-        .to_string()
+        .to_string();
+    let s = s
+        .replace(
+            "The system cannot find the file specified.",
+            "No such file or directory",
+        )
+        .replace(
+            "The system cannot find the path specified.",
+            "No such file or directory",
+        );
+    OS_ERROR_PAREN_RE.replace_all(&s, "").to_string()
 }
 
 /// Master normalizer combining all rules in sequence.
@@ -139,6 +168,7 @@ pub fn normalize_output(input: &str) -> String {
     let s = normalize_transport_ids(&s);
     let s = normalize_temp_paths(&s);
     let s = normalize_version(&s);
+    let s = normalize_transfer_summary(&s);
     normalize_os_differences(&s)
 }
 
@@ -257,6 +287,28 @@ mod tests {
         assert_eq!(
             normalize_transport_ids(dev_l),
             "127.0.0.1:41759        device product:mock_device model:mock_model device:mock_device transport_id:<transport_id>\n"
+        );
+    }
+
+    #[test]
+    fn test_normalize_transfer_summary() {
+        let summary_push =
+            "/data/f_300k.bin: 1 file pushed, 0 skipped. 2480.9 MB/s (307200 bytes in 0.000s)\n";
+        assert_eq!(
+            normalize_transfer_summary(summary_push),
+            "/data/f_300k.bin: 1 file pushed, 0 skipped. <rate> MB/s (<bytes> bytes in <time>s)\n"
+        );
+
+        let summary_pull = "1 file pulled, 0 skipped. 0.5 MB/s (100 bytes in 0.020s)\n";
+        assert_eq!(
+            normalize_transfer_summary(summary_pull),
+            "1 file pulled, 0 skipped. <rate> MB/s (<bytes> bytes in <time>s)\n"
+        );
+
+        let summary_zero = "0 files pushed, 1 skipped.\n";
+        assert_eq!(
+            normalize_transfer_summary(summary_zero),
+            "0 files pushed, 1 skipped.\n"
         );
     }
 

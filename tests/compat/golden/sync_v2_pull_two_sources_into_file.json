@@ -1,0 +1,14 @@
+{
+  "args": [
+    "-s",
+    "<mock_addr>",
+    "pull",
+    "/data/f_0.bin",
+    "/data/f_1.bin",
+    "<single_file>"
+  ],
+  "env": [],
+  "stdout": "",
+  "stderr": "<prog>: error: target '<tmp>/single_target.bin' is not a directory\n",
+  "exit_code": 1
+}

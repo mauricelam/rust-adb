@@ -1,0 +1,13 @@
+{
+  "args": [
+    "-s",
+    "<mock_addr>",
+    "pull",
+    "/data/f_1.bin",
+    "<bad_dst_dir>"
+  ],
+  "env": [],
+  "stdout": "",
+  "stderr": "<prog>: error: cannot create file/directory '<tmp>/nonexistent_dir/file.bin': No such file or directory\n",
+  "exit_code": 1
+}
