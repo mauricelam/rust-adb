@@ -262,7 +262,7 @@ async fn test_windows_launcher_spawns_process() {
     let addr = ServerAddress { host: None, port };
     let ref_adb = get_reference_adb_path();
     let launcher = ExternalBinaryLauncher::new(&ref_adb);
-    let res = launcher.launch(&addr.to_spec(), None).await;
+    let res = launcher.launch(&addr.to_spec(), false, None).await;
     // Process launch attempt on non-existent binary or real binary
     if ref_adb.exists() {
         assert!(res.is_ok());
