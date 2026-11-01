@@ -169,7 +169,55 @@ pub fn normalize_output(input: &str) -> String {
     let s = normalize_temp_paths(&s);
     let s = normalize_version(&s);
     let s = normalize_transfer_summary(&s);
-    normalize_os_differences(&s)
+    let s = normalize_os_differences(&s);
+    normalize_transfer_error_ordering(&s)
+}
+
+/// Normalizes relative ordering between transfer summary lines and copy error lines.
+///
+/// In upstream ADB, non-blocking `adb_poll(..., 0)` in `ReadAcknowledgements` creates a timing race
+/// between `ReportTransferRate` (printing summary) and `ReadAcknowledgements` (printing copy errors).
+/// Under high CPU contention or variable socket latency, the summary and error lines may arrive in
+/// either order. Sorting adjacent transfer summary and error lines makes the output deterministic.
+pub fn normalize_transfer_error_ordering(input: &str) -> String {
+    let lines: Vec<&str> = input.split('\n').collect();
+    if lines.len() < 2 {
+        return input.to_string();
+    }
+
+    let mut result = Vec::new();
+    let mut i = 0;
+    while i < lines.len() {
+        if i + 1 < lines.len() {
+            let line_a = lines[i];
+            let line_b = lines[i + 1];
+            let is_summary = |l: &str| {
+                l.contains("file pushed")
+                    || l.contains("files pushed")
+                    || l.contains("file pulled")
+                    || l.contains("files pulled")
+            };
+            let is_copy_err = |l: &str| l.contains("<prog>: error: failed to copy");
+
+            if (is_summary(line_a) && is_copy_err(line_b))
+                || (is_copy_err(line_a) && is_summary(line_b))
+            {
+                // Keep the canonical golden order: summary line first, error line second
+                let (summary, err) = if is_summary(line_a) {
+                    (line_a, line_b)
+                } else {
+                    (line_b, line_a)
+                };
+                result.push(summary);
+                result.push(err);
+                i += 2;
+                continue;
+            }
+        }
+        result.push(lines[i]);
+        i += 1;
+    }
+    result.join("\n")
 }
 
 #[cfg(test)]
@@ -309,6 +357,18 @@ mod tests {
         assert_eq!(
             normalize_transfer_summary(summary_zero),
             "0 files pushed, 1 skipped.\n"
+        );
+    }
+
+    #[test]
+    fn test_normalize_transfer_error_ordering() {
+        let err_first = "<prog>: error: failed to copy '<tmp>/push_fail.bin' to '/nonexistent_dir/file.bin': remote failed to create file '/nonexistent_dir/file.bin': No such file or directory\n<tmp>/push_fail.bin: 1 file pushed, 0 skipped. <rate> MB/s (<bytes> bytes in <time>s)\n";
+        let summary_first = "<tmp>/push_fail.bin: 1 file pushed, 0 skipped. <rate> MB/s (<bytes> bytes in <time>s)\n<prog>: error: failed to copy '<tmp>/push_fail.bin' to '/nonexistent_dir/file.bin': remote failed to create file '/nonexistent_dir/file.bin': No such file or directory\n";
+
+        assert_eq!(normalize_transfer_error_ordering(err_first), summary_first);
+        assert_eq!(
+            normalize_transfer_error_ordering(summary_first),
+            summary_first
         );
     }
 
