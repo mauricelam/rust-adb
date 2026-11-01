@@ -75,7 +75,10 @@ dependencies = [
 name = "adb-server"
 version = "0.0.0"
 dependencies = [
+ "adb-proto",
+ "adb-transport",
  "thiserror",
+ "tokio",
 ]
 
 [[package]]
