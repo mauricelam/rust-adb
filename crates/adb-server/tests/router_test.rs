@@ -1,0 +1,422 @@
+use std::sync::Arc;
+use tokio::sync::mpsc;
+
+use adb_proto::Command;
+use adb_server::{OpenDecision, OpenRequest, PacketRouter, StreamMessage, StreamRegistry};
+use adb_transport::{Packet, Transport, TransportError};
+
+struct MockTransport {
+    incoming_rx: mpsc::Receiver<Packet>,
+    outgoing_tx: mpsc::Sender<Packet>,
+}
+
+impl MockTransport {
+    fn new() -> (Self, mpsc::Sender<Packet>, mpsc::Receiver<Packet>) {
+        let (in_tx, in_rx) = mpsc::channel(64);
+        let (out_tx, out_rx) = mpsc::channel(64);
+        (
+            Self {
+                incoming_rx: in_rx,
+                outgoing_tx: out_tx,
+            },
+            in_tx,
+            out_rx,
+        )
+    }
+}
+
+impl Transport for MockTransport {
+    async fn read_packet(&mut self) -> Result<Packet, TransportError> {
+        self.incoming_rx.recv().await.ok_or_else(|| {
+            TransportError::Io(std::io::Error::new(
+                std::io::ErrorKind::UnexpectedEof,
+                "closed",
+            ))
+        })
+    }
+
+    async fn write_packet(&mut self, packet: &Packet) -> Result<(), TransportError> {
+        self.outgoing_tx.send(packet.clone()).await.map_err(|_| {
+            TransportError::Io(std::io::Error::new(
+                std::io::ErrorKind::BrokenPipe,
+                "closed",
+            ))
+        })
+    }
+}
+
+#[tokio::test]
+async fn test_multi_stream_data_interleaved() {
+    let (transport, in_tx, _out_rx) = MockTransport::new();
+    let registry = Arc::new(StreamRegistry::new());
+
+    let (s1_tx, mut s1_rx) = mpsc::unbounded_channel();
+    let (s2_tx, mut s2_rx) = mpsc::unbounded_channel();
+    let (s3_tx, mut s3_rx) = mpsc::unbounded_channel();
+
+    let id1 = registry.allocate_with_remote(101, s1_tx).unwrap();
+    let id2 = registry.allocate_with_remote(102, s2_tx).unwrap();
+    let id3 = registry.allocate_with_remote(103, s3_tx).unwrap();
+
+    let reg_clone = Arc::clone(&registry);
+    let router_handle = tokio::spawn(async move {
+        let router = PacketRouter::new(transport, reg_clone);
+        router.run().await
+    });
+
+    // Interleave WRTE packets for streams 1, 2, and 3
+    // In A_WRTE: arg0 = remote_id (peer), arg1 = local_id (our stream)
+    in_tx
+        .send(Packet::new(
+            Command::Wrte,
+            101,
+            id1,
+            b"stream1-chunk1".to_vec(),
+            true,
+        ))
+        .await
+        .unwrap();
+    in_tx
+        .send(Packet::new(
+            Command::Wrte,
+            102,
+            id2,
+            b"stream2-chunk1".to_vec(),
+            true,
+        ))
+        .await
+        .unwrap();
+    in_tx
+        .send(Packet::new(
+            Command::Wrte,
+            101,
+            id1,
+            b"stream1-chunk2".to_vec(),
+            true,
+        ))
+        .await
+        .unwrap();
+    in_tx
+        .send(Packet::new(
+            Command::Wrte,
+            103,
+            id3,
+            b"stream3-chunk1".to_vec(),
+            true,
+        ))
+        .await
+        .unwrap();
+    in_tx
+        .send(Packet::new(
+            Command::Wrte,
+            102,
+            id2,
+            b"stream2-chunk2".to_vec(),
+            true,
+        ))
+        .await
+        .unwrap();
+
+    // Verify stream 1 received its chunks in order
+    match s1_rx.recv().await.unwrap() {
+        StreamMessage::Data(data) => assert_eq!(data, b"stream1-chunk1"),
+        other => panic!("unexpected message: {other:?}"),
+    }
+    match s1_rx.recv().await.unwrap() {
+        StreamMessage::Data(data) => assert_eq!(data, b"stream1-chunk2"),
+        other => panic!("unexpected message: {other:?}"),
+    }
+
+    // Verify stream 2 received its chunks in order
+    match s2_rx.recv().await.unwrap() {
+        StreamMessage::Data(data) => assert_eq!(data, b"stream2-chunk1"),
+        other => panic!("unexpected message: {other:?}"),
+    }
+    match s2_rx.recv().await.unwrap() {
+        StreamMessage::Data(data) => assert_eq!(data, b"stream2-chunk2"),
+        other => panic!("unexpected message: {other:?}"),
+    }
+
+    // Verify stream 3 received its chunk
+    match s3_rx.recv().await.unwrap() {
+        StreamMessage::Data(data) => assert_eq!(data, b"stream3-chunk1"),
+        other => panic!("unexpected message: {other:?}"),
+    }
+
+    // Clean drop to finish router loop
+    drop(in_tx);
+    let router_res = router_handle.await.unwrap();
+    assert!(router_res.is_ok());
+}
+
+#[tokio::test]
+async fn test_unmapped_stream_target_triggers_clse() {
+    let (transport, in_tx, mut out_rx) = MockTransport::new();
+    let registry = Arc::new(StreamRegistry::new());
+
+    let reg_clone = Arc::clone(&registry);
+    let router_handle = tokio::spawn(async move {
+        let router = PacketRouter::new(transport, reg_clone);
+        router.run().await
+    });
+
+    // 1. Send WRTE to non-existent local_id 999 with remote_id 42
+    in_tx
+        .send(Packet::new(Command::Wrte, 42, 999, b"hello".to_vec(), true))
+        .await
+        .unwrap();
+
+    // Should receive CLSE(arg0 = 999, arg1 = 42)
+    let reply = out_rx.recv().await.unwrap();
+    assert_eq!(reply.header.command, Command::Clse);
+    assert_eq!(reply.header.arg0, 999);
+    assert_eq!(reply.header.arg1, 42);
+
+    // 2. Send OKAY to non-existent local_id 888 with remote_id 55
+    in_tx
+        .send(Packet::new(Command::Okay, 55, 888, Vec::new(), true))
+        .await
+        .unwrap();
+
+    let reply = out_rx.recv().await.unwrap();
+    assert_eq!(reply.header.command, Command::Clse);
+    assert_eq!(reply.header.arg0, 888);
+    assert_eq!(reply.header.arg1, 55);
+
+    // 3. Router should continue running without crashing
+    let (s_tx, mut s_rx) = mpsc::unbounded_channel();
+    let local_id = registry.allocate_with_remote(77, s_tx).unwrap();
+
+    in_tx
+        .send(Packet::new(
+            Command::Wrte,
+            77,
+            local_id,
+            b"valid".to_vec(),
+            true,
+        ))
+        .await
+        .unwrap();
+
+    match s_rx.recv().await.unwrap() {
+        StreamMessage::Data(data) => assert_eq!(data, b"valid"),
+        other => panic!("unexpected message: {other:?}"),
+    }
+
+    drop(in_tx);
+    let router_res = router_handle.await.unwrap();
+    assert!(router_res.is_ok());
+}
+
+#[tokio::test]
+async fn test_open_packet_lifecycle() {
+    let (transport, in_tx, mut out_rx) = MockTransport::new();
+    let registry = Arc::new(StreamRegistry::new());
+
+    // Case A: Default unhandled OPEN -> replies with CLSE(0, remote_id)
+    let reg_clone = Arc::clone(&registry);
+    let router_handle = tokio::spawn(async move {
+        let router = PacketRouter::new(transport, reg_clone);
+        router.run().await
+    });
+
+    // Send OPEN(arg0 = 123 (remote_id), arg1 = 0, payload = "shell:ls\0")
+    in_tx
+        .send(Packet::new(
+            Command::Open,
+            123,
+            0,
+            b"shell:ls\0".to_vec(),
+            true,
+        ))
+        .await
+        .unwrap();
+
+    let reply = out_rx.recv().await.unwrap();
+    assert_eq!(reply.header.command, Command::Clse);
+    assert_eq!(reply.header.arg0, 0);
+    assert_eq!(reply.header.arg1, 123);
+
+    drop(in_tx);
+    let _ = router_handle.await.unwrap();
+
+    // Case B: Configured open handler accepting or rejecting
+    let (transport2, in_tx2, mut out_rx2) = MockTransport::new();
+    let registry2 = Arc::new(StreamRegistry::new());
+    let reg_clone2 = Arc::clone(&registry2);
+
+    let router_handle2 = tokio::spawn(async move {
+        let router =
+            PacketRouter::new(transport2, reg_clone2).with_open_handler(|req: OpenRequest| {
+                if req.destination == "shell:echo hello" {
+                    let (tx, _rx) = mpsc::unbounded_channel();
+                    OpenDecision::Accept(tx)
+                } else {
+                    OpenDecision::Reject
+                }
+            });
+        router.run().await
+    });
+
+    // Send rejected destination
+    in_tx2
+        .send(Packet::new(
+            Command::Open,
+            201,
+            0,
+            b"unsupported\0".to_vec(),
+            true,
+        ))
+        .await
+        .unwrap();
+
+    let reply = out_rx2.recv().await.unwrap();
+    assert_eq!(reply.header.command, Command::Clse);
+    assert_eq!(reply.header.arg0, 0);
+    assert_eq!(reply.header.arg1, 201);
+
+    // Send accepted destination
+    in_tx2
+        .send(Packet::new(
+            Command::Open,
+            202,
+            0,
+            b"shell:echo hello\0".to_vec(),
+            true,
+        ))
+        .await
+        .unwrap();
+
+    let reply = out_rx2.recv().await.unwrap();
+    assert_eq!(reply.header.command, Command::Okay);
+    assert_ne!(reply.header.arg0, 0); // local_id allocated
+    assert_eq!(reply.header.arg1, 202); // remote_id echoed in arg1
+
+    drop(in_tx2);
+    let _ = router_handle2.await.unwrap();
+}
+
+#[tokio::test]
+async fn test_okay_packet_lifecycle() {
+    let (transport, in_tx, _out_rx) = MockTransport::new();
+    let registry = Arc::new(StreamRegistry::new());
+
+    let (s_tx, mut s_rx) = mpsc::unbounded_channel();
+    // Initially allocated without remote_id (e.g. host issued OPEN and awaits OKAY)
+    let local_id = registry.allocate(s_tx).unwrap();
+
+    let reg_clone = Arc::clone(&registry);
+    let router_handle = tokio::spawn(async move {
+        let router = PacketRouter::new(transport, reg_clone);
+        router.run().await
+    });
+
+    // OKAY: arg0 = remote_id (peer), arg1 = local_id, optional payload for delayed acks
+    let ack_bytes: i32 = 4096;
+    in_tx
+        .send(Packet::new(
+            Command::Okay,
+            333,
+            local_id,
+            ack_bytes.to_le_bytes().to_vec(),
+            true,
+        ))
+        .await
+        .unwrap();
+
+    match s_rx.recv().await.unwrap() {
+        StreamMessage::Ready {
+            remote_id,
+            ack_bytes: got_ack,
+        } => {
+            assert_eq!(remote_id, 333);
+            assert_eq!(got_ack, Some(4096));
+        }
+        other => panic!("unexpected message: {other:?}"),
+    }
+
+    // Check that stream entry in registry has remote_id set to 333
+    let entry = registry.get(local_id).unwrap();
+    assert_eq!(entry.remote_id(), Some(333));
+
+    drop(in_tx);
+    let router_res = router_handle.await.unwrap();
+    assert!(router_res.is_ok());
+}
+
+#[tokio::test]
+async fn test_clse_packet_lifecycle() {
+    let (transport, in_tx, _out_rx) = MockTransport::new();
+    let registry = Arc::new(StreamRegistry::new());
+
+    let (s_tx, mut s_rx) = mpsc::unbounded_channel();
+    let local_id = registry.allocate_with_remote(555, s_tx).unwrap();
+
+    let reg_clone = Arc::clone(&registry);
+    let router_handle = tokio::spawn(async move {
+        let router = PacketRouter::new(transport, reg_clone);
+        router.run().await
+    });
+
+    // Send CLSE(arg0 = 555, arg1 = local_id)
+    in_tx
+        .send(Packet::new(Command::Clse, 555, local_id, Vec::new(), true))
+        .await
+        .unwrap();
+
+    match s_rx.recv().await.unwrap() {
+        StreamMessage::Close => {}
+        other => panic!("unexpected message: {other:?}"),
+    }
+
+    // Stream should be removed from registry
+    assert!(registry.get(local_id).is_none());
+
+    // Sending another CLSE to already closed local_id should be ignored (no response per protocol)
+    in_tx
+        .send(Packet::new(Command::Clse, 555, local_id, Vec::new(), true))
+        .await
+        .unwrap();
+
+    drop(in_tx);
+    let router_res = router_handle.await.unwrap();
+    assert!(router_res.is_ok());
+}
+
+#[tokio::test]
+async fn test_transport_disconnect_cleanup() {
+    let (transport, in_tx, _out_rx) = MockTransport::new();
+    let registry = Arc::new(StreamRegistry::new());
+
+    let (s1_tx, mut s1_rx) = mpsc::unbounded_channel();
+    let (s2_tx, mut s2_rx) = mpsc::unbounded_channel();
+
+    let id1 = registry.allocate_with_remote(1, s1_tx).unwrap();
+    let id2 = registry.allocate_with_remote(2, s2_tx).unwrap();
+
+    let reg_clone = Arc::clone(&registry);
+    let router_handle = tokio::spawn(async move {
+        let router = PacketRouter::new(transport, reg_clone);
+        router.run().await
+    });
+
+    // Drop in_tx simulating unexpected EOF / disconnect
+    drop(in_tx);
+
+    let router_res = router_handle.await.unwrap();
+    assert!(router_res.is_ok());
+
+    // Both streams should receive Close and registry should be cleared
+    match s1_rx.recv().await.unwrap() {
+        StreamMessage::Close => {}
+        other => panic!("unexpected message: {other:?}"),
+    }
+    match s2_rx.recv().await.unwrap() {
+        StreamMessage::Close => {}
+        other => panic!("unexpected message: {other:?}"),
+    }
+
+    assert!(registry.get(id1).is_none());
+    assert!(registry.get(id2).is_none());
+    assert_eq!(registry.count(), 0);
+}
