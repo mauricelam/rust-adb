@@ -1,5 +1,9 @@
 //! adb-server: Host server daemon implementation and service routing.
 
+pub mod stream;
+
+pub use stream::{StreamEntry, StreamError, StreamRegistry};
+
 #[cfg(test)]
 mod tests {
     #[test]
