@@ -1076,15 +1076,8 @@ impl SyncSession {
                 Ok(st) => st,
                 Err(e) => {
                     let msg = format!("cannot stat '{src_path}': {e}");
-                    res.errors.push(msg.clone());
+                    res.errors.push(msg);
                     res.success = false;
-                    res.outcomes.push(PushSourceOutcome {
-                        source: src_path.to_string(),
-                        destination: dst_str.clone(),
-                        bytes_transferred: 0,
-                        success: false,
-                        error: Some(msg),
-                    });
                     continue;
                 }
             };
