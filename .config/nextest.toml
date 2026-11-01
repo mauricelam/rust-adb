@@ -1,0 +1,5 @@
+[profile.default]
+
+[profile.ci]
+# Run all tests regardless of failures, gathering all failures at once on CI.
+fail-fast = false
