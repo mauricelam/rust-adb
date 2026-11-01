@@ -48,13 +48,28 @@ jobs:
       - name: Verify reference ADB version (Unix)
         if: runner.os != 'Windows'
         run: |
-          "$ADB_REFERENCE" version
+          REF_VERSION_OUTPUT="$("$ADB_REFERENCE" version)"
+          echo "$REF_VERSION_OUTPUT"
+          REF_LINE_1="$(echo "$REF_VERSION_OUTPUT" | sed -n '1p')"
+          REF_LINE_2="$(echo "$REF_VERSION_OUTPUT" | sed -n '2p')"
+          grep -qF "VERSION_LINE_1: &str = \"$REF_LINE_1\";" crates/adb-cli/src/version.rs
+          grep -qF "VERSION_LINE_2: &str = \"$REF_LINE_2\";" crates/adb-cli/src/version.rs
 
       - name: Verify reference ADB version (Windows)
         if: runner.os == 'Windows'
         shell: powershell
         run: |
-          & "$env:ADB_REFERENCE" version
+          $refOut = & "$env:ADB_REFERENCE" version
+          $refOut | Write-Output
+          $line1 = $refOut[0]
+          $line2 = $refOut[1]
+          $versionFile = Get-Content "crates/adb-cli/src/version.rs" -Raw
+          if (-not $versionFile.Contains("VERSION_LINE_1: &str = `"$line1`";")) {
+            throw "VERSION_LINE_1 does not match reference: $line1"
+          }
+          if (-not $versionFile.Contains("VERSION_LINE_2: &str = `"$line2`";")) {
+            throw "VERSION_LINE_2 does not match reference: $line2"
+          }
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@master
@@ -65,6 +80,9 @@ jobs:
       - name: Cache Cargo dependencies
         uses: Swatinem/rust-cache@v2
 
+      - name: Install cargo-nextest
+        uses: taiki-e/install-action@nextest
+
       - name: Format check
         run: cargo fmt --all -- --check
 
@@ -72,14 +90,12 @@ jobs:
         run: cargo clippy --workspace --all-targets -- -D warnings
 
       - name: Run tests
-        run: cargo test --workspace
+        run: cargo nextest run --workspace
 
   compat-baseline:
     name: Compat Baseline (C++ vs C++) (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
     timeout-minutes: 60
-    env:
-      RUST_TEST_THREADS: 1
     strategy:
       fail-fast: false
       matrix:
@@ -123,20 +139,21 @@ jobs:
       - name: Cache Cargo dependencies
         uses: Swatinem/rust-cache@v2
 
+      - name: Install cargo-nextest
+        uses: taiki-e/install-action@nextest
+
       - name: Run compatibility suite 10 times
         shell: bash
         run: |
           for i in 1 2 3 4 5 6 7 8 9 10; do
             echo "=== Compatibility Test Run $i / 10 ==="
-            cargo test -p compat || exit 1
+            cargo nextest run -p compat || exit 1
           done
 
   compat-rust-client:
     name: Compat Rust Client (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
     timeout-minutes: 30
-    env:
-      RUST_TEST_THREADS: 1
     strategy:
       fail-fast: false
       matrix:
@@ -177,6 +194,9 @@ jobs:
       - name: Cache Cargo dependencies
         uses: Swatinem/rust-cache@v2
 
+      - name: Install cargo-nextest
+        uses: taiki-e/install-action@nextest
+
       - name: Build adb-cli and set ADB_CLIENT (Unix)
         if: runner.os != 'Windows'
         run: |
@@ -202,7 +222,7 @@ jobs:
             fi
           done < tests/compat/rust-client-known-failures.txt
 
-          cargo test -p compat -- --exact $SKIP_ARGS
+          cargo nextest run -p compat -- $SKIP_ARGS
 
       - name: Check known failing compatibility tests with Rust client
         shell: bash

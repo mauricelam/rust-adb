@@ -81,6 +81,9 @@ fn test_binary_checksum_validation() {
     collect_files_recursive(&binaries_dir, &mut found_files);
 
     for file in found_files {
+        if file.file_name().and_then(|n| n.to_str()) == Some(".DS_Store") {
+            continue;
+        }
         if file.file_name().and_then(|n| n.to_str()) == Some("CHECKSUMS.txt") {
             continue;
         }

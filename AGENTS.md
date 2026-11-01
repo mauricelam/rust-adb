@@ -24,7 +24,7 @@ Alternatively, individual checks can be executed using Cargo:
 ```bash
 cargo fmt --all -- --check
 cargo clippy --workspace --all-targets -- -D warnings
-cargo test --workspace
+cargo nextest run --workspace
 ```
 
 ### Reference ADB Binary
@@ -57,7 +57,7 @@ The `tests/compat` crate provides a test harness for running compatibility tests
 To run compatibility tests:
 
 ```bash
-cargo test -p compat
+cargo nextest run -p compat
 ```
 
 The harness respects the following environment variables:

@@ -34,7 +34,22 @@ export ADB_SERVER_BIN="${ADB_SERVER_BIN:-$ADB_REFERENCE}"
 echo "Using ADB_REFERENCE: $ADB_REFERENCE"
 
 echo "=== Step 1: Verifying reference ADB version ==="
-"$ADB_REFERENCE" version
+REF_VERSION_OUTPUT="$("$ADB_REFERENCE" version)"
+echo "$REF_VERSION_OUTPUT"
+
+REF_LINE_1="$(echo "$REF_VERSION_OUTPUT" | sed -n '1p')"
+REF_LINE_2="$(echo "$REF_VERSION_OUTPUT" | sed -n '2p')"
+
+# Verify first two lines match constants in crates/adb-cli/src/version.rs
+if ! grep -qF "VERSION_LINE_1: &str = \"$REF_LINE_1\";" crates/adb-cli/src/version.rs; then
+  echo "Error: VERSION_LINE_1 in crates/adb-cli/src/version.rs does not match reference: $REF_LINE_1" >&2
+  exit 1
+fi
+
+if ! grep -qF "VERSION_LINE_2: &str = \"$REF_LINE_2\";" crates/adb-cli/src/version.rs; then
+  echo "Error: VERSION_LINE_2 in crates/adb-cli/src/version.rs does not match reference: $REF_LINE_2" >&2
+  exit 1
+fi
 
 echo "=== Step 2: Format check ==="
 cargo fmt --all -- --check
@@ -43,9 +58,9 @@ echo "=== Step 3: Clippy check ==="
 cargo clippy --workspace --all-targets -- -D warnings
 
 echo "=== Step 4: Workspace tests ==="
-cargo test --workspace
+cargo nextest run --workspace
 
 echo "=== Step 5: Compatibility suite ==="
-cargo test -p compat
+cargo nextest run -p compat
 
 echo "=== All CI checks passed successfully! ==="

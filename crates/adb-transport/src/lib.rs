@@ -1,9 +1,10 @@
 //! adb-transport: Connection and transport interfaces for USB, TCP/IP, and mDNS.
 
-#[cfg(test)]
-mod tests {
-    #[test]
-    fn smoke_test() {
-        assert_eq!(2 + 2, 4);
-    }
-}
+pub mod handshake;
+pub mod transport;
+
+pub use handshake::{perform_cnxn_handshake, HandshakeResult};
+pub use transport::{
+    calculate_checksum, read_packet_from_stream, write_packet_to_stream, AsyncStreamTransport,
+    Packet, Transport, TransportError,
+};
