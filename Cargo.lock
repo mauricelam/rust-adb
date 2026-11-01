@@ -75,6 +75,12 @@ dependencies = [
 name = "adb-server"
 version = "0.0.0"
 dependencies = [
+ "adb-auth",
+ "adb-proto",
+ "adb-transport",
+ "parking_lot",
+ "rand 0.8.8",
+ "rsa",
  "adb-proto",
  "adb-transport",
  "thiserror",
