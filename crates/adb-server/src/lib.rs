@@ -11,6 +11,14 @@ pub use state_machine::{
     DeviceStateMachine, DeviceStateMachineEvent, DeviceStateMachineOutput, OutgoingPacket,
 };
 pub use transport_type::TransportType;
+pub mod router;
+pub mod stream;
+
+pub use router::{
+    OpenDecision, OpenHandler, OpenRequest, PacketRouter, RouterError, StreamMessage,
+    StreamReceiver, StreamSender,
+};
+pub use stream::{StreamEntry, StreamError, StreamRegistry};
 
 #[cfg(test)]
 mod tests {
