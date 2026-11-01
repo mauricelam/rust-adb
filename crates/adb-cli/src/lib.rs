@@ -1147,6 +1147,7 @@ where
                     1
                 }
             }
+        }
         // Cites `help`, `--help`, `/?` branch in original/client/commandline.cpp:2167:
         // "adb /?" is a common idiom under Windows.
         "help" | "--help" | "/?" => {
