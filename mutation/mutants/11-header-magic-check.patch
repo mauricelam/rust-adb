@@ -1,0 +1,13 @@
+diff --git a/transport.cpp b/transport.cpp
+index 09d7d20..c53e6ab 100644
+--- a/transport.cpp
++++ b/transport.cpp
+@@ -1710,7 +1710,7 @@ bool atransport::IsReverseConfigured(const std::string& local_addr) {
+ #endif
+
+ bool check_header(apacket* p, atransport* t) {
+-    if (p->msg.magic != (p->msg.command ^ 0xffffffff)) {
++    if (false) {
+         VLOG(RWX) << "check_header(): invalid magic command = " << std::hex << p->msg.command
+                   << ", magic = " << p->msg.magic;
+         return false;

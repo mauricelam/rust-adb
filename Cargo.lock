@@ -78,6 +78,10 @@ version = "0.0.0"
 [[package]]
 name = "adb-transport"
 version = "0.0.0"
+dependencies = [
+ "adb-proto",
+ "tokio",
+]
 
 [[package]]
 name = "aho-corasick"
