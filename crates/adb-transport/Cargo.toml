@@ -7,7 +7,7 @@ publish.workspace = true
 
 [dependencies]
 adb-proto = { path = "../adb-proto" }
-tokio = { version = "1", features = ["io-util", "net"] }
+tokio = { version = "1", features = ["io-util", "net", "time", "rt"] }
 
 [dev-dependencies]
 tokio = { version = "1", features = ["full"] }
