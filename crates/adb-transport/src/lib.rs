@@ -1,9 +1,17 @@
 //! adb-transport: Connection and transport interfaces for USB, TCP/IP, and mDNS.
 
+pub mod emulator;
 pub mod handshake;
+pub mod tcp;
 pub mod transport;
 
+pub use emulator::{
+    console_port_for_adb_port, emulator_serial, scan_for_emulators, scan_for_emulators_with_config,
+    DiscoveredEmulator, EmulatorScanConfig, DEFAULT_ADB_LOCAL_TRANSPORT_MAX_PORT,
+    DEFAULT_ADB_LOCAL_TRANSPORT_PORT,
+};
 pub use handshake::{perform_cnxn_handshake, HandshakeResult};
+pub use tcp::TcpTransport;
 pub use transport::{
     calculate_checksum, read_packet_from_stream, write_packet_to_stream, AsyncStreamTransport,
     Packet, Transport, TransportError,
