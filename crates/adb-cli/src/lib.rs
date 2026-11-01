@@ -218,6 +218,16 @@ where
         }
     }
 
+    if let Some(ref device) = one_device {
+        let is_server_start = remaining.first().map(|s| s.as_str()) == Some("start-server");
+        if !is_server_start {
+            return Err("--one-device is only allowed when starting a server.".to_string());
+        }
+        if device.is_empty() {
+            return Err("--one-device requires an argument".to_string());
+        }
+    }
+
     let selector = if let Some(id) = transport_id {
         TransportSelector::Id(id)
     } else if let Some(ref s) = serial {
@@ -325,6 +335,16 @@ pub async fn run_cli<E>(args: &[String], env: E, output: &mut Output) -> i32
 where
     E: Fn(&str) -> Option<String>,
 {
+    if let Some(trace_env) = env("ADB_TRACE") {
+        let trace_errs = adb_client::trace::trace_init(&trace_env);
+        for err in trace_errs {
+            let _ = writeln!(
+                output.stderr,
+                "10-30 00:00:00.000  1000  1000 E adb     : adb_trace.cpp:149 {err}"
+            );
+        }
+    }
+
     let (global_opts, remaining) = match parse_global(args, &env) {
         Ok(res) => res,
         Err(err) => {
@@ -354,7 +374,12 @@ where
     match cmd_name {
         // Cites `start-server` branch in original/client/commandline.cpp:2102
         "start-server" => {
-            let outcome = client.check_server_version().await;
+            let outcome = client
+                .check_server_version_with_options(
+                    global_opts.listen_all,
+                    global_opts.one_device.as_deref(),
+                )
+                .await;
             print_events(&outcome.events, &mut output.stderr);
             match outcome.result {
                 Ok(()) => 0,

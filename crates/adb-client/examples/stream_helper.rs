@@ -47,7 +47,7 @@ fn main() {
         use adb_client::{ExternalBinaryLauncher, ServerLauncher};
         let exe = env::current_exe().unwrap();
         let launcher = ExternalBinaryLauncher::new(exe);
-        launcher.launch("tcp:5037", None).await.unwrap();
+        launcher.launch("tcp:5037", false, None).await.unwrap();
         println!("helper finished");
     });
 }

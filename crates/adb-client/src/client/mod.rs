@@ -80,6 +80,7 @@ pub trait ServerLauncher: Send + Sync {
     fn launch<'a>(
         &'a self,
         spec: &'a str,
+        listen_all: bool,
         one_device: Option<&'a str>,
     ) -> Pin<Box<dyn Future<Output = Result<(), LaunchError>> + Send + 'a>>;
 }
@@ -106,12 +107,13 @@ impl ServerLauncher for SelfExecLauncher {
     fn launch<'a>(
         &'a self,
         spec: &'a str,
+        listen_all: bool,
         one_device: Option<&'a str>,
     ) -> Pin<Box<dyn Future<Output = Result<(), LaunchError>> + Send + 'a>> {
         let config = self.config;
         Box::pin(async move {
             let exe = std::env::current_exe()?;
-            launch_binary(&exe, spec, one_device, config).await
+            launch_binary(&exe, spec, listen_all, one_device, config).await
         })
     }
 }
@@ -143,10 +145,13 @@ impl ServerLauncher for ExternalBinaryLauncher {
     fn launch<'a>(
         &'a self,
         spec: &'a str,
+        listen_all: bool,
         one_device: Option<&'a str>,
     ) -> Pin<Box<dyn Future<Output = Result<(), LaunchError>> + Send + 'a>> {
         let config = self.config;
-        Box::pin(async move { launch_binary(&self.path, spec, one_device, config).await })
+        Box::pin(
+            async move { launch_binary(&self.path, spec, listen_all, one_device, config).await },
+        )
     }
 }
 
@@ -157,6 +162,7 @@ impl ServerLauncher for ExternalBinaryLauncher {
 async fn launch_binary(
     path: &std::path::Path,
     spec: &str,
+    listen_all: bool,
     one_device: Option<&str>,
     config: LaunchConfig,
 ) -> Result<(), LaunchError> {
@@ -181,8 +187,13 @@ async fn launch_binary(
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .arg("-L")
-        .arg(spec)
-        .arg("fork-server")
+        .arg(spec);
+
+    if listen_all {
+        cmd.arg("-a");
+    }
+
+    cmd.arg("fork-server")
         .arg("server")
         .arg("--reply-fd")
         .arg(write_fd_raw.to_string());
@@ -239,6 +250,7 @@ async fn launch_binary(
 async fn launch_binary(
     path: &std::path::Path,
     spec: &str,
+    listen_all: bool,
     one_device: Option<&str>,
     config: LaunchConfig,
 ) -> Result<(), LaunchError> {
@@ -302,8 +314,13 @@ async fn launch_binary(
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .arg("-L")
-        .arg(spec)
-        .arg("fork-server")
+        .arg(spec);
+
+    if listen_all {
+        cmd.arg("-a");
+    }
+
+    cmd.arg("fork-server")
         .arg("server")
         .arg("--reply-fd")
         .arg(write_handle_raw.to_string())
@@ -345,6 +362,7 @@ async fn launch_binary(
 async fn launch_binary(
     _path: &std::path::Path,
     _spec: &str,
+    _listen_all: bool,
     _one_device: Option<&str>,
     _config: LaunchConfig,
 ) -> Result<(), LaunchError> {
@@ -407,17 +425,21 @@ pub async fn start_server(
     launcher: &dyn ServerLauncher,
     events: &mut Vec<ClientEvent>,
 ) -> Result<(), ClientError> {
-    start_server_with_one_device(addr, None, launcher, events).await
+    start_server_with_options(addr, false, None, launcher, events).await
 }
 
-/// Launches a local ADB server for `addr` with an optional `one_device` requirement.
-pub async fn start_server_with_one_device(
+/// Launches a local ADB server for `addr` with optional `listen_all` and `one_device` options.
+pub async fn start_server_with_options(
     addr: &ServerAddress,
+    listen_all: bool,
     one_device: Option<&str>,
     launcher: &dyn ServerLauncher,
     events: &mut Vec<ClientEvent>,
 ) -> Result<(), ClientError> {
-    match launcher.launch(&addr.to_spec(), one_device).await {
+    match launcher
+        .launch(&addr.to_spec(), listen_all, one_device)
+        .await
+    {
         Ok(()) => {
             events.push(ClientEvent::DaemonStarted);
             Ok(())
@@ -429,11 +451,33 @@ pub async fn start_server_with_one_device(
     }
 }
 
+/// Launches a local ADB server for `addr` with an optional `one_device` requirement.
+pub async fn start_server_with_one_device(
+    addr: &ServerAddress,
+    one_device: Option<&str>,
+    launcher: &dyn ServerLauncher,
+    events: &mut Vec<ClientEvent>,
+) -> Result<(), ClientError> {
+    start_server_with_options(addr, false, one_device, launcher, events).await
+}
+
 /// Checks that the running server version matches `ADB_SERVER_VERSION`.
 ///
 /// Ports `__adb_check_server_version` and `adb_connect` from C++ `original/client/adb_client.cpp`.
 pub async fn check_server_version(
     addr: &ServerAddress,
+    session_factory: &dyn SessionFactory,
+    launcher: &dyn ServerLauncher,
+    events: &mut Vec<ClientEvent>,
+) -> Result<(), ClientError> {
+    check_server_version_with_options(addr, false, None, session_factory, launcher, events).await
+}
+
+/// Checks that the running server version matches `ADB_SERVER_VERSION` with launch options.
+pub async fn check_server_version_with_options(
+    addr: &ServerAddress,
+    listen_all: bool,
+    one_device: Option<&str>,
     session_factory: &dyn SessionFactory,
     launcher: &dyn ServerLauncher,
     events: &mut Vec<ClientEvent>,
@@ -454,7 +498,8 @@ pub async fn check_server_version(
                 events.push(ClientEvent::DaemonNotRunning {
                     spec: addr.to_spec(),
                 });
-                return start_server(addr, launcher, events).await;
+                return start_server_with_options(addr, listen_all, one_device, launcher, events)
+                    .await;
             }
         }
         Err(err) => return Err(err.into()),
@@ -488,7 +533,7 @@ pub async fn check_server_version(
         });
 
         kill_server(addr, session_factory, events).await?;
-        return start_server(addr, launcher, events).await;
+        return start_server_with_options(addr, listen_all, one_device, launcher, events).await;
     }
 
     Ok(())
@@ -582,12 +627,23 @@ impl AdbClient {
 
     /// Ensures the server is running and version matches before executing host operations.
     pub(crate) async fn ensure_server(&self) -> Outcome<()> {
+        self.ensure_server_with_options(false, None).await
+    }
+
+    /// Ensures the server is running and version matches before executing host operations, passing launch options.
+    pub(crate) async fn ensure_server_with_options(
+        &self,
+        listen_all: bool,
+        one_device: Option<&str>,
+    ) -> Outcome<()> {
         let mut check_events = Vec::new();
         let res = self
             .version_checked
             .get_or_try_init(|| async {
-                check_server_version(
+                check_server_version_with_options(
                     &self.addr,
+                    listen_all,
+                    one_device,
                     self.session_factory.as_ref(),
                     self.launcher.as_ref(),
                     &mut check_events,
@@ -632,6 +688,16 @@ impl AdbClient {
     /// Checks the server version once per `AdbClient` instance.
     pub async fn check_server_version(&self) -> Outcome<()> {
         self.ensure_server().await
+    }
+
+    /// Checks the server version once per `AdbClient` instance with launch options.
+    pub async fn check_server_version_with_options(
+        &self,
+        listen_all: bool,
+        one_device: Option<&str>,
+    ) -> Outcome<()> {
+        self.ensure_server_with_options(listen_all, one_device)
+            .await
     }
 
     /// Kills the ADB server for this client instance.
