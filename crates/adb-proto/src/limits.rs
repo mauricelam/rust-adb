@@ -21,3 +21,8 @@ pub const MAX_PAYLOAD_V1: usize = 4 * 1024;
 /// Maximum payload size supported by modern ADB protocol (`MAX_PAYLOAD`).
 /// Ports `MAX_PAYLOAD` (1 MiB) from `original/adb.h`.
 pub const MAX_PAYLOAD: usize = 1024 * 1024;
+
+/// Initial number of unacknowledged bytes allowed on a socket when delayed acks are supported
+/// before the sender blocks (`INITIAL_DELAYED_ACK_BYTES`).
+/// Ports `INITIAL_DELAYED_ACK_BYTES` (32 MiB) from `original/adb.h`.
+pub const INITIAL_DELAYED_ACK_BYTES: usize = 32 * 1024 * 1024;
