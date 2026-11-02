@@ -13,6 +13,9 @@ pub use state_machine::{
 pub use transport_type::TransportType;
 pub mod router;
 pub mod stream;
+pub mod tracker;
+
+pub use tracker::{format_devices_framed, format_devices_raw, TrackerFormat};
 
 pub use router::{
     OpenDecision, OpenHandler, OpenRequest, PacketRouter, RouterError, StreamMessage,

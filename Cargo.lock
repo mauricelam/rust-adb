@@ -81,8 +81,6 @@ dependencies = [
  "parking_lot",
  "rand 0.8.8",
  "rsa",
- "adb-proto",
- "adb-transport",
  "thiserror",
  "tokio",
 ]
