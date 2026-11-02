@@ -16,10 +16,16 @@ pub mod stream;
 pub mod tracker;
 
 pub use tracker::{format_devices_framed, format_devices_raw, TrackerFormat};
+pub mod server;
 
 pub use router::{
     OpenDecision, OpenHandler, OpenRequest, PacketRouter, RouterError, StreamAcker, StreamMessage,
     StreamReceiver, StreamSender, StreamWriter,
+};
+pub use server::{
+    encode_fail, encode_okay, encode_okay_with_payload, parse_smart_socket_request, ServerError,
+    SmartSocketRequest, SmartSocketServer, TransportTarget, ADB_SERVER_VERSION,
+    DEFAULT_SERVER_PORT,
 };
 pub use stream::{StreamEntry, StreamError, StreamRegistry};
 
