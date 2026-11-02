@@ -1,0 +1,13 @@
+{
+  "args": [
+    "-s",
+    "<mock_addr>",
+    "pull",
+    "/data/f_0.bin",
+    "<local_path>"
+  ],
+  "env": [],
+  "stdout": "",
+  "stderr": "/data/f_0.bin: 1 file pulled, 0 skipped.\n",
+  "exit_code": 0
+}

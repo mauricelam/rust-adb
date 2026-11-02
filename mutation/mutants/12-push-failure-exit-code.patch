@@ -1,0 +1,14 @@
+diff --git a/client/commandline.cpp b/client/commandline.cpp
+index 4f43fb9..0436094 100644
+--- a/client/commandline.cpp
++++ b/client/commandline.cpp
+@@ -2011,7 +2011,7 @@ int adb_commandline(int argc, const char** argv) {
+         if (srcs.empty() || !dst) {
+             error_exit("push requires <source> and <destination> arguments");
+         }
+
+-        return do_sync_push(srcs, dst, sync, compression, dry_run, quiet) ? 0 : 1;
++        return do_sync_push(srcs, dst, sync, compression, dry_run, quiet) ? 0 : 0;
+     } else if (!strcmp(argv[0], "pull")) {
+         bool copy_attrs = false;
+         bool quiet = false;

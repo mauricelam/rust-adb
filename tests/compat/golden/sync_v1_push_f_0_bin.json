@@ -1,0 +1,13 @@
+{
+  "args": [
+    "-s",
+    "<mock_addr>",
+    "push",
+    "<local_src>",
+    "/data/pushed_f_0.bin"
+  ],
+  "env": [],
+  "stdout": "",
+  "stderr": "<tmp>/pushed_f_0.bin: 1 file pushed, 0 skipped.\n",
+  "exit_code": 0
+}

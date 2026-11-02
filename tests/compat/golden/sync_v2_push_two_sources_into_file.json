@@ -1,0 +1,14 @@
+{
+  "args": [
+    "-s",
+    "<mock_addr>",
+    "push",
+    "<src1>",
+    "<src2>",
+    "/data/f_0.bin"
+  ],
+  "env": [],
+  "stdout": "",
+  "stderr": "<prog>: error: target '/data/f_0.bin' is not a directory\n",
+  "exit_code": 1
+}

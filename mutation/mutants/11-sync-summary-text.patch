@@ -1,0 +1,12 @@
+diff --git a/client/file_sync_client.cpp b/client/file_sync_client.cpp
+index d372076..3f3b92c 100644
+--- a/client/file_sync_client.cpp
++++ b/client/file_sync_client.cpp
+@@ -211,7 +211,7 @@ struct SyncConnection {
+         if (!name.empty()) {
+             ss << name << ": ";
+         }
+-        ss << files_transferred << " file" << ((files_transferred == 1) ? "" : "s") << " "
++        ss << files_transferred << " MUTATED_FILE" << ((files_transferred == 1) ? "" : "s") << " "
+            << direction_str << ", " << files_skipped << " skipped.";
+         ss << TransferRate();
