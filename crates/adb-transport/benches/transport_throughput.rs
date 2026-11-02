@@ -60,8 +60,7 @@ async fn main() {
     let received_bytes = reader_res.expect("reader task failed");
 
     let elapsed = start.elapsed();
-    let throughput_mib_s =
-        (received_bytes as f64 / (1024.0 * 1024.0)) / elapsed.as_secs_f64();
+    let throughput_mib_s = (received_bytes as f64 / (1024.0 * 1024.0)) / elapsed.as_secs_f64();
 
     println!(
         "Transferred {} bytes ({} MiB) in {:.4?} ({:.2} MiB/s, {} stall cycles)",
