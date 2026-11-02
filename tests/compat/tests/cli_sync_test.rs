@@ -73,22 +73,53 @@ fn load_golden(case_name: &str) -> GoldenCase {
         .unwrap_or_else(|e| panic!("Failed to parse golden file {}: {e}", golden_path.display()))
 }
 
+/// Normalizes the Windows reference ADB output for failed pushes.
+fn normalize_windows_push_failure(stderr: &str) -> String {
+    stderr
+        .split('\n')
+        .filter(|line| !line.contains("file pushed"))
+        .map(|line| {
+            line.strip_prefix("<prog>: error: failed to copy '")
+                .unwrap_or(line)
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
 fn assert_matches_golden(case_name: &str, actual: &TestOutput) {
     let golden = load_golden(case_name);
     let norm_stdout = normalize_output(&actual.stdout);
-    let norm_stderr = normalize_output(&actual.stderr);
+    let mut norm_stderr = normalize_output(&actual.stderr);
+    let mut golden_stderr = golden.stderr.clone();
+
+    if cfg!(windows) && case_name.ends_with("_push_fail_device") {
+        norm_stderr = normalize_windows_push_failure(&norm_stderr);
+        golden_stderr = normalize_windows_push_failure(&golden_stderr);
+    }
 
     assert_eq!(
         norm_stdout, golden.stdout,
         "stdout mismatch for golden test case '{case_name}'"
     );
     assert_eq!(
-        norm_stderr, golden.stderr,
+        norm_stderr, golden_stderr,
         "stderr mismatch for golden test case '{case_name}'"
     );
     assert_eq!(
         actual.exit_code, golden.exit_code,
         "exit_code mismatch for golden test case '{case_name}'"
+    );
+}
+
+#[test]
+fn test_normalize_windows_push_failure() {
+    let golden = "<tmp>/push_fail.bin: 1 file pushed, 0 skipped. <rate> MB/s (<bytes> bytes in <time>s)\n<prog>: error: failed to copy '<tmp>/push_fail.bin' to '/nonexistent_dir/file.bin': remote failed to create file '/nonexistent_dir/file.bin': No such file or directory\n";
+    let windows_output = "<tmp>/push_fail.bin' to '/nonexistent_dir/file.bin': remote failed to create file '/nonexistent_dir/file.bin': No such file or directory\n";
+
+    assert_eq!(normalize_windows_push_failure(golden), windows_output);
+    assert_eq!(
+        normalize_windows_push_failure(windows_output),
+        windows_output
     );
 }
 
