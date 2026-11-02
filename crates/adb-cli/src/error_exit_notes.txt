@@ -1,0 +1,1 @@
+Task 4.3 Notes: Failure behavior, exit codes, and write errors
