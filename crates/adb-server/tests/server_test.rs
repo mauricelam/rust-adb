@@ -47,6 +47,178 @@ async fn test_smart_socket_valid_length_request_routed() {
 }
 
 #[tokio::test]
+async fn test_smart_socket_target_selection_by_serial() {
+    let registry = Arc::new(DeviceRegistry::new());
+    let id1 = registry
+        .register("123456", TransportType::Usb)
+        .expect("register usb");
+    registry.update_state(id1, ConnectionState::Device);
+
+    let id2 = registry
+        .register("789012", TransportType::Local)
+        .expect("register local");
+    registry.update_state(id2, ConnectionState::Device);
+
+    let server = SmartSocketServer::bind("127.0.0.1:0", Arc::clone(&registry))
+        .await
+        .expect("bind server");
+    let addr = server.local_addr().expect("local addr");
+
+    let server_task = tokio::spawn(async move {
+        server.run().await.unwrap();
+    });
+
+    let mut stream = TcpStream::connect(addr).await.expect("connect");
+    let req = "host-serial:123456:get-serialno";
+    let framed = format!("{:04x}{req}", req.len());
+    stream.write_all(framed.as_bytes()).await.expect("write");
+
+    let mut buf = vec![0u8; 1024];
+    let n = stream.read(&mut buf).await.expect("read response");
+    let (reply, consumed) = parse_reply(&buf[..n]).expect("parse reply");
+    assert_eq!(reply, SmartSocketReply::Okay);
+    let (proto_str, _) = parse_protocol_string(&buf[consumed..n]).expect("parse payload");
+    match proto_str {
+        ProtocolString::Complete(s) => assert_eq!(s, "123456"),
+        other => panic!("expected Complete, got {other:?}"),
+    }
+
+    server_task.abort();
+}
+
+#[tokio::test]
+async fn test_smart_socket_target_ambiguous_error() {
+    let registry = Arc::new(DeviceRegistry::new());
+    let id1 = registry
+        .register("dev1", TransportType::Usb)
+        .expect("register dev1");
+    registry.update_state(id1, ConnectionState::Device);
+
+    let id2 = registry
+        .register("dev2", TransportType::Local)
+        .expect("register dev2");
+    registry.update_state(id2, ConnectionState::Device);
+
+    let server = SmartSocketServer::bind("127.0.0.1:0", Arc::clone(&registry))
+        .await
+        .expect("bind server");
+    let addr = server.local_addr().expect("local addr");
+
+    let server_task = tokio::spawn(async move {
+        server.run().await.unwrap();
+    });
+
+    // 1. host:get-state without selector when 2 devices connected returns "more than one device/emulator"
+    let mut stream = TcpStream::connect(addr).await.expect("connect");
+    let req = "host:get-state";
+    let framed = format!("{:04x}{req}", req.len());
+    stream.write_all(framed.as_bytes()).await.expect("write");
+
+    let mut buf = vec![0u8; 1024];
+    let n = stream.read(&mut buf).await.expect("read response");
+    let (reply, _) = parse_reply(&buf[..n]).expect("parse reply");
+    match reply {
+        SmartSocketReply::Fail(reason) => {
+            assert_eq!(reason, "more than one device/emulator");
+        }
+        other => panic!("expected Fail, got {other:?}"),
+    }
+
+    server_task.abort();
+}
+
+#[tokio::test]
+async fn test_smart_socket_missing_device_errors() {
+    let registry = Arc::new(DeviceRegistry::new());
+    let server = SmartSocketServer::bind("127.0.0.1:0", Arc::clone(&registry))
+        .await
+        .expect("bind server");
+    let addr = server.local_addr().expect("local addr");
+
+    let server_task = tokio::spawn(async move {
+        server.run().await.unwrap();
+    });
+
+    // 1. host-serial:nonexistent:get-state returns "device 'nonexistent' not found"
+    let mut stream = TcpStream::connect(addr).await.expect("connect");
+    let req = "host-serial:nonexistent:get-state";
+    let framed = format!("{:04x}{req}", req.len());
+    stream.write_all(framed.as_bytes()).await.expect("write");
+
+    let mut buf = vec![0u8; 1024];
+    let n = stream.read(&mut buf).await.expect("read response");
+    let (reply, _) = parse_reply(&buf[..n]).expect("parse reply");
+    match reply {
+        SmartSocketReply::Fail(reason) => {
+            assert_eq!(reason, "device 'nonexistent' not found");
+        }
+        other => panic!("expected Fail, got {other:?}"),
+    }
+
+    // 2. host:get-state when no devices connected returns "no devices/emulators found"
+    let mut stream2 = TcpStream::connect(addr).await.expect("connect");
+    let req2 = "host:get-state";
+    let framed2 = format!("{:04x}{req2}", req2.len());
+    stream2.write_all(framed2.as_bytes()).await.expect("write");
+
+    let n2 = stream2.read(&mut buf).await.expect("read response");
+    let (reply2, _) = parse_reply(&buf[..n2]).expect("parse reply");
+    match reply2 {
+        SmartSocketReply::Fail(reason) => {
+            assert_eq!(reason, "no devices/emulators found");
+        }
+        other => panic!("expected Fail, got {other:?}"),
+    }
+
+    // 3. host-usb:get-state when no devices connected returns "no devices found"
+    let mut stream3 = TcpStream::connect(addr).await.expect("connect");
+    let req3 = "host-usb:get-state";
+    let framed3 = format!("{:04x}{req3}", req3.len());
+    stream3.write_all(framed3.as_bytes()).await.expect("write");
+
+    let n3 = stream3.read(&mut buf).await.expect("read response");
+    let (reply3, _) = parse_reply(&buf[..n3]).expect("parse reply");
+    match reply3 {
+        SmartSocketReply::Fail(reason) => {
+            assert_eq!(reason, "no devices found");
+        }
+        other => panic!("expected Fail, got {other:?}"),
+    }
+
+    // 4. host-local:get-state when no devices connected returns "no emulators found"
+    let mut stream4 = TcpStream::connect(addr).await.expect("connect");
+    let req4 = "host-local:get-state";
+    let framed4 = format!("{:04x}{req4}", req4.len());
+    stream4.write_all(framed4.as_bytes()).await.expect("write");
+
+    let n4 = stream4.read(&mut buf).await.expect("read response");
+    let (reply4, _) = parse_reply(&buf[..n4]).expect("parse reply");
+    match reply4 {
+        SmartSocketReply::Fail(reason) => {
+            assert_eq!(reason, "no emulators found");
+        }
+        other => panic!("expected Fail, got {other:?}"),
+    }
+
+    // 5. host-transport-id:99:get-state when no device returns "no device with transport id '99'"
+    let mut stream5 = TcpStream::connect(addr).await.expect("connect");
+    let req5 = "host-transport-id:99:get-state";
+    let framed5 = format!("{:04x}{req5}", req5.len());
+    stream5.write_all(framed5.as_bytes()).await.expect("write");
+
+    let n5 = stream5.read(&mut buf).await.expect("read response");
+    let (reply5, _) = parse_reply(&buf[..n5]).expect("parse reply");
+    match reply5 {
+        SmartSocketReply::Fail(reason) => {
+            assert_eq!(reason, "no device with transport id '99'");
+        }
+        other => panic!("expected Fail, got {other:?}"),
+    }
+
+    server_task.abort();
+}
+
+#[tokio::test]
 async fn test_smart_socket_malformed_length_prefix_returns_fail() {
     // Malformed length prefix: Non-hex characters in prefix returns FAIL payload and closes client socket.
     let registry = Arc::new(DeviceRegistry::new());

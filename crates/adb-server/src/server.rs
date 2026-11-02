@@ -8,7 +8,7 @@ use adb_proto::MAX_PAYLOAD;
 
 use adb_transport::DEFAULT_ADB_LOCAL_TRANSPORT_PORT;
 
-use crate::registry::{DeviceRegistry, TransportId};
+use crate::registry::{DeviceEntry, DeviceRegistry, TransportId};
 use crate::tracker::{format_devices_raw, TrackerFormat};
 use crate::transport_type::TransportType;
 
@@ -490,83 +490,140 @@ async fn handle_host_service(
             (true, target)
         };
 
-        // Match device in registry
-        let device = match req_target {
-            TransportTarget::Serial(ref s) => registry.get_by_serial(s),
-            TransportTarget::TransportId(id) => registry.get_by_id(id),
-            TransportTarget::Usb => {
-                let list = registry.list_devices();
-                let usb_devs: Vec<_> = list
-                    .into_iter()
-                    .filter(|d| d.transport_type == TransportType::Usb)
-                    .collect();
-                if usb_devs.is_empty() {
-                    None
-                } else if usb_devs.len() == 1 {
-                    Some(usb_devs[0].clone())
-                } else {
-                    session
-                        .stream
-                        .write_all(&encode_fail("more than one device"))
-                        .await?;
-                    session.stream.flush().await?;
-                    return Ok(false);
+        match acquire_one_transport(registry, &req_target, true) {
+            Ok(dev) => {
+                session.selected_device = Some(dev.transport_id);
+                session.stream.write_all(encode_okay()).await?;
+                if !legacy {
+                    let id_bytes = dev.transport_id.to_le_bytes();
+                    session.stream.write_all(&id_bytes).await?;
                 }
+                session.stream.flush().await?;
+                return Ok(true);
             }
-            TransportTarget::Local => {
-                let list = registry.list_devices();
-                let local_devs: Vec<_> = list
-                    .into_iter()
-                    .filter(|d| d.transport_type == TransportType::Local)
-                    .collect();
-                if local_devs.is_empty() {
-                    None
-                } else if local_devs.len() == 1 {
-                    Some(local_devs[0].clone())
-                } else {
-                    session
-                        .stream
-                        .write_all(&encode_fail("more than one emulator"))
-                        .await?;
-                    session.stream.flush().await?;
-                    return Ok(false);
-                }
+            Err(err_msg) => {
+                session.stream.write_all(&encode_fail(&err_msg)).await?;
+                session.stream.flush().await?;
+                return Ok(false);
             }
-            TransportTarget::Any => {
-                let list = registry.list_devices();
-                if list.is_empty() {
-                    None
-                } else if list.len() == 1 {
-                    Some(list[0].clone())
+        }
+    }
+
+    if service == "get-serialno" {
+        let effective_target = if let Some(id) = session.selected_device {
+            TransportTarget::TransportId(id)
+        } else {
+            target
+        };
+        match acquire_one_transport(registry, &effective_target, false) {
+            Ok(t) => {
+                let serial_resp = if !t.serial.is_empty() {
+                    &t.serial
                 } else {
-                    session
-                        .stream
-                        .write_all(&encode_fail("more than one device/emulator"))
-                        .await?;
-                    session.stream.flush().await?;
-                    return Ok(false);
-                }
+                    "unknown"
+                };
+                let resp = encode_okay_with_payload(serial_resp);
+                session.stream.write_all(&resp).await?;
+                session.stream.flush().await?;
+            }
+            Err(err) => {
+                session.stream.write_all(&encode_fail(&err)).await?;
+                session.stream.flush().await?;
+            }
+        }
+        return Ok(false);
+    }
+
+    if service == "get-devpath" {
+        let effective_target = if let Some(id) = session.selected_device {
+            TransportTarget::TransportId(id)
+        } else {
+            target
+        };
+        match acquire_one_transport(registry, &effective_target, false) {
+            Ok(t) => {
+                let devpath_resp = t.devpath.as_deref().unwrap_or("unknown");
+                let resp = encode_okay_with_payload(devpath_resp);
+                session.stream.write_all(&resp).await?;
+                session.stream.flush().await?;
+            }
+            Err(err) => {
+                session.stream.write_all(&encode_fail(&err)).await?;
+                session.stream.flush().await?;
+            }
+        }
+        return Ok(false);
+    }
+
+    if service == "get-state" {
+        let effective_target = if let Some(id) = session.selected_device {
+            TransportTarget::TransportId(id)
+        } else {
+            target
+        };
+        match acquire_one_transport(registry, &effective_target, false) {
+            Ok(t) => {
+                let resp = encode_okay_with_payload(t.state.as_str());
+                session.stream.write_all(&resp).await?;
+                session.stream.flush().await?;
+            }
+            Err(err) => {
+                session.stream.write_all(&encode_fail(&err)).await?;
+                session.stream.flush().await?;
+            }
+        }
+        return Ok(false);
+    }
+
+    if service == "features" {
+        let effective_target = if let Some(id) = session.selected_device {
+            TransportTarget::TransportId(id)
+        } else {
+            target
+        };
+        match acquire_one_transport(registry, &effective_target, false) {
+            Ok(t) => {
+                let features_str = t.features.join(",");
+                let resp = encode_okay_with_payload(&features_str);
+                session.stream.write_all(&resp).await?;
+                session.stream.flush().await?;
+            }
+            Err(err) => {
+                session.stream.write_all(&encode_fail(&err)).await?;
+                session.stream.flush().await?;
+            }
+        }
+        return Ok(false);
+    }
+
+    // If service is a target device service (e.g. shell, sync, exec, etc.)
+    // routed via host prefix like `host-serial:XYZ:shell:...`
+    if service.starts_with("shell")
+        || service.starts_with("sync:")
+        || service.starts_with("exec:")
+        || service.starts_with("abb:")
+        || service.starts_with("abb_exec:")
+        || service.starts_with("remount:")
+        || service.starts_with("dev:")
+        || service.starts_with("dev-raw:")
+    {
+        let effective_target = if let Some(id) = session.selected_device {
+            TransportTarget::TransportId(id)
+        } else {
+            target
+        };
+        let dev = match acquire_one_transport(registry, &effective_target, false) {
+            Ok(d) => d,
+            Err(err) => {
+                session.stream.write_all(&encode_fail(&err)).await?;
+                session.stream.flush().await?;
+                return Ok(false);
             }
         };
 
-        if let Some(dev) = device {
-            session.selected_device = Some(dev.transport_id);
-            session.stream.write_all(encode_okay()).await?;
-            if !legacy {
-                let id_bytes = dev.transport_id.to_le_bytes();
-                session.stream.write_all(&id_bytes).await?;
-            }
-            session.stream.flush().await?;
-            // Transport switched: keep socket open awaiting subsequent requests on same socket
-            return Ok(true);
-        } else {
-            session
-                .stream
-                .write_all(&encode_fail("no devices/emulators found"))
-                .await?;
-            session.stream.flush().await?;
-            return Ok(false);
-        }
+        session.selected_device = Some(dev.transport_id);
+        handle_device_service(session, service).await?;
+        return Ok(false);
     }
 
     // Unrecognized or out-of-scope host service:
@@ -574,6 +631,101 @@ async fn handle_host_service(
     session.stream.write_all(&encode_fail(&fail_msg)).await?;
     session.stream.flush().await?;
     Ok(false)
+}
+
+/// Ports `acquire_one_transport` from `original/transport.cpp`.
+pub fn acquire_one_transport(
+    registry: &DeviceRegistry,
+    target: &TransportTarget,
+    accept_any_state: bool,
+) -> Result<Arc<DeviceEntry>, String> {
+    let mut default_error = match target {
+        TransportTarget::TransportId(id) => format!("no device with transport id '{id}'"),
+        TransportTarget::Serial(ref s) => format!("device '{s}' not found"),
+        TransportTarget::Local => "no emulators found".to_string(),
+        TransportTarget::Any => "no devices/emulators found".to_string(),
+        TransportTarget::Usb => "no devices found".to_string(),
+    };
+
+    let all_devices = registry.list_devices();
+    let mut result: Option<Arc<DeviceEntry>> = None;
+
+    for t in all_devices {
+        if t.state == crate::state::ConnectionState::NoPerm {
+            default_error = "insufficient permissions for device".to_string();
+            continue;
+        }
+
+        match target {
+            TransportTarget::TransportId(id) => {
+                if t.transport_id == *id {
+                    result = Some(t);
+                    break;
+                }
+            }
+            TransportTarget::Serial(ref s) => {
+                if t.matches_target(s) {
+                    if result.is_some() {
+                        return Err(format!("more than one device with serial {s}"));
+                    }
+                    result = Some(t);
+                }
+            }
+            TransportTarget::Usb => {
+                if t.transport_type == TransportType::Usb {
+                    if result.is_some() {
+                        return Err("more than one device".to_string());
+                    }
+                    result = Some(t);
+                }
+            }
+            TransportTarget::Local => {
+                if t.transport_type == TransportType::Local {
+                    if result.is_some() {
+                        return Err("more than one emulator".to_string());
+                    }
+                    result = Some(t);
+                }
+            }
+            TransportTarget::Any => {
+                if result.is_some() {
+                    return Err("more than one device/emulator".to_string());
+                }
+                result = Some(t);
+            }
+        }
+    }
+
+    let dev = match result {
+        Some(d) => d,
+        None => return Err(default_error),
+    };
+
+    if !accept_any_state {
+        match dev.state {
+            crate::state::ConnectionState::Connecting => {
+                return Err("device still connecting".to_string())
+            }
+            crate::state::ConnectionState::Authorizing => {
+                return Err("device still authorizing".to_string())
+            }
+            crate::state::ConnectionState::Unauthorized => {
+                let mut err =
+                    "device unauthorized.\nThis adb server's $ADB_VENDOR_KEYS is ".to_string();
+                if let Ok(keys) = std::env::var("ADB_VENDOR_KEYS") {
+                    err.push_str(&keys);
+                } else {
+                    err.push_str("not set");
+                }
+                err.push_str("\nTry 'adb kill-server' if that seems wrong.\nOtherwise check for a confirmation dialog on your device.");
+                return Err(err);
+            }
+            crate::state::ConnectionState::Offline => return Err("device offline".to_string()),
+            _ => {}
+        }
+    }
+
+    Ok(dev)
 }
 
 /// Parses network address to canonical serial and error matching C++ ParseNetAddress.

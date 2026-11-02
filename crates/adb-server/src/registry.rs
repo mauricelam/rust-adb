@@ -77,6 +77,91 @@ impl DeviceEntry {
             features: Vec::new(),
         }
     }
+
+    /// Checks if this transport entry matches the given target string.
+    ///
+    /// Ported from `atransport::MatchesTarget` in `original/transport.cpp`.
+    pub fn matches_target(&self, target: &str) -> bool {
+        if !self.serial.is_empty() {
+            if target == self.serial {
+                return true;
+            } else if self.transport_type == TransportType::Local {
+                let mut local_target = target;
+                if let Some(rest) = target.strip_prefix("tcp:") {
+                    local_target = rest;
+                } else if let Some(rest) = target.strip_prefix("udp:") {
+                    local_target = rest;
+                }
+
+                // Check host/port match
+                if let Some((serial_host, serial_port)) = parse_host_port(&self.serial) {
+                    if let Some((target_host, target_port)) = parse_host_port(local_target) {
+                        let effective_target_port = if target_port == 0 {
+                            serial_port
+                        } else {
+                            target_port
+                        };
+                        if serial_host == target_host && serial_port == effective_target_port {
+                            return true;
+                        }
+                    }
+                }
+            }
+        }
+
+        if let Some(ref dp) = self.devpath {
+            if target == dp {
+                return true;
+            }
+        }
+
+        if let Some(rest) = target.strip_prefix("product:") {
+            if let Some(ref p) = self.product {
+                if rest == p {
+                    return true;
+                }
+            }
+        }
+
+        if let Some(rest) = target.strip_prefix("model:") {
+            if let Some(ref m) = self.model {
+                let sanitized: String = m
+                    .chars()
+                    .map(|c| if c.is_ascii_alphanumeric() { c } else { '_' })
+                    .collect();
+                if rest == sanitized {
+                    return true;
+                }
+            }
+        }
+
+        if let Some(rest) = target.strip_prefix("device:") {
+            if let Some(ref d) = self.device {
+                if rest == d {
+                    return true;
+                }
+            }
+        }
+
+        false
+    }
+}
+
+fn parse_host_port(s: &str) -> Option<(String, u16)> {
+    if s.is_empty() {
+        return None;
+    }
+    if let Some(colon) = s.rfind(':') {
+        let host = &s[..colon];
+        let port_str = &s[colon + 1..];
+        if let Ok(port) = port_str.parse::<u16>() {
+            Some((host.to_string(), port))
+        } else {
+            None
+        }
+    } else {
+        Some((s.to_string(), 0))
+    }
 }
 
 #[derive(Debug)]
