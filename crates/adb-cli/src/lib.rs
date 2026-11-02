@@ -509,7 +509,14 @@ where
             match outcome.result {
                 Ok(code) => code,
                 Err(err) => {
-                    print_error_prog(&err, &mut output.stderr);
+                    let err_msg = err.to_string();
+                    if err_msg.contains("only supports allocating a pty")
+                        || err_msg.contains("shell command too long")
+                    {
+                        print_error(&err, &mut output.stderr);
+                    } else {
+                        print_error_prog(&err, &mut output.stderr);
+                    }
                     1
                 }
             }
