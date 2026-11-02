@@ -13,10 +13,13 @@ pub use state_machine::{
 pub use transport_type::TransportType;
 pub mod router;
 pub mod stream;
+pub mod tracker;
+
+pub use tracker::{format_devices_framed, format_devices_raw, TrackerFormat};
 
 pub use router::{
-    OpenDecision, OpenHandler, OpenRequest, PacketRouter, RouterError, StreamMessage,
-    StreamReceiver, StreamSender,
+    OpenDecision, OpenHandler, OpenRequest, PacketRouter, RouterError, StreamAcker, StreamMessage,
+    StreamReceiver, StreamSender, StreamWriter,
 };
 pub use stream::{StreamEntry, StreamError, StreamRegistry};
 

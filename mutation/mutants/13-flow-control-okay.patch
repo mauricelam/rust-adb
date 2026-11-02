@@ -1,0 +1,13 @@
+diff --git a/sockets.cpp b/sockets.cpp
+index d65ef43..1111111 100644
+--- a/sockets.cpp
++++ b/sockets.cpp
+@@ -236,7 +236,7 @@ static bool local_socket_flush_outgoing(asocket* s) {
+                 }
+             } else {
+                 D("LS(%u): acks not deferred, blocking", saved_id);
+-                fdevent_del(s->fde, FDE_READ);
++                // Mutated: do not delete FDE_READ on un-acked WRTE (ignore OKAY backpressure)
+             }
+         }
+     }
