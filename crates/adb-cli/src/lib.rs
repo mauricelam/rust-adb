@@ -509,7 +509,7 @@ where
             match outcome.result {
                 Ok(code) => code,
                 Err(err) => {
-                    print_error(&err, &mut output.stderr);
+                    print_error_prog(&err, &mut output.stderr);
                     1
                 }
             }
