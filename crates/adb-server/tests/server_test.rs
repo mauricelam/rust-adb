@@ -79,12 +79,16 @@ async fn test_smart_socket_malformed_length_prefix_returns_fail() {
         other => panic!("expected Fail, got: {other:?}"),
     }
 
-    // Verify socket closed
-    let next_read = stream.read(&mut buf).await.expect("read eof");
-    assert_eq!(
-        next_read, 0,
-        "client socket should be closed after malformed prefix"
-    );
+    // Verify socket closed: either clean EOF (0 bytes) or ConnectionReset confirms closure by peer
+    match stream.read(&mut buf).await {
+        Ok(0) => {}
+        Err(e)
+            if e.kind() == std::io::ErrorKind::ConnectionReset
+                || e.kind() == std::io::ErrorKind::BrokenPipe => {}
+        other => {
+            panic!("expected eof or connection reset confirming socket closure, got: {other:?}")
+        }
+    }
 
     server_task.abort();
 }
