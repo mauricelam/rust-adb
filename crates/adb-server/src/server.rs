@@ -6,7 +6,10 @@ use tokio::sync::watch;
 
 use adb_proto::MAX_PAYLOAD;
 
+use adb_transport::DEFAULT_ADB_LOCAL_TRANSPORT_PORT;
+
 use crate::registry::{DeviceRegistry, TransportId};
+use crate::tracker::{format_devices_raw, TrackerFormat};
 use crate::transport_type::TransportType;
 
 /// ADB server internal protocol version.
@@ -383,6 +386,76 @@ async fn handle_host_service(
         return Ok(false);
     }
 
+    if service == "devices" || service == "devices-l" {
+        let format = if service == "devices-l" {
+            TrackerFormat::LongText
+        } else {
+            TrackerFormat::ShortText
+        };
+        let devices = registry.list_devices();
+        let payload_bytes = format_devices_raw(&devices, format);
+        let payload_str = String::from_utf8_lossy(&payload_bytes);
+        let resp = encode_okay_with_payload(&payload_str);
+        session.stream.write_all(&resp).await?;
+        session.stream.flush().await?;
+        return Ok(false);
+    }
+
+    if let Some(address) = service.strip_prefix("disconnect:") {
+        if address.is_empty() {
+            // Kick all TCP devices
+            let devices = registry.list_devices();
+            for dev in devices {
+                if dev.transport_type == TransportType::Local {
+                    let _ = registry.unregister_by_id(dev.transport_id);
+                }
+            }
+            let resp = encode_okay_with_payload("disconnected everything");
+            session.stream.write_all(&resp).await?;
+            session.stream.flush().await?;
+            return Ok(false);
+        }
+
+        // Check if device matches directly by address
+        if let Some(dev) = registry.get_by_serial(address) {
+            let _ = registry.unregister_by_id(dev.transport_id);
+            let resp = encode_okay_with_payload(&format!("disconnected {address}"));
+            session.stream.write_all(&resp).await?;
+            session.stream.flush().await?;
+            return Ok(false);
+        }
+
+        // Parse net address to canonical serial
+        let (serial, parse_err) = parse_net_address_canonical(address);
+        if let Some(err) = parse_err {
+            let resp = encode_fail(&format!("couldn't parse '{address}': {err}"));
+            session.stream.write_all(&resp).await?;
+            session.stream.flush().await?;
+            return Ok(false);
+        }
+
+        if let Some(dev) = registry.get_by_serial(&serial) {
+            let _ = registry.unregister_by_id(dev.transport_id);
+            let resp = encode_okay_with_payload(&format!("disconnected {address}"));
+            session.stream.write_all(&resp).await?;
+            session.stream.flush().await?;
+            return Ok(false);
+        } else {
+            let resp = encode_fail(&format!("no such device '{serial}'"));
+            session.stream.write_all(&resp).await?;
+            session.stream.flush().await?;
+            return Ok(false);
+        }
+    }
+
+    if let Some(host) = service.strip_prefix("connect:") {
+        let response = handle_connect_service(host, registry).await;
+        let resp = encode_okay_with_payload(&response);
+        session.stream.write_all(&resp).await?;
+        session.stream.flush().await?;
+        return Ok(false);
+    }
+
     // Transport selection handling (matching C++ handle_host_request):
     // e.g. transport, transport-any, transport-usb, transport-local, transport:<serial>, tport:...
     if service.starts_with("transport") || service.starts_with("tport:") {
@@ -501,6 +574,125 @@ async fn handle_host_service(
     session.stream.write_all(&encode_fail(&fail_msg)).await?;
     session.stream.flush().await?;
     Ok(false)
+}
+
+/// Parses network address to canonical serial and error matching C++ ParseNetAddress.
+fn parse_net_address_canonical(address: &str) -> (String, Option<String>) {
+    if address.starts_with("vsock:") || address.starts_with("localfilesystem:") {
+        return (address.to_string(), None);
+    }
+
+    let colons = address.chars().filter(|&c| c == ':').count();
+    let dots = address.chars().filter(|&c| c == '.').count();
+
+    let (host, port_val) = if address.starts_with('[') {
+        if let Some(end_bracket) = address.find("]:") {
+            let h = &address[1..end_bracket];
+            let p_str = &address[end_bracket + 2..];
+            match p_str.parse::<u16>() {
+                Ok(p) if p > 0 => (h, p),
+                _ => {
+                    return (
+                        String::new(),
+                        Some(format!("bad port number '{p_str}' in '{address}'")),
+                    );
+                }
+            }
+        } else {
+            return (String::new(), Some(format!("bad IPv6 address '{address}'")));
+        }
+    } else if dots == 0 && (2..=7).contains(&colons) {
+        (address, DEFAULT_ADB_LOCAL_TRANSPORT_PORT)
+    } else if colons <= 1 {
+        let parts: Vec<&str> = address.split(':').collect();
+        let h = parts[0];
+        if parts.len() > 1 {
+            let p_str = parts[1];
+            match p_str.parse::<u16>() {
+                Ok(p) if p > 0 => (h, p),
+                _ => {
+                    return (
+                        String::new(),
+                        Some(format!("bad port number '{p_str}' in '{address}'")),
+                    );
+                }
+            }
+        } else {
+            (h, DEFAULT_ADB_LOCAL_TRANSPORT_PORT)
+        }
+    } else {
+        return (
+            String::new(),
+            Some(format!("could not parse network address '{address}'")),
+        );
+    };
+
+    if host.is_empty() {
+        return (String::new(), Some(format!("no host in '{address}'")));
+    }
+
+    let is_ipv6 = dots == 0 && (2..=7).contains(&colons);
+    let canonical = if is_ipv6 {
+        format!("[{host}]:{port_val}")
+    } else {
+        format!("{host}:{port_val}")
+    };
+
+    (canonical, None)
+}
+
+/// Ports `connect_service` from `original/services.cpp` and `original/client/transport_emulator.cpp`.
+async fn handle_connect_service(host: &str, registry: &Arc<DeviceRegistry>) -> String {
+    if host.is_empty() {
+        return "empty address".to_string();
+    }
+
+    if let Some(port_spec) = host.strip_prefix("emu:") {
+        let pieces: Vec<&str> = port_spec.split(',').collect();
+        if pieces.len() != 2 {
+            return format!("unable to parse '{port_spec}' as <console port>,<adb port>");
+        }
+        let console_port = pieces[0].parse::<i32>().unwrap_or(-1);
+        let adb_port = pieces[1].parse::<i32>().unwrap_or(-1);
+        if console_port <= 0 || adb_port <= 0 {
+            return format!("Invalid port numbers: {port_spec}");
+        }
+        let serial = format!("emulator-{console_port}");
+        if registry.get_by_serial(&serial).is_some() {
+            return format!("Emulator already registered on port {adb_port}");
+        }
+
+        // Try loopback connection
+        let target_addr = format!("127.0.0.1:{adb_port}");
+        match tokio::net::TcpStream::connect(&target_addr).await {
+            Ok(_stream) => {
+                let _ = registry.register(&serial, TransportType::Local);
+                format!("Connected to emulator on ports {console_port},{adb_port}")
+            }
+            Err(e) => {
+                format!("Could not connect to emulator on ports {console_port},{adb_port}: failed to connect to '127.0.0.1:{adb_port}': {e}")
+            }
+        }
+    } else {
+        let (serial, parse_err) = parse_net_address_canonical(host);
+        if let Some(err) = parse_err {
+            return err;
+        }
+
+        if registry.get_by_serial(&serial).is_some() {
+            return format!("already connected to {serial}");
+        }
+
+        match tokio::net::TcpStream::connect(&serial).await {
+            Ok(_stream) => {
+                let _ = registry.register(&serial, TransportType::Local);
+                format!("connected to {serial}")
+            }
+            Err(e) => {
+                format!("failed to connect to '{serial}': {e}")
+            }
+        }
+    }
 }
 
 async fn handle_device_service(

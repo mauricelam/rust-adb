@@ -2,8 +2,10 @@ use std::sync::Arc;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 
-use adb_proto::smart_socket::{parse_reply, SmartSocketReply};
-use adb_server::{DeviceRegistry, SmartSocketServer, TransportType};
+use adb_proto::smart_socket::{
+    parse_protocol_string, parse_reply, ProtocolString, SmartSocketReply,
+};
+use adb_server::{ConnectionState, DeviceRegistry, SmartSocketServer, TransportType};
 
 #[tokio::test]
 async fn test_smart_socket_valid_length_request_routed() {
@@ -215,4 +217,209 @@ async fn test_smart_socket_host_kill() {
 
     // Server run loop should terminate cleanly upon kill request
     server_task.await.expect("server task join");
+}
+
+#[tokio::test]
+async fn test_smart_socket_host_devices_empty() {
+    let registry = Arc::new(DeviceRegistry::new());
+    let server = SmartSocketServer::bind("127.0.0.1:0", Arc::clone(&registry))
+        .await
+        .expect("bind server");
+    let addr = server.local_addr().expect("local addr");
+
+    let server_task = tokio::spawn(async move {
+        server.run().await.unwrap();
+    });
+
+    let mut stream = TcpStream::connect(addr).await.expect("connect");
+    stream.write_all(b"000chost:devices").await.expect("write");
+
+    let mut buf = vec![0u8; 1024];
+    let n = stream.read(&mut buf).await.expect("read response");
+    assert_eq!(&buf[..n], b"OKAY0000");
+
+    server_task.abort();
+}
+
+#[tokio::test]
+async fn test_smart_socket_host_devices_multiple() {
+    let registry = Arc::new(DeviceRegistry::new());
+    let id1 = registry
+        .register("serial-usb-1", TransportType::Usb)
+        .expect("register usb");
+    registry.update_state(id1, ConnectionState::Device);
+    registry.set_device_properties(
+        id1,
+        Some("mock_product".to_string()),
+        Some("mock_model".to_string()),
+        Some("mock_device".to_string()),
+    );
+
+    let id2 = registry
+        .register("127.0.0.1:5555", TransportType::Local)
+        .expect("register tcp");
+    registry.update_state(id2, ConnectionState::Device);
+
+    let server = SmartSocketServer::bind("127.0.0.1:0", Arc::clone(&registry))
+        .await
+        .expect("bind server");
+    let addr = server.local_addr().expect("local addr");
+
+    let server_task = tokio::spawn(async move {
+        server.run().await.unwrap();
+    });
+
+    // Test host:devices (short format)
+    let mut stream = TcpStream::connect(addr).await.expect("connect");
+    stream.write_all(b"000chost:devices").await.expect("write");
+    let mut buf = vec![0u8; 1024];
+    let n = stream.read(&mut buf).await.expect("read response");
+    let (reply, consumed) = parse_reply(&buf[..n]).expect("parse reply");
+    assert_eq!(reply, SmartSocketReply::Okay);
+    let (proto_str, _) = parse_protocol_string(&buf[consumed..n]).expect("parse payload");
+    match proto_str {
+        ProtocolString::Complete(payload) => {
+            assert_eq!(payload, "serial-usb-1\tdevice\n127.0.0.1:5555\tdevice\n");
+        }
+        other => panic!("expected Complete, got: {other:?}"),
+    }
+
+    // Test host:devices-l (long format)
+    let mut stream_l = TcpStream::connect(addr).await.expect("connect");
+    stream_l
+        .write_all(b"000ehost:devices-l")
+        .await
+        .expect("write");
+    let n_l = stream_l.read(&mut buf).await.expect("read response");
+    let (reply_l, consumed_l) = parse_reply(&buf[..n_l]).expect("parse reply");
+    assert_eq!(reply_l, SmartSocketReply::Okay);
+    let (proto_str_l, _) = parse_protocol_string(&buf[consumed_l..n_l]).expect("parse payload");
+    match proto_str_l {
+        ProtocolString::Complete(payload) => {
+            assert!(
+                payload.contains("serial-usb-1           device product:mock_product model:mock_model device:mock_device transport_id:1\n"),
+                "devices-l should contain tabular info for serial-usb-1: {payload}"
+            );
+            assert!(
+                payload.contains("127.0.0.1:5555         device transport_id:2\n"),
+                "devices-l should contain info for 127.0.0.1:5555: {payload}"
+            );
+        }
+        other => panic!("expected Complete, got: {other:?}"),
+    }
+
+    server_task.abort();
+}
+
+#[tokio::test]
+async fn test_smart_socket_host_disconnect() {
+    let registry = Arc::new(DeviceRegistry::new());
+    let _id = registry
+        .register("127.0.0.1:5555", TransportType::Local)
+        .expect("register");
+
+    let server = SmartSocketServer::bind("127.0.0.1:0", Arc::clone(&registry))
+        .await
+        .expect("bind server");
+    let addr = server.local_addr().expect("local addr");
+
+    let server_task = tokio::spawn(async move {
+        server.run().await.unwrap();
+    });
+
+    // 1. Disconnect non-existent device returns FAIL
+    let mut stream = TcpStream::connect(addr).await.expect("connect");
+    stream
+        .write_all(b"0017host:disconnect:1.2.3.4")
+        .await
+        .expect("write");
+    let mut buf = vec![0u8; 1024];
+    let n = stream.read(&mut buf).await.expect("read response");
+    let (reply, _) = parse_reply(&buf[..n]).expect("parse reply");
+    match reply {
+        SmartSocketReply::Fail(reason) => {
+            assert_eq!(reason, "no such device '1.2.3.4:5555'");
+        }
+        other => panic!("expected Fail, got: {other:?}"),
+    }
+
+    // 2. Disconnect existing device returns OKAY + "disconnected 127.0.0.1:5555"
+    let mut stream2 = TcpStream::connect(addr).await.expect("connect");
+    stream2
+        .write_all(b"001ehost:disconnect:127.0.0.1:5555")
+        .await
+        .expect("write");
+    let n2 = stream2.read(&mut buf).await.expect("read response");
+    let (reply2, consumed2) = parse_reply(&buf[..n2]).expect("parse reply");
+    assert_eq!(reply2, SmartSocketReply::Okay);
+    let (proto_str2, _) = parse_protocol_string(&buf[consumed2..n2]).expect("parse payload");
+    match proto_str2 {
+        ProtocolString::Complete(msg) => {
+            assert_eq!(msg, "disconnected 127.0.0.1:5555");
+        }
+        other => panic!("expected Complete, got: {other:?}"),
+    }
+
+    // Verify it was unregistered from registry
+    assert!(registry.get_by_serial("127.0.0.1:5555").is_none());
+
+    // 3. Disconnect all (empty target)
+    let _id3 = registry
+        .register("127.0.0.1:5557", TransportType::Local)
+        .expect("register");
+    let mut stream3 = TcpStream::connect(addr).await.expect("connect");
+    stream3
+        .write_all(b"0010host:disconnect:")
+        .await
+        .expect("write");
+    let n3 = stream3.read(&mut buf).await.expect("read response");
+    let (reply3, consumed3) = parse_reply(&buf[..n3]).expect("parse reply");
+    assert_eq!(reply3, SmartSocketReply::Okay);
+    let (proto_str3, _) = parse_protocol_string(&buf[consumed3..n3]).expect("parse payload");
+    match proto_str3 {
+        ProtocolString::Complete(msg) => {
+            assert_eq!(msg, "disconnected everything");
+        }
+        other => panic!("expected Complete, got: {other:?}"),
+    }
+    assert!(registry.list_devices().is_empty());
+
+    server_task.abort();
+}
+
+#[tokio::test]
+async fn test_smart_socket_host_connect() {
+    let registry = Arc::new(DeviceRegistry::new());
+    let server = SmartSocketServer::bind("127.0.0.1:0", Arc::clone(&registry))
+        .await
+        .expect("bind server");
+    let addr = server.local_addr().expect("local addr");
+
+    let server_task = tokio::spawn(async move {
+        server.run().await.unwrap();
+    });
+
+    // Connecting to an unreachable port returns OKAY with failure message matching C++ ADB:
+    // "failed to connect to '...': Connection refused"
+    let mut stream = TcpStream::connect(addr).await.expect("connect");
+    stream
+        .write_all(b"0018host:connect:127.0.0.1:1")
+        .await
+        .expect("write");
+    let mut buf = vec![0u8; 1024];
+    let n = stream.read(&mut buf).await.expect("read response");
+    let (reply, consumed) = parse_reply(&buf[..n]).expect("parse reply");
+    assert_eq!(reply, SmartSocketReply::Okay);
+    let (proto_str, _) = parse_protocol_string(&buf[consumed..n]).expect("parse payload");
+    match proto_str {
+        ProtocolString::Complete(msg) => {
+            assert!(
+                msg.starts_with("failed to connect to '127.0.0.1:1'"),
+                "unexpected message: {msg}"
+            );
+        }
+        other => panic!("expected Complete, got: {other:?}"),
+    }
+
+    server_task.abort();
 }
