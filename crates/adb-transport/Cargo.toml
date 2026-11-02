@@ -9,5 +9,9 @@ publish.workspace = true
 adb-proto = { path = "../adb-proto" }
 tokio = { version = "1", features = ["io-util", "net", "time", "rt"] }
 
+[[bench]]
+name = "transport_throughput"
+harness = false
+
 [dev-dependencies]
 tokio = { version = "1", features = ["full"] }

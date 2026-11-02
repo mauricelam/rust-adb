@@ -14,7 +14,10 @@ pub use banner::{
     server_advertised_features, Banner, BannerEntry, Feature, FeatureOptions, Features,
 };
 pub use header::{Command, DecodeError, EncodeError, Header};
-pub use limits::{A_VERSION, A_VERSION_MIN, A_VERSION_SKIP_CHECKSUM, MAX_PAYLOAD, MAX_PAYLOAD_V1};
+pub use limits::{
+    A_VERSION, A_VERSION_MIN, A_VERSION_SKIP_CHECKSUM, INITIAL_DELAYED_ACK_BYTES, MAX_PAYLOAD,
+    MAX_PAYLOAD_V1,
+};
 pub use shell::{
     ShellDecodeError, ShellDecoder, ShellEncodeError, ShellPacket, ShellPacketId, WindowSize,
 };
