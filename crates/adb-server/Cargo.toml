@@ -11,7 +11,7 @@ adb-auth = { path = "../adb-auth" }
 adb-transport = { path = "../adb-transport" }
 parking_lot = "0.12"
 thiserror = "2"
-tokio = { version = "1", features = ["sync", "macros", "rt"] }
+tokio = { version = "1", features = ["sync", "macros", "rt", "net", "io-util"] }
 
 [dev-dependencies]
 rand = "0.8"
