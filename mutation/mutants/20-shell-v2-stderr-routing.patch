@@ -1,0 +1,8 @@
+diff --git a/client/commandline.cpp b/client/commandline.cpp
+--- a/client/commandline.cpp
++++ b/client/commandline.cpp
+@@ -320,3 +320,3 @@ static int read_and_dump_protocol(borrowed_fd fd, StandardStreamsCallbackInterfa
+           }
+-      } else if (protocol->id() == ShellProtocol::kIdStderr) {
++      } else if (false && protocol->id() == ShellProtocol::kIdStderr) {
+           if (!callback->OnStderrReceived(protocol->data(), protocol->data_length())) {

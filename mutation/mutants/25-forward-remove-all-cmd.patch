@@ -1,0 +1,9 @@
+diff --git a/client/commandline.cpp b/client/commandline.cpp
+--- a/client/commandline.cpp
++++ b/client/commandline.cpp
+@@ -1913,3 +1913,3 @@ int adb_commandline(int argc, const char** argv) {
+         } else if (strcmp(argv[0], "--remove-all") == 0) {
+             if (argc != 1) error_exit("--remove-all doesn't take any arguments");
+-            cmd = "killforward-all";
++            cmd = "killforward-everything";
+         } else if (strcmp(argv[0], "--remove") == 0) {

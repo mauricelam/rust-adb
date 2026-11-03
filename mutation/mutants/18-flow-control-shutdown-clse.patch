@@ -1,0 +1,8 @@
+diff --git a/sockets.cpp b/sockets.cpp
+--- a/sockets.cpp
++++ b/sockets.cpp
+@@ -520,3 +520,3 @@ static void remote_socket_shutdown(asocket* s) {
+     apacket* p = get_apacket();
+-    p->msg.command = A_CLSE;
++    p->msg.command = A_OKAY;
+     if (s->peer) {

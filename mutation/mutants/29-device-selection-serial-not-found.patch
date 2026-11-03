@@ -1,0 +1,8 @@
+diff --git a/transport.cpp b/transport.cpp
+--- a/transport.cpp
++++ b/transport.cpp
+@@ -927,3 +927,3 @@ atransport* acquire_one_transport(TransportType type, const char* transport_name
+     if (transport_name) {
+-        *error_out = android::base::StringPrintf("device '%s' not found", transport_name);
++        *error_out = android::base::StringPrintf("target '%s' not found", transport_name);
+     } else if (type == kTransportAny) {

@@ -1,0 +1,8 @@
+diff --git a/client/file_sync_client.cpp b/client/file_sync_client.cpp
+--- a/client/file_sync_client.cpp
++++ b/client/file_sync_client.cpp
+@@ -499,3 +499,3 @@ static bool do_stat_v2(SyncConnection& sc, const char* rpath, struct stat* st) {
+             st->st_atime = msg.stat_v2.atime;
+-            st->st_mtime = msg.stat_v2.mtime;
++            st->st_mtime = msg.stat_v2.mtime + 1000;
+             st->st_ctime = msg.stat_v2.ctime;

@@ -1,0 +1,8 @@
+diff --git a/sockets.cpp b/sockets.cpp
+--- a/sockets.cpp
++++ b/sockets.cpp
+@@ -510,3 +510,3 @@ static void remote_socket_ready(asocket* s) {
+     apacket* p = get_apacket();
+-    p->msg.command = A_OKAY;
++    p->msg.command = A_CLSE;
+     p->msg.arg0 = s->peer->id;

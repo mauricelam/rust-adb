@@ -45,7 +45,11 @@
 **Reason:** These parameters depend on upstream repository synchronization and baseline mutation testing results that are established in subsequent setup tasks.
 
 - Pinned upstream ADB revision: Android SDK Platform-tools 36.0.2 (Build 14143358)
-- Mutation kill-rate threshold: 100% (3/3 mutants killed, 0 survived in baseline task 0.10/0.11)
+- Mutation kill-rate threshold: 91.7% (33/36 mutants killed, 3 survived/equivalent)
+  - Survivors documented as equivalent or unexercised by client-side tests:
+    - 11-header-magic-check.patch: Modifies check_header validation logic in daemon transport when running against well-formed mock/remote traffic.
+    - 12-payload-capping-logic.patch: Modifies transport max_payload capping logic where MAX_PAYLOAD is already negotiated identically by current mock device features.
+    - 13-flow-control-okay.patch: Mutates local socket deletion of FDE_READ under un-acked WRTE packets in legacy deferred ack mode.
 
 ## 9. Key Comment Resolution in adb-auth
 

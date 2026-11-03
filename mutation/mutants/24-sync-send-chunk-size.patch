@@ -1,0 +1,8 @@
+diff --git a/client/file_sync_client.cpp b/client/file_sync_client.cpp
+--- a/client/file_sync_client.cpp
++++ b/client/file_sync_client.cpp
+@@ -230,3 +230,3 @@ struct SyncConnection {
+     SyncConnection() : acknowledgement_buffer_(sizeof(sync_status) + SYNC_DATA_MAX) {
+-        max = SYNC_DATA_MAX; // TODO: decide at runtime.
++        max = 1024;
+     }

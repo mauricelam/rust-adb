@@ -1,0 +1,8 @@
+diff --git a/transport.cpp b/transport.cpp
+--- a/transport.cpp
++++ b/transport.cpp
+@@ -977,3 +977,3 @@ atransport* acquire_one_transport(TransportType type, const char* transport_name
+                 if (result) {
+-                    *error_out = "more than one device/emulator";
++                    *error_out = "ambiguous devices found";
+                     if (is_ambiguous) *is_ambiguous = true;

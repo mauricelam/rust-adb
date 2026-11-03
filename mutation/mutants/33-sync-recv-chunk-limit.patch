@@ -1,0 +1,8 @@
+diff --git a/client/file_sync_client.cpp b/client/file_sync_client.cpp
+--- a/client/file_sync_client.cpp
++++ b/client/file_sync_client.cpp
+@@ -1215,3 +1215,3 @@ static bool copy_remote_v2(SyncConnection& sc, const char* rpath, const char* lp
+         } else {
+-            if (msg.data.size > sc.max) {
++            if (msg.data.size > 128) {
+                 sc.Error("msg.data.size too large: %u (max %zu)", msg.data.size, sc.max);

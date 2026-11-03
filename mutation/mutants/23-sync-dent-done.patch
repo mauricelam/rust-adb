@@ -1,0 +1,8 @@
+diff --git a/client/file_sync_client.cpp b/client/file_sync_client.cpp
+--- a/client/file_sync_client.cpp
++++ b/client/file_sync_client.cpp
+@@ -541,3 +541,3 @@ static bool sync_ls(SyncConnection& sc, const char* path,
+             uint32_t expected_id = v2 ? ID_DENT_V2 : ID_DENT_V1;
+-            if (dent.id == ID_DONE) return true;
++            if (dent.id == ID_DONE) return false;
+             if (dent.id != expected_id) return false;
