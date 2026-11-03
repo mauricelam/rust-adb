@@ -16,7 +16,10 @@ pub mod stream;
 pub mod tracker;
 
 pub use tracker::{format_devices_framed, format_devices_raw, TrackerFormat};
+pub mod listener;
 pub mod server;
+
+pub use listener::{InstallStatus, ListenerManager, INSTALL_LISTENER_NO_REBIND};
 
 pub use router::{
     OpenDecision, OpenHandler, OpenRequest, PacketRouter, RouterError, StreamAcker, StreamMessage,
