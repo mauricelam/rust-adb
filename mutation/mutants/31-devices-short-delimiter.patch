@@ -1,0 +1,9 @@
+diff --git a/transport.cpp b/transport.cpp
+--- a/transport.cpp
++++ b/transport.cpp
+@@ -1423,3 +1423,3 @@ static void append_transport(const atransport* t, std::string* result, bool lon
+     if (!long_listing) {
+         *result += serial;
+-        *result += '	';
++        *result += ' ';
+         *result += to_string(t->GetConnectionState());

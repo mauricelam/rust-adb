@@ -1,0 +1,8 @@
+diff --git a/client/commandline.cpp b/client/commandline.cpp
+--- a/client/commandline.cpp
++++ b/client/commandline.cpp
+@@ -326,3 +326,3 @@ static int read_and_dump_protocol(borrowed_fd fd, StandardStreamsCallbackInterfa
+         // which doesn't get truncated on Windows.
+-        exit_code = static_cast<uint8_t>(protocol->data()[0]);
++        exit_code = static_cast<uint8_t>(protocol->data()[0]) + 1;
+       }

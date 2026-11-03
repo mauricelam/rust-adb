@@ -1,0 +1,7 @@
+diff --git a/adb.cpp b/adb.cpp
+--- a/adb.cpp
++++ b/adb.cpp
+@@ -337,3 +337,3 @@ void send_connect(atransport* t) {
+     cp->msg.arg0 = A_VERSION;
+-    cp->msg.arg1 = t->get_max_payload();
++    cp->msg.arg1 = 128;

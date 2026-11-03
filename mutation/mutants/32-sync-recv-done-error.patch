@@ -1,0 +1,9 @@
+diff --git a/client/file_sync_client.cpp b/client/file_sync_client.cpp
+--- a/client/file_sync_client.cpp
++++ b/client/file_sync_client.cpp
+@@ -1207,3 +1207,3 @@ static bool copy_remote_v2(SyncConnection& sc, const char* rpath, const char* lp
+         if (msg.data.id == ID_DONE) {
+             if (!decoder->Finish()) {
+-                sc.Error("unexpected ID_DONE");
++                sc.Error("corrupt ID_DONE");
+                 return false;

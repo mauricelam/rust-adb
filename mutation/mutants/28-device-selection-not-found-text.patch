@@ -1,0 +1,8 @@
+diff --git a/transport.cpp b/transport.cpp
+--- a/transport.cpp
++++ b/transport.cpp
+@@ -932,3 +932,3 @@ atransport* acquire_one_transport(TransportType type, const char* transport_name
+     } else if (type == kTransportAny) {
+-        *error_out = "no devices/emulators found";
++        *error_out = "zero devices found";
+     } else {

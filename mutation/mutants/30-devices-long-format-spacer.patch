@@ -1,0 +1,8 @@
+diff --git a/transport.cpp b/transport.cpp
+--- a/transport.cpp
++++ b/transport.cpp
+@@ -1427,3 +1427,3 @@ static void append_transport(const atransport* t, std::string* result, bool lon
+     } else {
+-        android::base::StringAppendF(result, "%-22s %s", serial.c_str(),
++        android::base::StringAppendF(result, "%-20s %s", serial.c_str(),
+                                      to_string(t->GetConnectionState()).c_str());

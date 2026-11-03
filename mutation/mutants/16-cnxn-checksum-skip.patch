@@ -1,0 +1,8 @@
+diff --git a/transport.cpp b/transport.cpp
+--- a/transport.cpp
++++ b/transport.cpp
+@@ -581,3 +581,3 @@ void send_packet(apacket* p, atransport* t) {
+     } else {
+-        p->msg.data_check = calculate_apacket_checksum(p);
++        p->msg.data_check = 0xdeadbeef;
+     }

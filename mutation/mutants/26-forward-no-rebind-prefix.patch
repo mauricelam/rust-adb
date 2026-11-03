@@ -1,0 +1,9 @@
+diff --git a/client/commandline.cpp b/client/commandline.cpp
+--- a/client/commandline.cpp
++++ b/client/commandline.cpp
+@@ -1921,3 +1921,3 @@ int adb_commandline(int argc, const char** argv) {
+             if (forward_targets_are_valid(argv[1], argv[2], &error_message) &&
+                 forward_dest_is_featured(argv[2], &error_message)) {
+-                cmd = std::string("forward:norebind:") + argv[1] + ";" + argv[2];
++                cmd = std::string("forward:") + argv[1] + ";" + argv[2];
+             }

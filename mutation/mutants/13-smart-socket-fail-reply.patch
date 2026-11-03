@@ -1,0 +1,7 @@
+diff --git a/adb_io.cpp b/adb_io.cpp
+--- a/adb_io.cpp
++++ b/adb_io.cpp
+@@ -73,3 +73,3 @@ bool SendFail(borrowed_fd fd, std::string_view reason) {
+-    return WriteFdExactly(fd, "FAIL", 4) && SendProtocolString(fd, reason);
++    return WriteFdExactly(fd, "ERRR", 4) && SendProtocolString(fd, reason);
+ }

@@ -1,0 +1,9 @@
+diff --git a/client/commandline.cpp b/client/commandline.cpp
+--- a/client/commandline.cpp
++++ b/client/commandline.cpp
+@@ -334,3 +334,3 @@ static int read_and_dump_protocol(borrowed_fd fd, StandardStreamsCallbackInterfa
+ int read_and_dump(borrowed_fd fd, bool use_shell_protocol,
+                   StandardStreamsCallbackInterface* callback) {
+-    int exit_code = 0;
++    int exit_code = 42;
+     if (fd < 0) return exit_code;
