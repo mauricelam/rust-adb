@@ -2,6 +2,7 @@ pub mod device_tracker;
 pub mod error;
 pub mod events;
 pub mod forward;
+pub mod reverse;
 pub mod shell;
 
 use crate::server_address::ServerAddress;

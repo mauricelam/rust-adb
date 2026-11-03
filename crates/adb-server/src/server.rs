@@ -169,10 +169,13 @@ pub enum ServerError {
     Shutdown,
 }
 
+use crate::listener::{InstallStatus, ListenerManager, INSTALL_LISTENER_NO_REBIND};
+
 /// Smart-socket TCP server listener and request dispatcher.
 pub struct SmartSocketServer {
     listener: TcpListener,
     registry: Arc<DeviceRegistry>,
+    listener_manager: Arc<ListenerManager>,
     shutdown_tx: watch::Sender<bool>,
     shutdown_rx: watch::Receiver<bool>,
 }
@@ -185,6 +188,7 @@ impl SmartSocketServer {
         Ok(Self {
             listener,
             registry,
+            listener_manager: Arc::new(ListenerManager::new()),
             shutdown_tx,
             shutdown_rx,
         })
@@ -213,6 +217,7 @@ impl SmartSocketServer {
     /// Runs the server listener dispatch loop until shutdown is signaled or error occurs.
     pub async fn run(self) -> Result<(), ServerError> {
         let registry = self.registry;
+        let listener_manager = self.listener_manager;
         let shutdown_tx = self.shutdown_tx;
         let mut shutdown_rx = self.shutdown_rx;
 
@@ -227,9 +232,10 @@ impl SmartSocketServer {
                     match accept_res {
                         Ok((stream, _addr)) => {
                             let reg = Arc::clone(&registry);
+                            let lm = Arc::clone(&listener_manager);
                             let s_tx = shutdown_tx.clone();
                             tokio::spawn(async move {
-                                let _ = handle_client(stream, reg, s_tx).await;
+                                let _ = handle_client(stream, reg, lm, s_tx).await;
                             });
                         }
                         Err(err) => {
@@ -266,6 +272,7 @@ impl ClientSession {
 async fn handle_client(
     stream: TcpStream,
     registry: Arc<DeviceRegistry>,
+    listener_manager: Arc<ListenerManager>,
     shutdown_tx: watch::Sender<bool>,
 ) -> Result<(), std::io::Error> {
     let mut session = ClientSession::new(stream);
@@ -349,9 +356,15 @@ async fn handle_client(
 
         match request {
             SmartSocketRequest::Host { target, service } => {
-                let should_continue =
-                    handle_host_service(&mut session, target, &service, &registry, &shutdown_tx)
-                        .await?;
+                let should_continue = handle_host_service(
+                    &mut session,
+                    &target,
+                    &service,
+                    &registry,
+                    &listener_manager,
+                    &shutdown_tx,
+                )
+                .await?;
 
                 if !should_continue {
                     return Ok(());
@@ -367,9 +380,10 @@ async fn handle_client(
 
 async fn handle_host_service(
     session: &mut ClientSession,
-    target: TransportTarget,
+    target: &TransportTarget,
     service: &str,
     registry: &Arc<DeviceRegistry>,
+    listener_manager: &Arc<ListenerManager>,
     shutdown_tx: &watch::Sender<bool>,
 ) -> Result<bool, std::io::Error> {
     if service == "version" {
@@ -487,7 +501,7 @@ async fn handle_host_service(
         } else if service == "transport-local" {
             (true, TransportTarget::Local)
         } else {
-            (true, target)
+            (true, target.clone())
         };
 
         match acquire_one_transport(registry, &req_target, true) {
@@ -513,7 +527,7 @@ async fn handle_host_service(
         let effective_target = if let Some(id) = session.selected_device {
             TransportTarget::TransportId(id)
         } else {
-            target
+            target.clone()
         };
         match acquire_one_transport(registry, &effective_target, false) {
             Ok(t) => {
@@ -538,7 +552,7 @@ async fn handle_host_service(
         let effective_target = if let Some(id) = session.selected_device {
             TransportTarget::TransportId(id)
         } else {
-            target
+            target.clone()
         };
         match acquire_one_transport(registry, &effective_target, false) {
             Ok(t) => {
@@ -559,7 +573,7 @@ async fn handle_host_service(
         let effective_target = if let Some(id) = session.selected_device {
             TransportTarget::TransportId(id)
         } else {
-            target
+            target.clone()
         };
         match acquire_one_transport(registry, &effective_target, false) {
             Ok(t) => {
@@ -579,7 +593,7 @@ async fn handle_host_service(
         let effective_target = if let Some(id) = session.selected_device {
             TransportTarget::TransportId(id)
         } else {
-            target
+            target.clone()
         };
         match acquire_one_transport(registry, &effective_target, false) {
             Ok(t) => {
@@ -596,6 +610,124 @@ async fn handle_host_service(
         return Ok(false);
     }
 
+    // Forwarding request handling (matching C++ handle_forward_request in original/adb.cpp):
+    // list-forward
+    if service == "list-forward" {
+        let listeners = listener_manager.format_listeners();
+        let resp = encode_okay_with_payload(&listeners);
+        session.stream.write_all(&resp).await?;
+        session.stream.flush().await?;
+        return Ok(false);
+    }
+
+    // killforward-all
+    if service == "killforward-all" {
+        listener_manager.remove_all_listeners();
+        // C++: 1st OKAY is connect, 2nd OKAY is status
+        let mut resp = Vec::new();
+        resp.extend_from_slice(encode_okay());
+        resp.extend_from_slice(encode_okay());
+        session.stream.write_all(&resp).await?;
+        session.stream.flush().await?;
+        return Ok(false);
+    }
+
+    // forward: or killforward:
+    if service.starts_with("forward:") || service.starts_with("killforward:") {
+        let effective_target = if let Some(id) = session.selected_device {
+            TransportTarget::TransportId(id)
+        } else {
+            target.clone()
+        };
+
+        let transport = match acquire_one_transport(registry, &effective_target, false) {
+            Ok(t) => t,
+            Err(err) => {
+                session.stream.write_all(&encode_fail(&err)).await?;
+                session.stream.flush().await?;
+                return Ok(false);
+            }
+        };
+
+        if let Some(local) = service.strip_prefix("killforward:") {
+            if local.is_empty() || local.contains(';') {
+                let err_msg = format!("bad killforward: {service}");
+                session.stream.write_all(&encode_fail(&err_msg)).await?;
+                session.stream.flush().await?;
+                return Ok(false);
+            }
+
+            let status = listener_manager.remove_listener(local);
+            if status == InstallStatus::Ok {
+                let mut resp = Vec::new();
+                resp.extend_from_slice(encode_okay());
+                resp.extend_from_slice(encode_okay());
+                session.stream.write_all(&resp).await?;
+                session.stream.flush().await?;
+            } else {
+                let err_msg = format!("listener '{local}' not found");
+                session.stream.write_all(&encode_fail(&err_msg)).await?;
+                session.stream.flush().await?;
+            }
+            return Ok(false);
+        }
+
+        if let Some(forward_spec) = service.strip_prefix("forward:") {
+            let (no_rebind, fwd_args) =
+                if let Some(norebind_args) = forward_spec.strip_prefix("norebind:") {
+                    (true, norebind_args)
+                } else {
+                    (false, forward_spec)
+                };
+
+            let pieces: Vec<&str> = fwd_args.split(';').collect();
+            if pieces.len() != 2
+                || pieces[0].is_empty()
+                || pieces[1].is_empty()
+                || pieces[1].starts_with('*')
+            {
+                let err_msg = format!("bad forward: {service}");
+                session.stream.write_all(&encode_fail(&err_msg)).await?;
+                session.stream.flush().await?;
+                return Ok(false);
+            }
+
+            let mut flags = 0;
+            if no_rebind {
+                flags |= INSTALL_LISTENER_NO_REBIND;
+            }
+
+            let (status, resolved_port, err) = listener_manager
+                .install_listener(pieces[0], pieces[1], Some(transport), flags)
+                .await;
+
+            if status == InstallStatus::Ok {
+                let mut resp = Vec::new();
+                resp.extend_from_slice(encode_okay());
+                resp.extend_from_slice(encode_okay());
+                if let Some(port) = resolved_port {
+                    let port_str = format!("{port}");
+                    let hex_len = format!("{:04x}", port_str.len());
+                    resp.extend_from_slice(hex_len.as_bytes());
+                    resp.extend_from_slice(port_str.as_bytes());
+                }
+                session.stream.write_all(&resp).await?;
+                session.stream.flush().await?;
+            } else {
+                let msg = match status {
+                    InstallStatus::Ok => "success (!)".to_string(),
+                    InstallStatus::InternalError => "internal error".to_string(),
+                    InstallStatus::CannotBind => format!("cannot bind listener: {err}"),
+                    InstallStatus::CannotRebind => "cannot rebind existing socket".to_string(),
+                    InstallStatus::ListenerNotFound => format!("listener '{service}' not found"),
+                };
+                session.stream.write_all(&encode_fail(&msg)).await?;
+                session.stream.flush().await?;
+            }
+            return Ok(false);
+        }
+    }
+
     // If service is a target device service (e.g. shell, sync, exec, etc.)
     // routed via host prefix like `host-serial:XYZ:shell:...`
     if service.starts_with("shell")
@@ -610,7 +742,7 @@ async fn handle_host_service(
         let effective_target = if let Some(id) = session.selected_device {
             TransportTarget::TransportId(id)
         } else {
-            target
+            target.clone()
         };
         let dev = match acquire_one_transport(registry, &effective_target, false) {
             Ok(d) => d,

@@ -408,6 +408,26 @@ where
                 }
             }
         }
+        "reverse" => {
+            let outcome =
+                parse_and_exec_reverse(&client, &global_opts.device_selection.selector, &cmd_args)
+                    .await;
+            print_events(&outcome.events, &mut output.stderr);
+            match outcome.result {
+                Ok(stdout) => {
+                    let _ = write!(output.stdout, "{stdout}");
+                    0
+                }
+                Err(err) => {
+                    if err.kind() == adb_client::ClientErrorKind::Usage {
+                        let _ = writeln!(output.stderr, "adb: {err}");
+                    } else {
+                        let _ = writeln!(output.stderr, "adb: error: {err}");
+                    }
+                    1
+                }
+            }
+        }
         "shell" => {
             let (shell_opts, command_args) = match parse_shell_args(&cmd_args) {
                 Ok(res) => res,
@@ -1394,6 +1414,80 @@ pub async fn parse_and_exec_forward(
                 };
             }
             client.forward_add(selector, local, args[1], false).await
+        }
+    }
+}
+
+/// Parses arguments for `adb reverse` and executes appropriate reverse method on `client`.
+pub async fn parse_and_exec_reverse(
+    client: &AdbClient,
+    selector: &TransportSelector,
+    args: &[&str],
+) -> Outcome<String> {
+    if args.is_empty() {
+        return Outcome {
+            result: Err(ClientError::InvalidUsage(
+                "reverse requires an argument".to_string(),
+            )),
+            events: Vec::new(),
+        };
+    }
+
+    match args[0] {
+        "--list" => {
+            if args.len() != 1 {
+                return Outcome {
+                    result: Err(ClientError::InvalidUsage(
+                        "--list doesn't take any arguments".to_string(),
+                    )),
+                    events: Vec::new(),
+                };
+            }
+            client.reverse_list(selector).await
+        }
+        "--remove-all" => {
+            if args.len() != 1 {
+                return Outcome {
+                    result: Err(ClientError::InvalidUsage(
+                        "--remove-all doesn't take any arguments".to_string(),
+                    )),
+                    events: Vec::new(),
+                };
+            }
+            client.reverse_remove_all(selector).await
+        }
+        "--remove" => {
+            if args.len() != 2 {
+                return Outcome {
+                    result: Err(ClientError::InvalidUsage(
+                        "--remove requires an argument".to_string(),
+                    )),
+                    events: Vec::new(),
+                };
+            }
+            client.reverse_remove(selector, args[1]).await
+        }
+        "--no-rebind" => {
+            if args.len() != 3 {
+                return Outcome {
+                    result: Err(ClientError::InvalidUsage(
+                        "--no-rebind takes two arguments".to_string(),
+                    )),
+                    events: Vec::new(),
+                };
+            }
+            client.reverse_add(selector, args[1], args[2], true).await
+        }
+        remote => {
+            if args.len() != 2 {
+                return Outcome {
+                    result: Err(ClientError::InvalidUsage(
+                        "reverse takes two arguments".to_string(),
+                    )),
+                    events: Vec::new(),
+                };
+            }
+            client.reverse_add(selector, remote, args[1], false).await
         }
     }
 }
