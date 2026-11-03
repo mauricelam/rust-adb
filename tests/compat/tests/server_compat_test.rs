@@ -382,6 +382,21 @@ fn test_stream_flow_control_and_close() {
 
     let _ = connect_handle.join();
 
+    // Ensure device is registered and marked online by querying host:devices
+    let start_dev = std::time::Instant::now();
+    let mut ready = false;
+    while start_dev.elapsed() < Duration::from_secs(5) {
+        if let Ok(resp) = server.send_smart_socket_request("host:devices") {
+            let devs = resp.payload_str().unwrap_or_default();
+            if devs.contains(&format!("{mock_addr}\tdevice\n")) {
+                ready = true;
+                break;
+            }
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    assert!(ready, "Device did not become online in time");
+
     // 2. Client initiates a stream to the device
     let mut client_sock = TcpStream::connect(("127.0.0.1", server.port)).unwrap();
     client_sock
