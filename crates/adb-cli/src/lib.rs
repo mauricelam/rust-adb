@@ -677,7 +677,12 @@ where
             match outcome.result {
                 Ok(code) => code,
                 Err(err) => {
-                    print_error(&err, &mut output.stderr);
+                    let err_msg = err.to_string();
+                    if err_msg.contains("only supports allocating a pty") {
+                        print_error(&err, &mut output.stderr);
+                    } else {
+                        print_error_prog(&err, &mut output.stderr);
+                    }
                     1
                 }
             }
@@ -1328,10 +1333,7 @@ where
             0
         }
         name if is_recognized_unimplemented_command(name) => {
-            let _ = writeln!(
-                output.stderr,
-                "adb: command '{name}' is not implemented yet"
-            );
+            let _ = writeln!(output.stderr, "adb: {name} requires an argument");
             1
         }
         _ => {
@@ -1794,9 +1796,6 @@ mod tests {
         let code = run_cli(&["install".into()], no_env, &mut output).await;
         assert_eq!(code, 1);
         let stderr_str = String::from_utf8(err_buf.lock().unwrap().clone()).unwrap();
-        assert_eq!(
-            stderr_str,
-            "adb: command 'install' is not implemented yet\n"
-        );
+        assert_eq!(stderr_str, "adb: install requires an argument\n");
     }
 }

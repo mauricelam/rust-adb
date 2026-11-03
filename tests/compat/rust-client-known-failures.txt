@@ -1,6 +1,2 @@
 # Known failing compatibility tests when using the Rust adb client.
 # Each entry is preceded by a comment indicating the issue that will fix or implement it.
-
-# Issue 42: Server commands and device lifecycle
-test_server_no_device_shell_echo_hi
-
