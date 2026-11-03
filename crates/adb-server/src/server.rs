@@ -405,6 +405,33 @@ async fn handle_host_service(
         return Ok(false);
     }
 
+    if let Some(version_str) = service.strip_prefix("version:") {
+        let requested_version =
+            u32::from_str_radix(version_str, 16).or_else(|_| version_str.parse::<u32>());
+        match requested_version {
+            Ok(v) if v == ADB_SERVER_VERSION => {
+                let resp = format!("OKAY0004{:04x}", ADB_SERVER_VERSION);
+                session.stream.write_all(resp.as_bytes()).await?;
+                session.stream.flush().await?;
+            }
+            Ok(v) => {
+                let msg = format!(
+                    "adb server version ({ADB_SERVER_VERSION}) doesn't match this client ({v})"
+                );
+                session.stream.write_all(&encode_fail(&msg)).await?;
+                session.stream.flush().await?;
+                let _ = shutdown_tx.send(true);
+            }
+            Err(_) => {
+                let msg = format!("cannot parse version string: {version_str}");
+                session.stream.write_all(&encode_fail(&msg)).await?;
+                session.stream.flush().await?;
+                let _ = shutdown_tx.send(true);
+            }
+        }
+        return Ok(false);
+    }
+
     if service == "kill" {
         session.stream.write_all(encode_okay()).await?;
         session.stream.flush().await?;
