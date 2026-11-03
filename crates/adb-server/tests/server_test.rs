@@ -291,6 +291,72 @@ async fn test_smart_socket_host_version() {
 }
 
 #[tokio::test]
+async fn test_smart_socket_host_version_mismatch_triggers_clean_exit() {
+    let registry = Arc::new(DeviceRegistry::new());
+    let server = SmartSocketServer::bind("127.0.0.1:0", Arc::clone(&registry))
+        .await
+        .expect("bind server");
+    let addr = server.local_addr().expect("local addr");
+
+    let server_task = tokio::spawn(async move {
+        server.run().await.unwrap();
+    });
+
+    // Incompatible client sends host:version:0028 or host:version:40
+    let mut stream = TcpStream::connect(addr).await.expect("connect");
+    stream
+        .write_all(b"0011host:version:0028")
+        .await
+        .expect("write");
+
+    let mut buf = vec![0u8; 1024];
+    let n = stream.read(&mut buf).await.expect("read response");
+    let resp = String::from_utf8_lossy(&buf[..n]);
+    assert!(
+        resp.starts_with("FAIL"),
+        "Expected FAIL mismatch reply, got: {resp}"
+    );
+    assert!(
+        resp.to_lowercase().contains("mismatch")
+            || resp.contains("version")
+            || resp.contains("client"),
+        "Expected mismatch error message in FAIL reply, got: {resp}"
+    );
+
+    // Server should shut down cleanly
+    let server_result = tokio::time::timeout(std::time::Duration::from_secs(2), server_task).await;
+    assert!(
+        server_result.is_ok(),
+        "Server should have exited cleanly on version mismatch"
+    );
+}
+
+#[tokio::test]
+async fn test_smart_socket_host_version_matching_client_succeeds() {
+    let registry = Arc::new(DeviceRegistry::new());
+    let server = SmartSocketServer::bind("127.0.0.1:0", Arc::clone(&registry))
+        .await
+        .expect("bind server");
+    let addr = server.local_addr().expect("local addr");
+
+    let server_task = tokio::spawn(async move {
+        server.run().await.unwrap();
+    });
+
+    let mut stream = TcpStream::connect(addr).await.expect("connect");
+    stream
+        .write_all(b"0011host:version:0029")
+        .await
+        .expect("write");
+
+    let mut buf = vec![0u8; 1024];
+    let n = stream.read(&mut buf).await.expect("read response");
+    assert_eq!(&buf[..n], b"OKAY00040029");
+
+    server_task.abort();
+}
+
+#[tokio::test]
 async fn test_smart_socket_unknown_host_service() {
     // Unrecognized host service returns FAIL + "unknown host service '<cmd>'"
     let registry = Arc::new(DeviceRegistry::new());

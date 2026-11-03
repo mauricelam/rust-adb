@@ -125,3 +125,45 @@ async fn test_sigint_clean_shutdown() {
     let status = child.wait().expect("wait for child");
     assert!(status.success(), "Server should exit cleanly upon SIGINT");
 }
+
+#[tokio::test]
+async fn test_server_process_version_mismatch_clean_exit() {
+    let port = get_free_port();
+    let adb_bin = adb_binary();
+
+    let mut child = Command::new(&adb_bin)
+        .args(["-P", &port.to_string(), "server", "nodaemon"])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn server");
+
+    tokio::time::sleep(Duration::from_millis(500)).await;
+
+    // Connect with a client sending an incompatible version in host:version
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::net::TcpStream;
+
+    let mut stream = TcpStream::connect(("127.0.0.1", port))
+        .await
+        .expect("connect to server");
+    stream
+        .write_all(b"0011host:version:0028")
+        .await
+        .expect("send mismatch version request");
+
+    let mut buf = vec![0u8; 1024];
+    let n = stream.read(&mut buf).await.expect("read response");
+    let resp = String::from_utf8_lossy(&buf[..n]);
+    assert!(
+        resp.starts_with("FAIL"),
+        "Server should respond with FAIL for version mismatch, got: {resp}"
+    );
+
+    // Server process should exit cleanly
+    let status = child.wait().expect("wait for child process exit");
+    assert!(
+        status.success(),
+        "Server process should exit cleanly with status 0 on version mismatch"
+    );
+}
