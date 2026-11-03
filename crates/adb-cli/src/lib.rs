@@ -19,6 +19,93 @@ pub fn get_help_text() -> String {
     format!("{}\n{}", version::get_version_string(), USAGE_TEXT)
 }
 
+use adb_server::{DeviceRegistry, SmartSocketServer};
+
+async fn run_server_main(global_opts: &GlobalOptions, output: &mut Output) -> i32 {
+    let registry = Arc::new(DeviceRegistry::new());
+    let bind_host = if global_opts.listen_all {
+        "0.0.0.0"
+    } else {
+        match global_opts.server_address.host.as_deref() {
+            Some(h) if !h.is_empty() && h != "localhost" => h,
+            _ => "127.0.0.1",
+        }
+    };
+    let bind_addr = format!("{}:{}", bind_host, global_opts.server_address.port);
+
+    let server = match SmartSocketServer::bind(&bind_addr, registry).await {
+        Ok(s) => s,
+        Err(e) => {
+            let _ = writeln!(output.stderr, "{e}");
+            return 1;
+        }
+    };
+
+    if let Some(fd) = global_opts.ack_reply_fd {
+        #[cfg(unix)]
+        {
+            use std::io::Write;
+            use std::os::fd::FromRawFd;
+            unsafe {
+                let mut f = std::fs::File::from_raw_fd(fd);
+                let _ = f.write_all(b"OK\n");
+                let _ = f.flush();
+            }
+        }
+        #[cfg(windows)]
+        {
+            use std::io::Write;
+            use std::os::windows::io::FromRawHandle;
+            unsafe {
+                let mut f = std::fs::File::from_raw_handle(fd as isize as *mut std::ffi::c_void);
+                let _ = f.write_all(b"OK\n");
+                let _ = f.flush();
+            }
+        }
+    }
+
+    let shutdown_handle = server.shutdown_handle();
+
+    tokio::spawn(async move {
+        #[cfg(unix)]
+        {
+            use tokio::signal::unix::{signal, SignalKind};
+            let mut sigint = signal(SignalKind::interrupt()).ok();
+            let mut sigterm = signal(SignalKind::terminate()).ok();
+
+            tokio::select! {
+                _ = async {
+                    if let Some(ref mut s) = sigint {
+                        s.recv().await;
+                    } else {
+                        std::future::pending::<()>().await;
+                    }
+                } => {}
+                _ = async {
+                    if let Some(ref mut s) = sigterm {
+                        s.recv().await;
+                    } else {
+                        std::future::pending::<()>().await;
+                    }
+                } => {}
+            }
+        }
+        #[cfg(not(unix))]
+        {
+            let _ = tokio::signal::ctrl_c().await;
+        }
+
+        let _ = shutdown_handle.send(true);
+    });
+
+    if let Err(e) = server.run().await {
+        let _ = writeln!(output.stderr, "server error: {e}");
+        return 1;
+    }
+
+    0
+}
+
 /// Represents parsed global command-line options.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GlobalOptions {
@@ -28,6 +115,10 @@ pub struct GlobalOptions {
     pub listen_all: bool,
     pub one_device: Option<String>,
     pub exit_on_write_error: bool,
+    pub is_server: bool,
+    pub no_daemon: bool,
+    pub is_daemon: bool,
+    pub ack_reply_fd: Option<i32>,
 }
 
 /// Shared thread-safe byte buffer for test output assertions.
@@ -107,15 +198,31 @@ where
     let mut listen_all = false;
     let mut one_device = None;
     let mut exit_on_write_error = false;
+    let mut is_server = false;
+    let mut no_daemon = false;
+    let mut is_daemon = false;
+    let mut ack_reply_fd = None;
 
     let mut args_iter = args.into_iter().map(|s| s.as_ref().to_string()).peekable();
     let mut remaining = Vec::new();
 
     while let Some(arg) = args_iter.next() {
-        if arg == "server" || arg == "nodaemon" || arg == "fork-server" {
-            continue;
+        if arg == "server" {
+            is_server = true;
+        } else if arg == "nodaemon" {
+            no_daemon = true;
+        } else if arg == "fork-server" {
+            is_daemon = true;
         } else if arg == "--reply-fd" {
-            if args_iter.next().is_none() {
+            if let Some(fd_str) = args_iter.next() {
+                let fd: i32 = fd_str
+                    .parse()
+                    .map_err(|_| format!("adb: invalid reply fd \"{fd_str}\""))?;
+                if fd <= 2 {
+                    return Err(format!("adb: invalid reply fd \"{fd_str}\""));
+                }
+                ack_reply_fd = Some(fd);
+            } else {
                 return Err("--reply-fd requires an argument".to_string());
             }
         } else if arg == "--one-device" {
@@ -219,7 +326,8 @@ where
     }
 
     if let Some(ref device) = one_device {
-        let is_server_start = remaining.first().map(|s| s.as_str()) == Some("start-server");
+        let is_server_start =
+            is_daemon || is_server || remaining.first().map(|s| s.as_str()) == Some("start-server");
         if !is_server_start {
             return Err("--one-device is only allowed when starting a server.".to_string());
         }
@@ -256,6 +364,10 @@ where
             listen_all,
             one_device,
             exit_on_write_error,
+            is_server,
+            no_daemon,
+            is_daemon,
+            ack_reply_fd,
         },
         remaining,
     ))
@@ -371,6 +483,42 @@ where
             return 1;
         }
     };
+
+    if global_opts.is_server || global_opts.is_daemon {
+        if global_opts.no_daemon || global_opts.is_daemon {
+            if global_opts.is_daemon && global_opts.ack_reply_fd.is_none() {
+                let _ = writeln!(
+                    output.stderr,
+                    "reply fd for adb server to client communication not specified."
+                );
+                return 1;
+            }
+            return run_server_main(&global_opts, output).await;
+        } else {
+            // launch background server
+            let outcome = {
+                let mut builder = AdbClient::builder(global_opts.server_address.clone());
+                if let Some(server_bin) = env("ADB_SERVER_BIN") {
+                    if !server_bin.is_empty() {
+                        builder = builder.launcher(ExternalBinaryLauncher::new(server_bin));
+                    }
+                }
+                let client = builder.build();
+                client
+                    .check_server_version_with_options(
+                        global_opts.listen_all,
+                        global_opts.one_device.as_deref(),
+                    )
+                    .await
+            };
+            print_events(&outcome.events, &mut output.stderr);
+            if outcome.result.is_err() {
+                let _ = writeln!(output.stderr, "* could not start server *");
+                return 255;
+            }
+            return 0;
+        }
+    }
 
     // Cites `argc == 0` in original/client/commandline.cpp:1733:
     // Prints help() to stdout and exits with code 1.
