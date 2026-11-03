@@ -76,6 +76,7 @@ The harness respects the following environment variables:
 - **Documentation**: All modules and functions must be documented. If a file being modified is missing documentation, add documentation to those other members even if they are not part of the change.
 - **Run CI checks before creating PR**: Every agent must run `./check.sh` and ensure all checks pass prior to creating a pull request or finalizing work.
 - **Phase 4 Known Failures**: Every phase-4 issue removes the entries it fixes from `tests/compat/rust-client-known-failures.txt` and never adds entries. A pull request that makes a listed test in `rust-client-known-failures.txt` pass must remove it from the file, and CI will fail if it does not.
+- **Phase 5 and Later Compat Tests**: Phase 5 and later tasks add compat tests in a separate PR before the implementation PR. Server-side compatibility tests that observe server behavior from the outside are tracked in `tests/compat/rust-server-known-failures.txt` until implemented in the Rust server.
 
 ## When Blocked
 

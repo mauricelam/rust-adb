@@ -1,0 +1,11 @@
+# Known failing compatibility tests when using the Rust adb server.
+# Each entry is preceded by a comment indicating the phase/issue that will implement it.
+
+# Issue C.17 / Phase 5: Server track-devices smart socket service handler
+test_track_devices_all_variants_and_lifecycle
+
+# Issue C.17 / Phase 5: Server mock device stream multiplexing and flow control
+test_stream_flow_control_and_close
+
+# Issue C.17 / Phase 5: Server CNXN handshake against mock device
+test_cnxn_handshake_parameters
