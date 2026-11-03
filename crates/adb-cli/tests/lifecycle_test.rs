@@ -103,6 +103,7 @@ async fn test_graceful_kill_releases_socket_lock() {
     let _ = child2.wait();
 }
 
+#[cfg(unix)]
 #[tokio::test]
 async fn test_sigint_clean_shutdown() {
     let port = get_free_port();
@@ -117,13 +118,8 @@ async fn test_sigint_clean_shutdown() {
 
     tokio::time::sleep(Duration::from_millis(500)).await;
 
-    #[cfg(unix)]
     unsafe {
         libc::kill(child.id() as libc::pid_t, libc::SIGINT);
-    }
-    #[cfg(not(unix))]
-    {
-        let _ = child.kill();
     }
 
     let status = child.wait().expect("wait for child");
