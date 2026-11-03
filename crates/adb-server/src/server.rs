@@ -163,6 +163,8 @@ fn parse_host_serial_service(rest: &str) -> Option<(String, String)> {
 /// Errors that can occur in the smart-socket server listener.
 #[derive(Debug, thiserror::Error)]
 pub enum ServerError {
+    #[error("could not install *smartsocket* listener: {0}")]
+    CannotBind(String),
     #[error("I/O error: {0}")]
     Io(#[from] std::io::Error),
     #[error("server shutdown")]
@@ -183,7 +185,17 @@ pub struct SmartSocketServer {
 impl SmartSocketServer {
     /// Binds to the specified socket address or string.
     pub async fn bind(addr: &str, registry: Arc<DeviceRegistry>) -> Result<Self, ServerError> {
-        let listener = TcpListener::bind(addr).await?;
+        let listener = match TcpListener::bind(addr).await {
+            Ok(l) => l,
+            Err(e) => {
+                if e.kind() == std::io::ErrorKind::AddrInUse {
+                    return Err(ServerError::CannotBind(
+                        "Address already in use".to_string(),
+                    ));
+                }
+                return Err(ServerError::Io(e));
+            }
+        };
         let (shutdown_tx, shutdown_rx) = watch::channel(false);
         Ok(Self {
             listener,

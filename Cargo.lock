@@ -27,6 +27,7 @@ version = "0.0.0"
 dependencies = [
  "adb-client",
  "adb-proto",
+ "adb-server",
  "bytes",
  "libc",
  "tokio",
