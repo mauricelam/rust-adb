@@ -1,0 +1,8 @@
+diff --git a/client/commandline.cpp b/client/commandline.cpp
+index 4f43fb9..0436094 100644
+--- a/client/commandline.cpp
++++ b/client/commandline.cpp
+@@ -2024,3 +2024,3 @@ int adb_commandline(int argc, const char** argv) {
+-        if (argc < 2) error_exit("install requires an argument");
++        if (argc < 2) return 0;
+         return install_app(argc, argv);

@@ -1,0 +1,10 @@
+{
+  "args": [
+    "devices",
+    "newline\narg"
+  ],
+  "env": [],
+  "stdout": "",
+  "stderr": "<prog>: adb devices [-l]\n",
+  "exit_code": 1
+}

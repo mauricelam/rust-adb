@@ -251,3 +251,23 @@ fn test_server_lifecycle_start_twice() {
     let start2 = server.run_client(&["start-server"]);
     assert_matches_golden("server_lifecycle_start_twice", &start2);
 }
+
+#[test]
+fn test_unimplemented_install() {
+    check_no_device(&["install"], "unimplemented_install");
+}
+
+#[test]
+fn test_unimplemented_reverse() {
+    check_no_device(&["reverse"], "unimplemented_reverse");
+}
+
+#[test]
+fn test_odd_args_empty_serial_devices() {
+    check_server_no_device(&["-s", "", "devices"], "odd_args_empty_serial_devices");
+}
+
+#[test]
+fn test_odd_args_newline_devices() {
+    check_no_device(&["devices", "newline\narg"], "odd_args_newline_devices");
+}

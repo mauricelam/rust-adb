@@ -1,0 +1,9 @@
+{
+  "args": [
+    "reverse"
+  ],
+  "env": [],
+  "stdout": "",
+  "stderr": "<prog>: reverse requires an argument\n",
+  "exit_code": 1
+}

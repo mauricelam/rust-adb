@@ -1,0 +1,9 @@
+{
+  "args": [
+    "install"
+  ],
+  "env": [],
+  "stdout": "",
+  "stderr": "<prog>: install requires an argument\n",
+  "exit_code": 1
+}
