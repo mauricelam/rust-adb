@@ -253,6 +253,64 @@ pub trait UsbDeviceHandle: Send + Sync + fmt::Debug {
     fn close<'a>(&'a self) -> Pin<Box<dyn Future<Output = Result<(), UsbError>> + Send + 'a>>;
 }
 
+impl<T: UsbDeviceHandle + ?Sized> UsbDeviceHandle for Box<T> {
+    fn bulk_read<'a>(
+        &'a self,
+        endpoint: u8,
+        buf: &'a mut [u8],
+    ) -> Pin<Box<dyn Future<Output = Result<usize, UsbError>> + Send + 'a>> {
+        (**self).bulk_read(endpoint, buf)
+    }
+
+    fn bulk_write<'a>(
+        &'a self,
+        endpoint: u8,
+        data: &'a [u8],
+    ) -> Pin<Box<dyn Future<Output = Result<usize, UsbError>> + Send + 'a>> {
+        (**self).bulk_write(endpoint, data)
+    }
+
+    fn clear_halt<'a>(
+        &'a self,
+        endpoint: u8,
+    ) -> Pin<Box<dyn Future<Output = Result<(), UsbError>> + Send + 'a>> {
+        (**self).clear_halt(endpoint)
+    }
+
+    fn close<'a>(&'a self) -> Pin<Box<dyn Future<Output = Result<(), UsbError>> + Send + 'a>> {
+        (**self).close()
+    }
+}
+
+impl<T: UsbDeviceHandle + ?Sized> UsbDeviceHandle for Arc<T> {
+    fn bulk_read<'a>(
+        &'a self,
+        endpoint: u8,
+        buf: &'a mut [u8],
+    ) -> Pin<Box<dyn Future<Output = Result<usize, UsbError>> + Send + 'a>> {
+        (**self).bulk_read(endpoint, buf)
+    }
+
+    fn bulk_write<'a>(
+        &'a self,
+        endpoint: u8,
+        data: &'a [u8],
+    ) -> Pin<Box<dyn Future<Output = Result<usize, UsbError>> + Send + 'a>> {
+        (**self).bulk_write(endpoint, data)
+    }
+
+    fn clear_halt<'a>(
+        &'a self,
+        endpoint: u8,
+    ) -> Pin<Box<dyn Future<Output = Result<(), UsbError>> + Send + 'a>> {
+        (**self).clear_halt(endpoint)
+    }
+
+    fn close<'a>(&'a self) -> Pin<Box<dyn Future<Output = Result<(), UsbError>> + Send + 'a>> {
+        (**self).close()
+    }
+}
+
 /// Abstract USB backend for enumerating and opening USB devices.
 pub trait UsbBackend: Send + Sync {
     /// Lists all attached USB devices.
@@ -268,21 +326,41 @@ pub trait UsbBackend: Send + Sync {
     ) -> Pin<Box<dyn Future<Output = Result<Box<dyn UsbDeviceHandle>, UsbError>> + Send + 'a>>;
 }
 
+/// Record of a bulk transfer performed on `MockUsbDeviceHandle`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RecordedTransfer {
+    /// Endpoint address involved in the transfer.
+    pub endpoint: u8,
+    /// Transfer direction (In or Out).
+    pub direction: EndpointDirection,
+    /// Data transferred (read or written).
+    pub data: Vec<u8>,
+}
+
 /// In-memory mock implementation of `UsbDeviceHandle`.
 #[derive(Debug, Default)]
 pub struct MockUsbDeviceHandle {
     pub read_data: Mutex<Vec<u8>>,
+    pub read_chunk_sizes: Mutex<Vec<usize>>,
     pub written_data: Mutex<Vec<u8>>,
+    pub recorded_transfers: Mutex<Vec<RecordedTransfer>>,
     pub should_fail_read: Mutex<Option<UsbError>>,
     pub should_fail_write: Mutex<Option<UsbError>>,
     pub halted_endpoints: Mutex<Vec<u8>>,
     pub closed: Mutex<bool>,
 }
 
+impl MockUsbDeviceHandle {
+    /// Returns a list of recorded transfers.
+    pub async fn get_transfers(&self) -> Vec<RecordedTransfer> {
+        self.recorded_transfers.lock().await.clone()
+    }
+}
+
 impl UsbDeviceHandle for MockUsbDeviceHandle {
     fn bulk_read<'a>(
         &'a self,
-        _endpoint: u8,
+        endpoint: u8,
         buf: &'a mut [u8],
     ) -> Pin<Box<dyn Future<Output = Result<usize, UsbError>> + Send + 'a>> {
         Box::pin(async move {
@@ -293,16 +371,30 @@ impl UsbDeviceHandle for MockUsbDeviceHandle {
             if data.is_empty() {
                 return Ok(0);
             }
-            let to_copy = std::cmp::min(buf.len(), data.len());
+            let mut chunk_sizes = self.read_chunk_sizes.lock().await;
+            let max_read = if !chunk_sizes.is_empty() {
+                chunk_sizes.remove(0)
+            } else {
+                buf.len()
+            };
+            let to_copy = std::cmp::min(std::cmp::min(buf.len(), data.len()), max_read);
             buf[..to_copy].copy_from_slice(&data[..to_copy]);
-            data.drain(..to_copy);
+            let drained: Vec<u8> = data.drain(..to_copy).collect();
+
+            let mut transfers = self.recorded_transfers.lock().await;
+            transfers.push(RecordedTransfer {
+                endpoint,
+                direction: EndpointDirection::In,
+                data: drained,
+            });
+
             Ok(to_copy)
         })
     }
 
     fn bulk_write<'a>(
         &'a self,
-        _endpoint: u8,
+        endpoint: u8,
         data: &'a [u8],
     ) -> Pin<Box<dyn Future<Output = Result<usize, UsbError>> + Send + 'a>> {
         Box::pin(async move {
@@ -311,6 +403,14 @@ impl UsbDeviceHandle for MockUsbDeviceHandle {
             }
             let mut written = self.written_data.lock().await;
             written.extend_from_slice(data);
+
+            let mut transfers = self.recorded_transfers.lock().await;
+            transfers.push(RecordedTransfer {
+                endpoint,
+                direction: EndpointDirection::Out,
+                data: data.to_vec(),
+            });
+
             Ok(data.len())
         })
     }
