@@ -114,13 +114,7 @@ fn test_device_selection_table() {
             args: vec!["-s123", "get-state"],
             env: no_env.clone(),
             expected_res: Ok((
-                DeviceSelection {
-                    serial: Some("123".into()),
-                    transport_id: None,
-                    usb: false,
-                    local: false,
-                    selector: TransportSelector::Serial("123".into()),
-                },
+                DeviceSelection::new(TransportSelector::Serial("123".into())),
                 vec!["get-state"],
             )),
         },
@@ -129,13 +123,7 @@ fn test_device_selection_table() {
             args: vec!["-s", "123", "get-state"],
             env: no_env.clone(),
             expected_res: Ok((
-                DeviceSelection {
-                    serial: Some("123".into()),
-                    transport_id: None,
-                    usb: false,
-                    local: false,
-                    selector: TransportSelector::Serial("123".into()),
-                },
+                DeviceSelection::new(TransportSelector::Serial("123".into())),
                 vec!["get-state"],
             )),
         },
@@ -156,13 +144,7 @@ fn test_device_selection_table() {
             args: vec!["-t123", "get-state"],
             env: no_env.clone(),
             expected_res: Ok((
-                DeviceSelection {
-                    serial: None,
-                    transport_id: Some(123),
-                    usb: false,
-                    local: false,
-                    selector: TransportSelector::Id(123),
-                },
+                DeviceSelection::new(TransportSelector::Id(123)),
                 vec!["get-state"],
             )),
         },
@@ -171,13 +153,7 @@ fn test_device_selection_table() {
             args: vec!["-t", "123", "get-state"],
             env: no_env.clone(),
             expected_res: Ok((
-                DeviceSelection {
-                    serial: None,
-                    transport_id: Some(123),
-                    usb: false,
-                    local: false,
-                    selector: TransportSelector::Id(123),
-                },
+                DeviceSelection::new(TransportSelector::Id(123)),
                 vec!["get-state"],
             )),
         },
@@ -204,13 +180,7 @@ fn test_device_selection_table() {
             args: vec!["-d", "get-state"],
             env: no_env.clone(),
             expected_res: Ok((
-                DeviceSelection {
-                    serial: None,
-                    transport_id: None,
-                    usb: true,
-                    local: false,
-                    selector: TransportSelector::Usb,
-                },
+                DeviceSelection::new(TransportSelector::Usb),
                 vec!["get-state"],
             )),
         },
@@ -219,13 +189,7 @@ fn test_device_selection_table() {
             args: vec!["-e", "get-state"],
             env: no_env.clone(),
             expected_res: Ok((
-                DeviceSelection {
-                    serial: None,
-                    transport_id: None,
-                    usb: false,
-                    local: true,
-                    selector: TransportSelector::Local,
-                },
+                DeviceSelection::new(TransportSelector::Local),
                 vec!["get-state"],
             )),
         },
@@ -234,13 +198,7 @@ fn test_device_selection_table() {
             args: vec!["-d", "-e", "get-state"],
             env: no_env.clone(),
             expected_res: Ok((
-                DeviceSelection {
-                    serial: None,
-                    transport_id: None,
-                    usb: false,
-                    local: true,
-                    selector: TransportSelector::Local,
-                },
+                DeviceSelection::new(TransportSelector::Local),
                 vec!["get-state"],
             )),
         },
@@ -249,13 +207,7 @@ fn test_device_selection_table() {
             args: vec!["get-state"],
             env: env_serial.clone(),
             expected_res: Ok((
-                DeviceSelection {
-                    serial: Some("env_device_123".into()),
-                    transport_id: None,
-                    usb: false,
-                    local: false,
-                    selector: TransportSelector::Serial("env_device_123".into()),
-                },
+                DeviceSelection::new(TransportSelector::Serial("env_device_123".into())),
                 vec!["get-state"],
             )),
         },
@@ -264,13 +216,7 @@ fn test_device_selection_table() {
             args: vec!["-t", "456", "get-state"],
             env: env_serial.clone(),
             expected_res: Ok((
-                DeviceSelection {
-                    serial: Some("env_device_123".into()),
-                    transport_id: Some(456),
-                    usb: false,
-                    local: false,
-                    selector: TransportSelector::Id(456),
-                },
+                DeviceSelection::new(TransportSelector::Id(456)),
                 vec!["get-state"],
             )),
         },
@@ -279,13 +225,7 @@ fn test_device_selection_table() {
             args: vec!["-d", "get-state"],
             env: env_serial.clone(),
             expected_res: Ok((
-                DeviceSelection {
-                    serial: None,
-                    transport_id: None,
-                    usb: true,
-                    local: false,
-                    selector: TransportSelector::Usb,
-                },
+                DeviceSelection::new(TransportSelector::Usb),
                 vec!["get-state"],
             )),
         },
@@ -294,13 +234,7 @@ fn test_device_selection_table() {
             args: vec!["-s", "override_serial", "get-state"],
             env: env_serial.clone(),
             expected_res: Ok((
-                DeviceSelection {
-                    serial: Some("override_serial".into()),
-                    transport_id: None,
-                    usb: false,
-                    local: false,
-                    selector: TransportSelector::Serial("override_serial".into()),
-                },
+                DeviceSelection::new(TransportSelector::Serial("override_serial".into())),
                 vec!["get-state"],
             )),
         },

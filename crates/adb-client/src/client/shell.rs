@@ -1,7 +1,7 @@
 use super::error::ClientError;
 use super::events::Outcome;
 use super::AdbClient;
-use crate::shell_interactive::PtyMode;
+use crate::shell_interactive::{EscapeChar, PtyKind, PtyMode, ShellProtocol};
 use crate::transport::TransportSelector;
 
 /// Escapes a command argument for the shell following standard ADB single-quote escaping rules.
@@ -28,12 +28,10 @@ pub struct ShellOptions {
     pub close_stdin: bool,
     /// -x: Disable Shell v2 protocol and force historical Shell v1 protocol.
     pub disable_shell_protocol: bool,
-    /// -T: Disable remote PTY allocation (force raw mode).
-    pub no_pty: bool,
-    /// -t / -tt / -T PTY mode selection.
+    /// -t / -tt / -T PTY mode selection (-T maps to `PtyMode::No`).
     pub pty_mode: PtyMode,
     /// -e: Escape character (e.g. '~', None if 'none' or disabled).
-    pub escape_char: Option<char>,
+    pub escape_char: Option<EscapeChar>,
     /// Value for `TERM` environment variable (e.g. `xterm-256color`).
     pub term: Option<String>,
 }
@@ -43,9 +41,8 @@ impl Default for ShellOptions {
         Self {
             close_stdin: false,
             disable_shell_protocol: false,
-            no_pty: false,
             pty_mode: PtyMode::Auto,
-            escape_char: Some('~'),
+            escape_char: Some(EscapeChar::DEFAULT),
             term: None,
         }
     }
@@ -130,17 +127,19 @@ impl AdbClient {
             }
         };
 
-        let service_string = if pty_dec.use_shell_protocol {
-            let mut v2_args = vec!["v2".to_string()];
-            if let Some(term) = &options.term {
-                v2_args.push(format!("TERM={term}"));
+        let service_string = match pty_dec.protocol {
+            ShellProtocol::V2(pty_kind) => {
+                let mut v2_args = vec!["v2".to_string()];
+                if let Some(term) = &options.term {
+                    v2_args.push(format!("TERM={term}"));
+                }
+                match pty_kind {
+                    PtyKind::Pty => v2_args.push("pty".to_string()),
+                    PtyKind::Raw => v2_args.push("raw".to_string()),
+                }
+                format!("shell,{}:{}", v2_args.join(","), command)
             }
-            if !pty_dec.type_arg.is_empty() {
-                v2_args.push(pty_dec.type_arg.to_string());
-            }
-            format!("shell,{}:{}", v2_args.join(","), command)
-        } else {
-            format!("shell:{command}")
+            ShellProtocol::V1 => format!("shell:{command}"),
         };
 
         let res = self
@@ -213,7 +212,7 @@ impl AdbClient {
         let mut read_buf = [0u8; 8192];
         let mut stdin_buf = [0u8; 8192];
 
-        if pty_dec.use_shell_protocol {
+        if pty_dec.use_shell_protocol() {
             let mut decoder = adb_proto::ShellDecoder::new();
             let mut exit_code: Option<i32> = None;
             let mut escape_sm =
@@ -224,7 +223,7 @@ impl AdbClient {
                 });
 
             // Send initial window size if available and requesting PTY
-            if pty_dec.type_arg == "pty" {
+            if pty_dec.is_pty() {
                 if let Some(fd) = stdin_tty_fd {
                     if let Some((r, c, x, y)) = crate::shell_interactive::get_window_size(fd) {
                         let payload = crate::shell_interactive::format_window_size(r, c, x, y);
@@ -244,7 +243,7 @@ impl AdbClient {
             #[cfg(unix)]
             let (winch_tx, mut winch_rx) = tokio::sync::mpsc::unbounded_channel::<Vec<u8>>();
             #[cfg(unix)]
-            let sigwinch_task = if pty_dec.type_arg == "pty" {
+            let sigwinch_task = if pty_dec.is_pty() {
                 stdin_tty_fd.map(|fd| {
                     tokio::spawn(async move {
                         if let Ok(mut sig) = tokio::signal::unix::signal(

@@ -1,6 +1,6 @@
 use adb_client::{
-    AdbClient, CompressionType, DefaultSessionFactory, LaunchError, PushOptions, ServerAddress,
-    ServerLauncher, SyncSession, TransportSelector,
+    AdbClient, CompressionType, DefaultSessionFactory, LaunchError, PushMode, PushOptions,
+    ServerAddress, ServerLauncher, SyncSession, TransportSelector,
 };
 use compat::TestServer;
 use mock_adbd::fs::Node;
@@ -542,7 +542,7 @@ async fn test_push_options_rejections() {
             &[f.to_str().unwrap()],
             "/data/test.txt",
             &PushOptions {
-                dry_run: true,
+                mode: PushMode::DryRun,
                 ..Default::default()
             },
         )
@@ -556,7 +556,7 @@ async fn test_push_options_rejections() {
             &[f.to_str().unwrap()],
             "/data/test.txt",
             &PushOptions {
-                sync: true,
+                mode: PushMode::Sync,
                 ..Default::default()
             },
         )

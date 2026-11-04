@@ -1,6 +1,6 @@
 use adb_client::{
-    escape_arg, AdbClient, DefaultSessionFactory, LaunchError, ServerAddress, ServerLauncher,
-    ShellOptions, TransportSelector,
+    escape_arg, AdbClient, DefaultSessionFactory, LaunchError, PtyMode, ServerAddress,
+    ServerLauncher, ShellOptions, TransportSelector,
 };
 use compat::TestServer;
 use std::env;
@@ -351,7 +351,7 @@ async fn test_shell_disable_v2_x_option_refusal() {
 
     let options = ShellOptions {
         disable_shell_protocol: true,
-        no_pty: true,
+        pty_mode: PtyMode::No,
         ..Default::default()
     };
 
@@ -397,7 +397,7 @@ async fn test_shell_no_v2_device_refusal() {
         .build();
 
     let options = ShellOptions {
-        no_pty: true,
+        pty_mode: PtyMode::No,
         ..Default::default()
     };
 

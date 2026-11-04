@@ -28,6 +28,36 @@ pub enum TransportTarget {
     TransportId(TransportId),
 }
 
+/// Indicates whether a client connection should continue processing further requests or close.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SessionFlow {
+    Continue,
+    Close,
+}
+
+/// Represents the transport target query protocol mode.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TransportQueryMode {
+    Legacy,
+    Tport,
+}
+
+/// Shutdown signal sender wrapper for triggering server termination.
+#[derive(Clone, Debug)]
+pub struct ShutdownSignal {
+    sender: watch::Sender<bool>,
+}
+
+impl ShutdownSignal {
+    pub fn new(sender: watch::Sender<bool>) -> Self {
+        Self { sender }
+    }
+
+    pub fn trigger(&self) {
+        let _ = self.sender.send(true);
+    }
+}
+
 /// Parsed smart-socket request.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SmartSocketRequest {
@@ -222,8 +252,8 @@ impl SmartSocketServer {
     }
 
     /// Returns a shutdown sender that can trigger server termination.
-    pub fn shutdown_handle(&self) -> watch::Sender<bool> {
-        self.shutdown_tx.clone()
+    pub fn shutdown_handle(&self) -> ShutdownSignal {
+        ShutdownSignal::new(self.shutdown_tx.clone())
     }
 
     /// Runs the server listener dispatch loop until shutdown is signaled or error occurs.
@@ -245,9 +275,9 @@ impl SmartSocketServer {
                         Ok((stream, _addr)) => {
                             let reg = Arc::clone(&registry);
                             let lm = Arc::clone(&listener_manager);
-                            let s_tx = shutdown_tx.clone();
+                            let s_sig = ShutdownSignal::new(shutdown_tx.clone());
                             tokio::spawn(async move {
-                                let _ = handle_client(stream, reg, lm, s_tx).await;
+                                let _ = handle_client(stream, reg, lm, s_sig).await;
                             });
                         }
                         Err(err) => {
@@ -285,7 +315,7 @@ async fn handle_client(
     stream: TcpStream,
     registry: Arc<DeviceRegistry>,
     listener_manager: Arc<ListenerManager>,
-    shutdown_tx: watch::Sender<bool>,
+    shutdown_signal: ShutdownSignal,
 ) -> Result<(), std::io::Error> {
     let mut session = ClientSession::new(stream);
 
@@ -368,17 +398,17 @@ async fn handle_client(
 
         match request {
             SmartSocketRequest::Host { target, service } => {
-                let should_continue = handle_host_service(
+                let flow = handle_host_service(
                     &mut session,
                     &target,
                     &service,
                     &registry,
                     &listener_manager,
-                    &shutdown_tx,
+                    &shutdown_signal,
                 )
                 .await?;
 
-                if !should_continue {
+                if flow == SessionFlow::Close {
                     return Ok(());
                 }
             }
@@ -396,13 +426,13 @@ async fn handle_host_service(
     service: &str,
     registry: &Arc<DeviceRegistry>,
     listener_manager: &Arc<ListenerManager>,
-    shutdown_tx: &watch::Sender<bool>,
-) -> Result<bool, std::io::Error> {
+    shutdown_signal: &ShutdownSignal,
+) -> Result<SessionFlow, std::io::Error> {
     if service == "version" {
         let resp = format!("OKAY0004{:04x}", ADB_SERVER_VERSION);
         session.stream.write_all(resp.as_bytes()).await?;
         session.stream.flush().await?;
-        return Ok(false);
+        return Ok(SessionFlow::Close);
     }
 
     if let Some(version_str) = service.strip_prefix("version:") {
@@ -420,23 +450,23 @@ async fn handle_host_service(
                 );
                 session.stream.write_all(&encode_fail(&msg)).await?;
                 session.stream.flush().await?;
-                let _ = shutdown_tx.send(true);
+                shutdown_signal.trigger();
             }
             Err(_) => {
                 let msg = format!("cannot parse version string: {version_str}");
                 session.stream.write_all(&encode_fail(&msg)).await?;
                 session.stream.flush().await?;
-                let _ = shutdown_tx.send(true);
+                shutdown_signal.trigger();
             }
         }
-        return Ok(false);
+        return Ok(SessionFlow::Close);
     }
 
     if service == "kill" {
         session.stream.write_all(encode_okay()).await?;
         session.stream.flush().await?;
-        let _ = shutdown_tx.send(true);
-        return Ok(false);
+        shutdown_signal.trigger();
+        return Ok(SessionFlow::Close);
     }
 
     if service == "devices" || service == "devices-l" {
@@ -451,7 +481,7 @@ async fn handle_host_service(
         let resp = encode_okay_with_payload(&payload_str);
         session.stream.write_all(&resp).await?;
         session.stream.flush().await?;
-        return Ok(false);
+        return Ok(SessionFlow::Close);
     }
 
     if let Some(address) = service.strip_prefix("disconnect:") {
@@ -466,7 +496,7 @@ async fn handle_host_service(
             let resp = encode_okay_with_payload("disconnected everything");
             session.stream.write_all(&resp).await?;
             session.stream.flush().await?;
-            return Ok(false);
+            return Ok(SessionFlow::Close);
         }
 
         // Check if device matches directly by address
@@ -475,7 +505,7 @@ async fn handle_host_service(
             let resp = encode_okay_with_payload(&format!("disconnected {address}"));
             session.stream.write_all(&resp).await?;
             session.stream.flush().await?;
-            return Ok(false);
+            return Ok(SessionFlow::Close);
         }
 
         // Parse net address to canonical serial
@@ -484,7 +514,7 @@ async fn handle_host_service(
             let resp = encode_fail(&format!("couldn't parse '{address}': {err}"));
             session.stream.write_all(&resp).await?;
             session.stream.flush().await?;
-            return Ok(false);
+            return Ok(SessionFlow::Close);
         }
 
         if let Some(dev) = registry.get_by_serial(&serial) {
@@ -492,12 +522,12 @@ async fn handle_host_service(
             let resp = encode_okay_with_payload(&format!("disconnected {address}"));
             session.stream.write_all(&resp).await?;
             session.stream.flush().await?;
-            return Ok(false);
+            return Ok(SessionFlow::Close);
         } else {
             let resp = encode_fail(&format!("no such device '{serial}'"));
             session.stream.write_all(&resp).await?;
             session.stream.flush().await?;
-            return Ok(false);
+            return Ok(SessionFlow::Close);
         }
     }
 
@@ -506,58 +536,64 @@ async fn handle_host_service(
         let resp = encode_okay_with_payload(&response);
         session.stream.write_all(&resp).await?;
         session.stream.flush().await?;
-        return Ok(false);
+        return Ok(SessionFlow::Close);
     }
 
     // Transport selection handling (matching C++ handle_host_request):
     // e.g. transport, transport-any, transport-usb, transport-local, transport:<serial>, tport:...
     if service.starts_with("transport") || service.starts_with("tport:") {
-        let (legacy, req_target) = if let Some(tport_spec) = service.strip_prefix("tport:") {
+        let (query_mode, req_target) = if let Some(tport_spec) = service.strip_prefix("tport:") {
             if let Some(serial) = tport_spec.strip_prefix("serial:") {
-                (false, TransportTarget::Serial(serial.to_string()))
+                (
+                    TransportQueryMode::Tport,
+                    TransportTarget::Serial(serial.to_string()),
+                )
             } else if tport_spec == "usb" {
-                (false, TransportTarget::Usb)
+                (TransportQueryMode::Tport, TransportTarget::Usb)
             } else if tport_spec == "local" {
-                (false, TransportTarget::Local)
+                (TransportQueryMode::Tport, TransportTarget::Local)
             } else {
-                (false, TransportTarget::Any)
+                (TransportQueryMode::Tport, TransportTarget::Any)
             }
         } else if let Some(serial) = service.strip_prefix("transport:") {
-            (true, TransportTarget::Serial(serial.to_string()))
+            (
+                TransportQueryMode::Legacy,
+                TransportTarget::Serial(serial.to_string()),
+            )
         } else if let Some(id_str) = service.strip_prefix("transport-id:") {
             if let Ok(id) = id_str.parse::<u64>() {
-                (true, TransportTarget::TransportId(id))
+                (TransportQueryMode::Legacy, TransportTarget::TransportId(id))
             } else {
                 session
                     .stream
                     .write_all(&encode_fail("invalid transport id"))
                     .await?;
                 session.stream.flush().await?;
-                return Ok(false);
+                return Ok(SessionFlow::Close);
             }
         } else if service == "transport-usb" {
-            (true, TransportTarget::Usb)
+            (TransportQueryMode::Legacy, TransportTarget::Usb)
         } else if service == "transport-local" {
-            (true, TransportTarget::Local)
+            (TransportQueryMode::Legacy, TransportTarget::Local)
         } else {
-            (true, target.clone())
+            (TransportQueryMode::Legacy, target.clone())
         };
 
         match acquire_one_transport(registry, &req_target, true) {
             Ok(dev) => {
                 session.selected_device = Some(dev.transport_id);
                 session.stream.write_all(encode_okay()).await?;
-                if !legacy {
+                if query_mode == TransportQueryMode::Tport {
                     let id_bytes = dev.transport_id.to_le_bytes();
                     session.stream.write_all(&id_bytes).await?;
                 }
                 session.stream.flush().await?;
-                return Ok(true);
+                return Ok(SessionFlow::Continue);
             }
             Err(err_msg) => {
                 session.stream.write_all(&encode_fail(&err_msg)).await?;
                 session.stream.flush().await?;
-                return Ok(false);
+                return Ok(SessionFlow::Close);
             }
         }
     }
@@ -584,7 +620,7 @@ async fn handle_host_service(
                 session.stream.flush().await?;
             }
         }
-        return Ok(false);
+        return Ok(SessionFlow::Close);
     }
 
     if service == "get-devpath" {
@@ -605,7 +641,7 @@ async fn handle_host_service(
                 session.stream.flush().await?;
             }
         }
-        return Ok(false);
+        return Ok(SessionFlow::Close);
     }
 
     if service == "get-state" {
@@ -625,7 +661,7 @@ async fn handle_host_service(
                 session.stream.flush().await?;
             }
         }
-        return Ok(false);
+        return Ok(SessionFlow::Close);
     }
 
     if service == "features" {
@@ -646,7 +682,7 @@ async fn handle_host_service(
                 session.stream.flush().await?;
             }
         }
-        return Ok(false);
+        return Ok(SessionFlow::Close);
     }
 
     // Forwarding request handling (matching C++ handle_forward_request in original/adb.cpp):
@@ -656,7 +692,7 @@ async fn handle_host_service(
         let resp = encode_okay_with_payload(&listeners);
         session.stream.write_all(&resp).await?;
         session.stream.flush().await?;
-        return Ok(false);
+        return Ok(SessionFlow::Close);
     }
 
     // killforward-all
@@ -668,7 +704,7 @@ async fn handle_host_service(
         resp.extend_from_slice(encode_okay());
         session.stream.write_all(&resp).await?;
         session.stream.flush().await?;
-        return Ok(false);
+        return Ok(SessionFlow::Close);
     }
 
     // forward: or killforward:
@@ -684,7 +720,7 @@ async fn handle_host_service(
             Err(err) => {
                 session.stream.write_all(&encode_fail(&err)).await?;
                 session.stream.flush().await?;
-                return Ok(false);
+                return Ok(SessionFlow::Close);
             }
         };
 
@@ -693,7 +729,7 @@ async fn handle_host_service(
                 let err_msg = format!("bad killforward: {service}");
                 session.stream.write_all(&encode_fail(&err_msg)).await?;
                 session.stream.flush().await?;
-                return Ok(false);
+                return Ok(SessionFlow::Close);
             }
 
             let status = listener_manager.remove_listener(local);
@@ -708,7 +744,7 @@ async fn handle_host_service(
                 session.stream.write_all(&encode_fail(&err_msg)).await?;
                 session.stream.flush().await?;
             }
-            return Ok(false);
+            return Ok(SessionFlow::Close);
         }
 
         if let Some(forward_spec) = service.strip_prefix("forward:") {
@@ -728,7 +764,7 @@ async fn handle_host_service(
                 let err_msg = format!("bad forward: {service}");
                 session.stream.write_all(&encode_fail(&err_msg)).await?;
                 session.stream.flush().await?;
-                return Ok(false);
+                return Ok(SessionFlow::Close);
             }
 
             let mut flags = 0;
@@ -763,7 +799,7 @@ async fn handle_host_service(
                 session.stream.write_all(&encode_fail(&msg)).await?;
                 session.stream.flush().await?;
             }
-            return Ok(false);
+            return Ok(SessionFlow::Close);
         }
     }
 
@@ -788,20 +824,20 @@ async fn handle_host_service(
             Err(err) => {
                 session.stream.write_all(&encode_fail(&err)).await?;
                 session.stream.flush().await?;
-                return Ok(false);
+                return Ok(SessionFlow::Close);
             }
         };
 
         session.selected_device = Some(dev.transport_id);
         handle_device_service(session, service).await?;
-        return Ok(false);
+        return Ok(SessionFlow::Close);
     }
 
     // Unrecognized or out-of-scope host service:
     let fail_msg = format!("unknown host service '{service}'");
     session.stream.write_all(&encode_fail(&fail_msg)).await?;
     session.stream.flush().await?;
-    Ok(false)
+    Ok(SessionFlow::Close)
 }
 
 /// Ports `acquire_one_transport` from `original/transport.cpp`.
