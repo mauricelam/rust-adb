@@ -16,6 +16,8 @@ pub mod stream;
 pub mod tracker;
 
 pub use tracker::{format_devices_framed, format_devices_raw, TrackerFormat};
+pub mod usb_scanner;
+pub use usb_scanner::UsbDeviceScanner;
 pub mod listener;
 pub mod server;
 
