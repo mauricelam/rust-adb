@@ -13,8 +13,8 @@ use crate::state::ConnectionState;
 use crate::tracker::{format_devices_framed, TrackerFormat};
 use crate::transport_type::TransportType;
 
-/// Monotonically increasing transport ID, starting at 1.
-pub type TransportId = u64;
+/// Re-export strongly-typed TransportId from adb-proto.
+pub use adb_proto::TransportId;
 
 /// Error occurring during device registration.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -207,7 +207,8 @@ impl DeviceRegistry {
     /// }
     /// ```
     pub fn next_transport_id(&self) -> TransportId {
-        self.next_id.fetch_add(1, Ordering::Relaxed)
+        let val = self.next_id.fetch_add(1, Ordering::Relaxed);
+        TransportId::from_u64(val).expect("monotonic transport id never zero")
     }
 
     /// Subscribes to device change notifications in the specified `TrackerFormat`.

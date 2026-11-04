@@ -1,6 +1,7 @@
 use std::sync::Arc;
 use std::thread;
 
+use adb_proto::TransportId;
 use adb_server::{ConnectionState, DeviceRegistry, RegistrationError, TransportType};
 
 #[test]
@@ -27,14 +28,16 @@ fn test_registry_register_and_lookup() {
     assert_eq!(dev1.state, ConnectionState::Offline);
 
     // Lookup by transport_id
-    let dev2 = registry.get_by_id(2).expect("should find id 2");
+    let tid2 = TransportId::from_u64(2).unwrap();
+    let dev2 = registry.get_by_id(tid2).expect("should find id 2");
     assert_eq!(dev2.serial, "serial-2");
     assert_eq!(dev2.transport_type, TransportType::Local);
     assert_eq!(dev2.state, ConnectionState::Offline);
 
     // Non-existent lookup
     assert!(registry.get_by_serial("serial-3").is_none());
-    assert!(registry.get_by_id(99).is_none());
+    let tid99 = TransportId::from_u64(99).unwrap();
+    assert!(registry.get_by_id(tid99).is_none());
 
     // List all
     let list = registry.list_devices();
@@ -126,8 +129,9 @@ fn test_registry_update_state_and_properties() {
     assert_eq!(dev.device.as_deref(), Some("walleye"));
 
     // Updating non-existent id returns false
-    assert!(!registry.update_state(999, ConnectionState::Device));
-    assert!(!registry.set_device_properties(999, None, None, None));
+    let tid999 = TransportId::from_u64(999).unwrap();
+    assert!(!registry.update_state(tid999, ConnectionState::Device));
+    assert!(!registry.set_device_properties(tid999, None, None, None));
 }
 
 #[test]

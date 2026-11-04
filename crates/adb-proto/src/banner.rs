@@ -6,17 +6,22 @@ use std::fmt;
 use std::str::FromStr;
 
 pub use crate::limits::*;
+use crate::types::{MaxPayload, ProtocolVersion};
 
 /// Negotiates protocol version as the minimum of the host and remote versions.
 /// Ports logic from `atransport::set_protocol_version` in `original/transport.cpp`.
 pub fn negotiate_version(v1: u32, v2: u32) -> u32 {
-    std::cmp::min(v1, v2)
+    ProtocolVersion::new(v1)
+        .negotiate(ProtocolVersion::new(v2))
+        .get()
 }
 
 /// Negotiates maximum payload as the minimum of the host and remote values.
 /// Ports logic from `atransport::set_max_payload` in `original/transport.cpp`.
 pub fn negotiate_max_payload(p1: usize, p2: usize) -> usize {
-    std::cmp::min(p1, p2)
+    MaxPayload::new(p1 as u32)
+        .negotiate(MaxPayload::new(p2 as u32))
+        .as_usize()
 }
 
 /// Known feature names and an unknown variant for round-trip preservation.

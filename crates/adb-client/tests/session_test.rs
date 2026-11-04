@@ -1,4 +1,6 @@
-use adb_client::{format_host_command, ServerAddress, Session, SessionError, TransportSelector};
+use adb_client::{
+    format_host_command, ServerAddress, Session, SessionError, TransportId, TransportSelector,
+};
 use compat::TestServer;
 use std::env;
 use std::io::{BufRead, BufReader};
@@ -70,7 +72,10 @@ impl Drop for MockAdbdProcess {
 fn test_format_host_command_precedence() {
     let cmd = "features";
     assert_eq!(
-        format_host_command(cmd, &TransportSelector::Id(42)),
+        format_host_command(
+            cmd,
+            &TransportSelector::Id(TransportId::from_u64(42).unwrap())
+        ),
         "host-transport-id:42:features"
     );
     assert_eq!(
@@ -92,7 +97,7 @@ fn test_format_host_command_precedence() {
 
     // Method syntax on TransportSelector
     assert_eq!(
-        TransportSelector::Id(100).format_host_command("version"),
+        TransportSelector::Id(TransportId::from_u64(100).unwrap()).format_host_command("version"),
         "host-transport-id:100:version"
     );
 }

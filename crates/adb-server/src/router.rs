@@ -2,7 +2,7 @@ use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::Arc;
 use tokio::sync::{mpsc, oneshot};
 
-use adb_proto::Command;
+use adb_proto::{Command, LocalId, RemoteId};
 use adb_transport::{Packet, Transport, TransportError};
 
 use crate::stream::StreamRegistry;
@@ -10,13 +10,13 @@ use crate::stream::StreamRegistry;
 /// Handle passed with incoming data for acknowledging receipt via A_OKAY.
 #[derive(Clone, Debug)]
 pub struct StreamAcker {
-    local_id: u32,
+    local_id: LocalId,
     cmd_tx: mpsc::Sender<RouterCommand>,
 }
 
 impl StreamAcker {
     /// Returns the local stream ID.
-    pub fn local_id(&self) -> u32 {
+    pub fn local_id(&self) -> LocalId {
         self.local_id
     }
 
@@ -41,7 +41,7 @@ pub enum StreamMessage {
     Data(Vec<u8>, StreamAcker),
     /// Stream connection confirmation or flow control update via an `A_OKAY` packet.
     Ready {
-        remote_id: u32,
+        remote_id: RemoteId,
         ack_bytes: Option<i32>,
     },
     /// Stream closure via an `A_CLSE` packet or transport termination.
@@ -55,7 +55,7 @@ pub type StreamReceiver = mpsc::UnboundedReceiver<StreamMessage>;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OpenRequest {
     /// Peer's stream ID.
-    pub remote_id: u32,
+    pub remote_id: RemoteId,
     /// Null-stripped service destination string (e.g. "shell:ls").
     pub destination: String,
     /// Send buffer bytes for delayed ack (if any).
@@ -85,26 +85,26 @@ pub enum RouterError {
 }
 
 struct StreamWriteRequest {
-    local_id: u32,
+    local_id: LocalId,
     payload: Vec<u8>,
     response_tx: oneshot::Sender<Result<(), RouterError>>,
 }
 
 enum RouterCommand {
     Write(StreamWriteRequest),
-    AckInbound(u32, oneshot::Sender<Result<(), RouterError>>),
+    AckInbound(LocalId, oneshot::Sender<Result<(), RouterError>>),
 }
 
 /// Handle allowing asynchronous writing to a multiplexed stream with OKAY flow control backpressure.
 #[derive(Clone)]
 pub struct StreamWriter {
-    local_id: u32,
+    local_id: LocalId,
     cmd_tx: mpsc::Sender<RouterCommand>,
 }
 
 impl StreamWriter {
     /// Returns the local stream ID.
-    pub fn local_id(&self) -> u32 {
+    pub fn local_id(&self) -> LocalId {
         self.local_id
     }
 
@@ -149,9 +149,9 @@ pub struct PacketRouter<T: Transport> {
     skip_checksum: bool,
     cmd_tx: mpsc::Sender<RouterCommand>,
     cmd_rx: mpsc::Receiver<RouterCommand>,
-    outgoing_in_flight: HashMap<u32, oneshot::Sender<Result<(), RouterError>>>,
-    outgoing_queued: HashMap<u32, VecDeque<StreamWriteRequest>>,
-    inbound_in_flight: HashSet<u32>,
+    outgoing_in_flight: HashMap<LocalId, oneshot::Sender<Result<(), RouterError>>>,
+    outgoing_queued: HashMap<LocalId, VecDeque<StreamWriteRequest>>,
+    inbound_in_flight: HashSet<LocalId>,
 }
 
 impl<T: Transport> PacketRouter<T> {
@@ -172,7 +172,7 @@ impl<T: Transport> PacketRouter<T> {
     }
 
     /// Creates a `StreamWriter` for the given `local_id`.
-    pub fn create_stream_writer(&self, local_id: u32) -> Result<StreamWriter, RouterError> {
+    pub fn create_stream_writer(&self, local_id: LocalId) -> Result<StreamWriter, RouterError> {
         if self.registry.get(local_id).is_none() {
             return Err(RouterError::Stream(format!("stream {local_id} not found")));
         }
@@ -183,7 +183,7 @@ impl<T: Transport> PacketRouter<T> {
     }
 
     /// Sends an `A_OKAY` packet acknowledging received data on the given stream, clearing inbound write-in-flight state.
-    pub async fn send_okay(&mut self, local_id: u32) -> Result<(), RouterError> {
+    pub async fn send_okay(&mut self, local_id: LocalId) -> Result<(), RouterError> {
         let entry = self
             .registry
             .get(local_id)
@@ -196,8 +196,8 @@ impl<T: Transport> PacketRouter<T> {
 
         let okay_packet = Packet::new(
             Command::Okay,
-            local_id,
-            remote_id,
+            local_id.get(),
+            remote_id.get(),
             Vec::new(),
             self.skip_checksum,
         );
@@ -361,8 +361,8 @@ impl<T: Transport> PacketRouter<T> {
 
         let wrte_packet = Packet::new(
             Command::Wrte,
-            local_id,
-            remote_id,
+            local_id.get(),
+            remote_id.get(),
             req.payload,
             self.skip_checksum,
         );
@@ -377,12 +377,10 @@ impl<T: Transport> PacketRouter<T> {
     }
 
     async fn handle_open(&mut self, packet: Packet) -> Result<(), RouterError> {
-        let remote_id = packet.header.arg0;
-        let send_bytes = packet.header.arg1;
-
-        if remote_id == 0 {
+        let Some(remote_id) = RemoteId::from_u32(packet.header.arg0) else {
             return Ok(());
-        }
+        };
+        let send_bytes = packet.header.arg1;
 
         let destination = {
             let mut payload = packet.payload;
@@ -410,20 +408,20 @@ impl<T: Transport> PacketRouter<T> {
                     Ok(local_id) => {
                         let okay_packet = Packet::new(
                             Command::Okay,
-                            local_id,
-                            remote_id,
+                            local_id.get(),
+                            remote_id.get(),
                             Vec::new(),
                             self.skip_checksum,
                         );
                         self.transport.write_packet(&okay_packet).await?;
                     }
                     Err(_) => {
-                        self.send_close(0, remote_id).await?;
+                        self.send_close(None, remote_id).await?;
                     }
                 }
             }
             OpenDecision::Reject => {
-                self.send_close(0, remote_id).await?;
+                self.send_close(None, remote_id).await?;
             }
         }
 
@@ -431,14 +429,14 @@ impl<T: Transport> PacketRouter<T> {
     }
 
     async fn handle_wrte(&mut self, packet: Packet) -> Result<(), RouterError> {
-        let remote_id = packet.header.arg0;
-        let local_id = packet.header.arg1;
-
-        if remote_id == 0 || local_id == 0 {
+        let (Some(remote_id), Some(local_id)) = (
+            RemoteId::from_u32(packet.header.arg0),
+            LocalId::from_u32(packet.header.arg1),
+        ) else {
             return Ok(());
-        }
+        };
 
-        if let Some(entry) = self.registry.find(local_id, remote_id) {
+        if let Some(entry) = self.registry.find(local_id, Some(remote_id)) {
             if self.inbound_in_flight.contains(&local_id) {
                 return Err(RouterError::ProtocolViolation(format!(
                     "consecutive WRTE without OKAY on stream local_id={local_id}, remote_id={remote_id}"
@@ -460,28 +458,28 @@ impl<T: Transport> PacketRouter<T> {
                 // Stream receiver dropped, remove from registry and reply CLSE
                 self.registry.remove(local_id);
                 self.inbound_in_flight.remove(&local_id);
-                self.send_close(local_id, remote_id).await?;
+                self.send_close(Some(local_id), remote_id).await?;
             }
         } else {
             // Unmapped stream target: trigger immediate CLSE reply without crashing transport
-            self.send_close(local_id, remote_id).await?;
+            self.send_close(Some(local_id), remote_id).await?;
         }
 
         Ok(())
     }
 
     async fn handle_okay(&mut self, packet: Packet) -> Result<(), RouterError> {
-        let remote_id = packet.header.arg0;
-        let local_id = packet.header.arg1;
-
-        if remote_id == 0 || local_id == 0 {
+        let (Some(remote_id), Some(local_id)) = (
+            RemoteId::from_u32(packet.header.arg0),
+            LocalId::from_u32(packet.header.arg1),
+        ) else {
             return Ok(());
-        }
+        };
 
-        if let Some(entry) = self.registry.find(local_id, 0) {
+        if let Some(entry) = self.registry.find(local_id, None) {
             // If remote_id was not yet set, update it
             if entry.remote_id().is_none() {
-                let _ = entry.set_remote_id(remote_id);
+                entry.set_remote_id(remote_id);
             }
 
             let ack_bytes = if packet.payload.len() == 4 {
@@ -512,23 +510,21 @@ impl<T: Transport> PacketRouter<T> {
             {
                 self.registry.remove(local_id);
                 self.inbound_in_flight.remove(&local_id);
-                self.send_close(local_id, remote_id).await?;
+                self.send_close(Some(local_id), remote_id).await?;
             }
         } else {
             // Unmapped stream target on OKAY: send CLSE back to device (C++ send_close(p->msg.arg1, p->msg.arg0, t))
-            self.send_close(local_id, remote_id).await?;
+            self.send_close(Some(local_id), remote_id).await?;
         }
 
         Ok(())
     }
 
     async fn handle_clse(&mut self, packet: Packet) {
-        let remote_id = packet.header.arg0;
-        let local_id = packet.header.arg1;
-
-        if local_id == 0 {
+        let Some(local_id) = LocalId::from_u32(packet.header.arg1) else {
             return;
-        }
+        };
+        let remote_id = RemoteId::from_u32(packet.header.arg0);
 
         // C++: find_local_socket(p->msg.arg1, p->msg.arg0)
         // Note: arg0 may be 0 for failed OPEN
@@ -552,11 +548,15 @@ impl<T: Transport> PacketRouter<T> {
         // Per protocol parity, unmapped CLSE messages are ignored without responding
     }
 
-    async fn send_close(&mut self, local_id: u32, remote_id: u32) -> Result<(), RouterError> {
+    async fn send_close(
+        &mut self,
+        local_id: Option<LocalId>,
+        remote_id: RemoteId,
+    ) -> Result<(), RouterError> {
         let clse_packet = Packet::new(
             Command::Clse,
-            local_id,
-            remote_id,
+            local_id.map_or(0, |id| id.get()),
+            remote_id.get(),
             Vec::new(),
             self.skip_checksum,
         );

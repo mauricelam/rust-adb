@@ -1,6 +1,6 @@
 use adb_client::{
     AdbClient, ClientError, DeviceSelection, SelectionError, ServerAddress, SessionError,
-    TransportSelector,
+    TransportId, TransportSelector,
 };
 use compat::TestServer;
 use std::collections::HashMap;
@@ -155,31 +155,37 @@ fn test_device_selection_table() {
             name: "attached transport-id -t123",
             args: vec!["-t123", "get-state"],
             env: no_env.clone(),
-            expected_res: Ok((
-                DeviceSelection {
-                    serial: None,
-                    transport_id: Some(123),
-                    usb: false,
-                    local: false,
-                    selector: TransportSelector::Id(123),
-                },
-                vec!["get-state"],
-            )),
+            expected_res: Ok({
+                let tid = TransportId::from_u64(123).unwrap();
+                (
+                    DeviceSelection {
+                        serial: None,
+                        transport_id: Some(tid),
+                        usb: false,
+                        local: false,
+                        selector: TransportSelector::Id(tid),
+                    },
+                    vec!["get-state"],
+                )
+            }),
         },
         TestCase {
             name: "spaced transport-id -t 123",
             args: vec!["-t", "123", "get-state"],
             env: no_env.clone(),
-            expected_res: Ok((
-                DeviceSelection {
-                    serial: None,
-                    transport_id: Some(123),
-                    usb: false,
-                    local: false,
-                    selector: TransportSelector::Id(123),
-                },
-                vec!["get-state"],
-            )),
+            expected_res: Ok({
+                let tid = TransportId::from_u64(123).unwrap();
+                (
+                    DeviceSelection {
+                        serial: None,
+                        transport_id: Some(tid),
+                        usb: false,
+                        local: false,
+                        selector: TransportSelector::Id(tid),
+                    },
+                    vec!["get-state"],
+                )
+            }),
         },
         TestCase {
             name: "invalid option -tabc",
@@ -263,16 +269,19 @@ fn test_device_selection_table() {
             name: "ANDROID_SERIAL fallback with -t id",
             args: vec!["-t", "456", "get-state"],
             env: env_serial.clone(),
-            expected_res: Ok((
-                DeviceSelection {
-                    serial: Some("env_device_123".into()),
-                    transport_id: Some(456),
-                    usb: false,
-                    local: false,
-                    selector: TransportSelector::Id(456),
-                },
-                vec!["get-state"],
-            )),
+            expected_res: Ok({
+                let tid = TransportId::from_u64(456).unwrap();
+                (
+                    DeviceSelection {
+                        serial: Some("env_device_123".into()),
+                        transport_id: Some(tid),
+                        usb: false,
+                        local: false,
+                        selector: TransportSelector::Id(tid),
+                    },
+                    vec!["get-state"],
+                )
+            }),
         },
         TestCase {
             name: "ANDROID_SERIAL ignored with -d",
@@ -358,7 +367,7 @@ async fn test_differential_no_device() {
         ),
         (
             "id",
-            TransportSelector::Id(9999),
+            TransportSelector::Id(TransportId::from_u64(9999).unwrap()),
             vec!["-t", "9999", "get-state"],
         ),
     ];
@@ -502,7 +511,7 @@ async fn test_differential_one_mock_device() {
     assert!(tid_val > 0);
 
     // 4. Query using TransportSelector::Id(tid_val)
-    let id_selector = TransportSelector::Id(tid_val);
+    let id_selector = TransportSelector::Id(TransportId::from_u64(tid_val).unwrap());
     let state_by_id = client
         .get_state(&id_selector)
         .await
@@ -597,8 +606,8 @@ async fn test_differential_two_mock_devices() {
     assert_ne!(tid1, tid2);
 
     // 5. Target mock1 and mock2 specifically by transport ID (-t)
-    let id_sel1 = TransportSelector::Id(tid1);
-    let id_sel2 = TransportSelector::Id(tid2);
+    let id_sel1 = TransportSelector::Id(TransportId::from_u64(tid1).unwrap());
+    let id_sel2 = TransportSelector::Id(TransportId::from_u64(tid2).unwrap());
 
     let serial_by_id1 = client.get_serialno(&id_sel1).await.result.unwrap();
     let ref_serial_by_id1 =

@@ -1,14 +1,14 @@
 use crate::transport::{Packet, Transport, TransportError};
 use adb_proto::{
-    client_supported_features, negotiate_max_payload, negotiate_version, Banner, BannerEntry,
-    Command, FeatureOptions, Features, A_VERSION, MAX_PAYLOAD,
+    client_supported_features, Banner, BannerEntry, Command, FeatureOptions, Features, MaxPayload,
+    ProtocolVersion, A_VERSION, MAX_PAYLOAD,
 };
 
 /// Result of a successful CNXN protocol handshake.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HandshakeResult {
-    pub negotiated_version: u32,
-    pub negotiated_max_payload: usize,
+    pub negotiated_version: ProtocolVersion,
+    pub negotiated_max_payload: MaxPayload,
     pub remote_banner: Banner,
     pub remote_features: Features,
 }
@@ -57,8 +57,10 @@ pub async fn perform_cnxn_handshake<T: Transport + ?Sized>(
     let remote_version = response.header.arg0;
     let remote_max_payload = response.header.arg1 as usize;
 
-    let negotiated_version = negotiate_version(A_VERSION, remote_version);
-    let negotiated_max_payload = negotiate_max_payload(MAX_PAYLOAD, remote_max_payload);
+    let negotiated_version =
+        ProtocolVersion::new(A_VERSION).negotiate(ProtocolVersion::new(remote_version));
+    let negotiated_max_payload =
+        MaxPayload::new(MAX_PAYLOAD as u32).negotiate(MaxPayload::new(remote_max_payload as u32));
 
     let banner_str = String::from_utf8_lossy(&response.payload);
     let remote_banner = Banner::parse(&banner_str);

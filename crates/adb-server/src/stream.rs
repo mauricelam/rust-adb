@@ -3,15 +3,13 @@ use std::collections::HashMap;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, RwLock};
 
+use adb_proto::{LocalId, RemoteId};
+
 /// Errors that can occur during stream registry operations.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 pub enum StreamError {
     #[error("stream not found")]
     NotFound,
-    #[error("remote id cannot be 0")]
-    InvalidRemoteId,
-    #[error("local id cannot be 0")]
-    InvalidLocalId,
     #[error("stream registry capacity exhausted")]
     CapacityExhausted,
 }
@@ -19,13 +17,13 @@ pub enum StreamError {
 /// A registered stream entry holding the local_id, optional remote_id, and the stream handle `H`.
 #[derive(Debug)]
 pub struct StreamEntry<H> {
-    local_id: u32,
-    remote_id: RwLock<Option<u32>>,
+    local_id: LocalId,
+    remote_id: RwLock<Option<RemoteId>>,
     handle: H,
 }
 
 impl<H> StreamEntry<H> {
-    pub fn new(local_id: u32, remote_id: Option<u32>, handle: H) -> Self {
+    pub fn new(local_id: LocalId, remote_id: Option<RemoteId>, handle: H) -> Self {
         Self {
             local_id,
             remote_id: RwLock::new(remote_id),
@@ -35,24 +33,20 @@ impl<H> StreamEntry<H> {
 
     /// Returns the local stream ID (always > 0).
     #[inline]
-    pub fn local_id(&self) -> u32 {
+    pub fn local_id(&self) -> LocalId {
         self.local_id
     }
 
     /// Returns the remote peer's stream ID, if known.
     #[inline]
-    pub fn remote_id(&self) -> Option<u32> {
+    pub fn remote_id(&self) -> Option<RemoteId> {
         *self.remote_id.read().expect("lock poisoned")
     }
 
     /// Sets or updates the remote peer's stream ID.
     #[inline]
-    pub fn set_remote_id(&self, remote_id: u32) -> Result<(), StreamError> {
-        if remote_id == 0 {
-            return Err(StreamError::InvalidRemoteId);
-        }
+    pub fn set_remote_id(&self, remote_id: RemoteId) {
         *self.remote_id.write().expect("lock poisoned") = Some(remote_id);
-        Ok(())
     }
 
     /// Clears the remote peer's stream ID.
@@ -74,11 +68,11 @@ impl<H> StreamEntry<H> {
 /// - Local stream IDs are positive non-zero 32-bit unsigned integers (`1..=u32::MAX`).
 /// - ID generation starts at 1 and wraps around to 1 (skipping 0).
 /// - Remote IDs must also never be 0.
-/// - Sockets can be looked up by `local_id` or `(local_id, remote_id)` where `remote_id == 0`
+/// - Sockets can be looked up by `local_id` or `(local_id, remote_id)` where `remote_id.is_none()`
 ///   matches any peer ID (matching `find_local_socket(local_id, peer_id)` in `original/sockets.cpp`).
 pub struct StreamRegistry<H> {
     next_id: AtomicU32,
-    streams: RwLock<HashMap<u32, Arc<StreamEntry<H>>>>,
+    streams: RwLock<HashMap<LocalId, Arc<StreamEntry<H>>>>,
 }
 
 impl<H> Default for StreamRegistry<H> {
@@ -96,20 +90,25 @@ impl<H> StreamRegistry<H> {
         }
     }
 
-    /// Allocates the next unique `local_id` and registers the stream handle.
-    pub fn allocate(&self, handle: H) -> Result<u32, StreamError> {
+    /// Allocates the next unique `LocalId` and registers the stream handle.
+    pub fn allocate(&self, handle: H) -> Result<LocalId, StreamError> {
         self.allocate_internal(None, handle)
     }
 
-    /// Allocates the next unique `local_id` with an known `remote_id` and registers the stream handle.
-    pub fn allocate_with_remote(&self, remote_id: u32, handle: H) -> Result<u32, StreamError> {
-        if remote_id == 0 {
-            return Err(StreamError::InvalidRemoteId);
-        }
+    /// Allocates the next unique `LocalId` with a known `RemoteId` and registers the stream handle.
+    pub fn allocate_with_remote(
+        &self,
+        remote_id: RemoteId,
+        handle: H,
+    ) -> Result<LocalId, StreamError> {
         self.allocate_internal(Some(remote_id), handle)
     }
 
-    fn allocate_internal(&self, remote_id: Option<u32>, handle: H) -> Result<u32, StreamError> {
+    fn allocate_internal(
+        &self,
+        remote_id: Option<RemoteId>,
+        handle: H,
+    ) -> Result<LocalId, StreamError> {
         let mut map = self.streams.write().expect("lock poisoned");
 
         // Guard against total exhaustion (2^32 - 1 entries)
@@ -128,63 +127,54 @@ impl<H> StreamRegistry<H> {
                 candidate
             };
 
-            if id == 0 {
-                continue;
-            }
-
-            if let Entry::Vacant(e) = map.entry(id) {
-                let entry = Arc::new(StreamEntry::new(id, remote_id, handle));
-                e.insert(entry);
-                return Ok(id);
+            if let Some(local_id) = LocalId::from_u32(id) {
+                if let Entry::Vacant(e) = map.entry(local_id) {
+                    let entry = Arc::new(StreamEntry::new(local_id, remote_id, handle));
+                    e.insert(entry);
+                    return Ok(local_id);
+                }
             }
         }
     }
 
     /// Sets or updates the `remote_id` for an existing local stream.
-    pub fn set_remote_id(&self, local_id: u32, remote_id: u32) -> Result<(), StreamError> {
-        if remote_id == 0 {
-            return Err(StreamError::InvalidRemoteId);
-        }
+    pub fn set_remote_id(&self, local_id: LocalId, remote_id: RemoteId) -> Result<(), StreamError> {
         let map = self.streams.read().expect("lock poisoned");
         if let Some(entry) = map.get(&local_id) {
-            entry.set_remote_id(remote_id)
+            entry.set_remote_id(remote_id);
+            Ok(())
         } else {
             Err(StreamError::NotFound)
         }
     }
 
     /// Looks up a stream by `local_id`.
-    pub fn get(&self, local_id: u32) -> Option<Arc<StreamEntry<H>>> {
-        if local_id == 0 {
-            return None;
-        }
+    pub fn get(&self, local_id: LocalId) -> Option<Arc<StreamEntry<H>>> {
         let map = self.streams.read().expect("lock poisoned");
         map.get(&local_id).cloned()
     }
 
-    /// Looks up a stream by `local_id` and validates `remote_id`.
+    /// Looks up a stream by `local_id` and optional `remote_id`.
     ///
     /// Following C++ ADB `find_local_socket(local_id, peer_id)`:
-    /// - If `remote_id == 0`, checks only `local_id`.
-    /// - If `remote_id != 0`, checks that `entry.remote_id() == Some(remote_id)`.
-    pub fn find(&self, local_id: u32, remote_id: u32) -> Option<Arc<StreamEntry<H>>> {
-        if local_id == 0 {
-            return None;
-        }
+    /// - If `remote_id.is_none()`, checks only `local_id`.
+    /// - If `remote_id.is_some()`, checks that `entry.remote_id() == remote_id`.
+    pub fn find(
+        &self,
+        local_id: LocalId,
+        remote_id: Option<RemoteId>,
+    ) -> Option<Arc<StreamEntry<H>>> {
         let map = self.streams.read().expect("lock poisoned");
         let entry = map.get(&local_id)?;
-        if remote_id == 0 || entry.remote_id() == Some(remote_id) {
-            Some(Arc::clone(entry))
-        } else {
-            None
+        match remote_id {
+            None => Some(Arc::clone(entry)),
+            Some(rid) if entry.remote_id() == Some(rid) => Some(Arc::clone(entry)),
+            _ => None,
         }
     }
 
     /// Finds a stream by its associated `remote_id`.
-    pub fn find_by_remote(&self, remote_id: u32) -> Option<Arc<StreamEntry<H>>> {
-        if remote_id == 0 {
-            return None;
-        }
+    pub fn find_by_remote(&self, remote_id: RemoteId) -> Option<Arc<StreamEntry<H>>> {
         let map = self.streams.read().expect("lock poisoned");
         map.values()
             .find(|entry| entry.remote_id() == Some(remote_id))
@@ -192,10 +182,7 @@ impl<H> StreamRegistry<H> {
     }
 
     /// Removes and reclaims a stream by its `local_id`.
-    pub fn remove(&self, local_id: u32) -> Option<Arc<StreamEntry<H>>> {
-        if local_id == 0 {
-            return None;
-        }
+    pub fn remove(&self, local_id: LocalId) -> Option<Arc<StreamEntry<H>>> {
         let mut map = self.streams.write().expect("lock poisoned");
         map.remove(&local_id)
     }

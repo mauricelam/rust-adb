@@ -1,4 +1,5 @@
 use crate::tcp::TcpTransport;
+use adb_proto::{AdbPort, ConsolePort};
 use std::time::Duration;
 use tokio::net::TcpStream;
 
@@ -14,7 +15,9 @@ pub const DEFAULT_ADB_LOCAL_TRANSPORT_MAX_PORT: u16 = 5585;
 /// In standard Android emulator configuration, the console port is `adb_port - 1`.
 #[inline]
 pub fn console_port_for_adb_port(adb_port: u16) -> u16 {
-    adb_port.saturating_sub(1)
+    ConsolePort::from_adb_port(AdbPort(adb_port))
+        .map(|p| p.0)
+        .unwrap_or(0)
 }
 
 /// Returns the standard ADB serial string for an emulator from its console port.
@@ -22,7 +25,7 @@ pub fn console_port_for_adb_port(adb_port: u16) -> u16 {
 /// E.g. `emulator-5554` for console port 5554 (ADB port 5555).
 #[inline]
 pub fn emulator_serial(console_port: u16) -> String {
-    format!("emulator-{console_port}")
+    ConsolePort(console_port).to_emulator_serial()
 }
 
 /// Configuration for scanning local or remote ports to discover running emulators.
@@ -68,9 +71,9 @@ pub struct DiscoveredEmulator {
     /// Emulator serial string (e.g. `emulator-5554`).
     pub serial: String,
     /// The ADB wire protocol TCP port (e.g. 5555).
-    pub adb_port: u16,
+    pub adb_port: AdbPort,
     /// The emulator console TCP port (e.g. 5554).
-    pub console_port: u16,
+    pub console_port: ConsolePort,
     /// Connected TCP transport ready for ADB wire packet exchange.
     pub transport: TcpTransport,
 }
@@ -103,13 +106,14 @@ pub async fn scan_for_emulators_with_config(
             let addr = format!("{host}:{port}");
             match tokio::time::timeout(timeout, TcpStream::connect(&addr)).await {
                 Ok(Ok(stream)) => {
-                    let console_port = console_port_for_adb_port(port);
-                    let serial = emulator_serial(console_port);
+                    let adb_p = AdbPort(port);
+                    let console_p = ConsolePort::from_adb_port(adb_p).unwrap_or(ConsolePort(0));
+                    let serial = console_p.to_emulator_serial();
                     let transport = TcpTransport::from_stream(stream);
                     Some(DiscoveredEmulator {
                         serial,
-                        adb_port: port,
-                        console_port,
+                        adb_port: adb_p,
+                        console_port: console_p,
                         transport,
                     })
                 }
@@ -126,6 +130,6 @@ pub async fn scan_for_emulators_with_config(
     }
 
     // Sort stably by adb_port in ascending order
-    results.sort_by_key(|e| e.adb_port);
+    results.sort_by_key(|e| e.adb_port.0);
     results
 }
