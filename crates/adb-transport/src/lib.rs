@@ -5,6 +5,7 @@ pub mod handshake;
 pub mod tcp;
 pub mod transport;
 pub mod usb;
+pub mod usb_transport;
 
 #[cfg(feature = "usb")]
 pub mod nusb_backend;
@@ -23,10 +24,11 @@ pub use transport::{
 };
 pub use usb::{
     find_adb_interface, is_adb_interface, AdbInterfaceMatch, EndpointDirection, EndpointType,
-    MockUsbBackend, MockUsbDeviceHandle, UsbBackend, UsbDeviceHandle, UsbDeviceInfo,
-    UsbEndpointInfo, UsbError, UsbInterfaceInfo, ADB_CLASS, ADB_DBC_CLASS, ADB_DBC_SUBCLASS,
-    ADB_PROTOCOL, ADB_SUBCLASS,
+    MockUsbBackend, MockUsbDeviceHandle, RecordedTransfer, UsbBackend, UsbDeviceHandle,
+    UsbDeviceInfo, UsbEndpointInfo, UsbError, UsbInterfaceInfo, ADB_CLASS, ADB_DBC_CLASS,
+    ADB_DBC_SUBCLASS, ADB_PROTOCOL, ADB_SUBCLASS,
 };
+pub use usb_transport::UsbTransport;
 
 #[cfg(feature = "usb")]
 pub use nusb_backend::{NusbBackend, NusbDeviceHandle};
