@@ -1,7 +1,7 @@
 use std::sync::Arc;
 use tokio::sync::mpsc;
 
-use adb_proto::Command;
+use adb_proto::{Command, RemoteId};
 use adb_server::{OpenDecision, OpenRequest, PacketRouter, StreamMessage, StreamRegistry};
 use adb_transport::{Packet, Transport, TransportError};
 
@@ -54,9 +54,15 @@ async fn test_multi_stream_data_interleaved() {
     let (s2_tx, mut s2_rx) = mpsc::unbounded_channel();
     let (s3_tx, mut s3_rx) = mpsc::unbounded_channel();
 
-    let id1 = registry.allocate_with_remote(101, s1_tx).unwrap();
-    let id2 = registry.allocate_with_remote(102, s2_tx).unwrap();
-    let id3 = registry.allocate_with_remote(103, s3_tx).unwrap();
+    let id1 = registry
+        .allocate_with_remote(RemoteId::from_u32(101).unwrap(), s1_tx)
+        .unwrap();
+    let id2 = registry
+        .allocate_with_remote(RemoteId::from_u32(102).unwrap(), s2_tx)
+        .unwrap();
+    let id3 = registry
+        .allocate_with_remote(RemoteId::from_u32(103).unwrap(), s3_tx)
+        .unwrap();
 
     let reg_clone = Arc::clone(&registry);
     let router_handle = tokio::spawn(async move {
@@ -69,7 +75,7 @@ async fn test_multi_stream_data_interleaved() {
         .send(Packet::new(
             Command::Wrte,
             101,
-            id1,
+            id1.get(),
             b"stream1-chunk1".to_vec(),
             true,
         ))
@@ -79,7 +85,7 @@ async fn test_multi_stream_data_interleaved() {
         .send(Packet::new(
             Command::Wrte,
             102,
-            id2,
+            id2.get(),
             b"stream2-chunk1".to_vec(),
             true,
         ))
@@ -89,7 +95,7 @@ async fn test_multi_stream_data_interleaved() {
         .send(Packet::new(
             Command::Wrte,
             103,
-            id3,
+            id3.get(),
             b"stream3-chunk1".to_vec(),
             true,
         ))
@@ -128,7 +134,7 @@ async fn test_multi_stream_data_interleaved() {
         .send(Packet::new(
             Command::Wrte,
             101,
-            id1,
+            id1.get(),
             b"stream1-chunk2".to_vec(),
             true,
         ))
@@ -138,7 +144,7 @@ async fn test_multi_stream_data_interleaved() {
         .send(Packet::new(
             Command::Wrte,
             102,
-            id2,
+            id2.get(),
             b"stream2-chunk2".to_vec(),
             true,
         ))
@@ -205,13 +211,15 @@ async fn test_unmapped_stream_target_triggers_clse() {
 
     // 3. Router should continue running without crashing
     let (s_tx, mut s_rx) = mpsc::unbounded_channel();
-    let local_id = registry.allocate_with_remote(77, s_tx).unwrap();
+    let local_id = registry
+        .allocate_with_remote(RemoteId::from_u32(77).unwrap(), s_tx)
+        .unwrap();
 
     in_tx
         .send(Packet::new(
             Command::Wrte,
             77,
-            local_id,
+            local_id.get(),
             b"valid".to_vec(),
             true,
         ))
@@ -337,7 +345,7 @@ async fn test_okay_packet_lifecycle() {
         .send(Packet::new(
             Command::Okay,
             333,
-            local_id,
+            local_id.get(),
             ack_bytes.to_le_bytes().to_vec(),
             true,
         ))
@@ -349,7 +357,7 @@ async fn test_okay_packet_lifecycle() {
             remote_id,
             ack_bytes: got_ack,
         } => {
-            assert_eq!(remote_id, 333);
+            assert_eq!(remote_id.get(), 333);
             assert_eq!(got_ack, Some(4096));
         }
         other => panic!("unexpected message: {other:?}"),
@@ -357,7 +365,7 @@ async fn test_okay_packet_lifecycle() {
 
     // Check that stream entry in registry has remote_id set to 333
     let entry = registry.get(local_id).unwrap();
-    assert_eq!(entry.remote_id(), Some(333));
+    assert_eq!(entry.remote_id(), RemoteId::from_u32(333));
 
     drop(in_tx);
     let router_res = router_handle.await.unwrap();
@@ -370,7 +378,9 @@ async fn test_clse_packet_lifecycle() {
     let registry = Arc::new(StreamRegistry::new());
 
     let (s_tx, mut s_rx) = mpsc::unbounded_channel();
-    let local_id = registry.allocate_with_remote(555, s_tx).unwrap();
+    let local_id = registry
+        .allocate_with_remote(RemoteId::from_u32(555).unwrap(), s_tx)
+        .unwrap();
 
     let reg_clone = Arc::clone(&registry);
     let router_handle = tokio::spawn(async move {
@@ -380,7 +390,13 @@ async fn test_clse_packet_lifecycle() {
 
     // Send CLSE(arg0 = 555, arg1 = local_id)
     in_tx
-        .send(Packet::new(Command::Clse, 555, local_id, Vec::new(), true))
+        .send(Packet::new(
+            Command::Clse,
+            555,
+            local_id.get(),
+            Vec::new(),
+            true,
+        ))
         .await
         .unwrap();
 
@@ -394,7 +410,13 @@ async fn test_clse_packet_lifecycle() {
 
     // Sending another CLSE to already closed local_id should be ignored (no response per protocol)
     in_tx
-        .send(Packet::new(Command::Clse, 555, local_id, Vec::new(), true))
+        .send(Packet::new(
+            Command::Clse,
+            555,
+            local_id.get(),
+            Vec::new(),
+            true,
+        ))
         .await
         .unwrap();
 
@@ -411,8 +433,12 @@ async fn test_transport_disconnect_cleanup() {
     let (s1_tx, mut s1_rx) = mpsc::unbounded_channel();
     let (s2_tx, mut s2_rx) = mpsc::unbounded_channel();
 
-    let id1 = registry.allocate_with_remote(1, s1_tx).unwrap();
-    let id2 = registry.allocate_with_remote(2, s2_tx).unwrap();
+    let id1 = registry
+        .allocate_with_remote(RemoteId::from_u32(1).unwrap(), s1_tx)
+        .unwrap();
+    let id2 = registry
+        .allocate_with_remote(RemoteId::from_u32(2).unwrap(), s2_tx)
+        .unwrap();
 
     let reg_clone = Arc::clone(&registry);
     let router_handle = tokio::spawn(async move {
@@ -447,7 +473,9 @@ async fn test_stream_write_normal_flow_after_okay() {
     let registry = Arc::new(StreamRegistry::new());
 
     let (s_tx, _s_rx) = mpsc::unbounded_channel();
-    let local_id = registry.allocate_with_remote(100, s_tx).unwrap();
+    let local_id = registry
+        .allocate_with_remote(RemoteId::from_u32(100).unwrap(), s_tx)
+        .unwrap();
 
     let reg_clone = Arc::clone(&registry);
     let router = PacketRouter::new(transport, reg_clone);
@@ -461,13 +489,19 @@ async fn test_stream_write_normal_flow_after_okay() {
 
     let pkt1 = out_rx.recv().await.unwrap();
     assert_eq!(pkt1.header.command, Command::Wrte);
-    assert_eq!(pkt1.header.arg0, local_id);
+    assert_eq!(pkt1.header.arg0, local_id.get());
     assert_eq!(pkt1.header.arg1, 100);
     assert_eq!(pkt1.payload, b"chunk1");
 
     // In-flight: simulate peer sending A_OKAY back
     in_tx
-        .send(Packet::new(Command::Okay, 100, local_id, Vec::new(), true))
+        .send(Packet::new(
+            Command::Okay,
+            100,
+            local_id.get(),
+            Vec::new(),
+            true,
+        ))
         .await
         .unwrap();
 
@@ -479,12 +513,18 @@ async fn test_stream_write_normal_flow_after_okay() {
 
     let pkt2 = out_rx.recv().await.unwrap();
     assert_eq!(pkt2.header.command, Command::Wrte);
-    assert_eq!(pkt2.header.arg0, local_id);
+    assert_eq!(pkt2.header.arg0, local_id.get());
     assert_eq!(pkt2.header.arg1, 100);
     assert_eq!(pkt2.payload, b"chunk2");
 
     in_tx
-        .send(Packet::new(Command::Okay, 100, local_id, Vec::new(), true))
+        .send(Packet::new(
+            Command::Okay,
+            100,
+            local_id.get(),
+            Vec::new(),
+            true,
+        ))
         .await
         .unwrap();
 
@@ -501,8 +541,12 @@ async fn test_stream_write_flow_stall_backpressure() {
 
     let (s1_tx, _s1_rx) = mpsc::unbounded_channel();
     let (s2_tx, _s2_rx) = mpsc::unbounded_channel();
-    let id1 = registry.allocate_with_remote(101, s1_tx).unwrap();
-    let id2 = registry.allocate_with_remote(102, s2_tx).unwrap();
+    let id1 = registry
+        .allocate_with_remote(RemoteId::from_u32(101).unwrap(), s1_tx)
+        .unwrap();
+    let id2 = registry
+        .allocate_with_remote(RemoteId::from_u32(102).unwrap(), s2_tx)
+        .unwrap();
 
     let reg_clone = Arc::clone(&registry);
     let router = PacketRouter::new(transport, reg_clone);
@@ -517,7 +561,7 @@ async fn test_stream_write_flow_stall_backpressure() {
 
     let pkt1 = out_rx.recv().await.unwrap();
     assert_eq!(pkt1.header.command, Command::Wrte);
-    assert_eq!(pkt1.header.arg0, id1);
+    assert_eq!(pkt1.header.arg0, id1.get());
 
     // Stream 1 immediately queues second write without OKAY having arrived
     let w1_c2 = writer1.clone();
@@ -533,12 +577,12 @@ async fn test_stream_write_flow_stall_backpressure() {
 
     let pkt2 = out_rx.recv().await.unwrap();
     assert_eq!(pkt2.header.command, Command::Wrte);
-    assert_eq!(pkt2.header.arg0, id2);
+    assert_eq!(pkt2.header.arg0, id2.get());
     assert_eq!(pkt2.payload, b"s2-pkt1");
 
     // Now send OKAY for stream 1
     in_tx
-        .send(Packet::new(Command::Okay, 101, id1, Vec::new(), true))
+        .send(Packet::new(Command::Okay, 101, id1.get(), Vec::new(), true))
         .await
         .unwrap();
 
@@ -547,12 +591,12 @@ async fn test_stream_write_flow_stall_backpressure() {
     // Stream 1's second write unblocks and emits WRTE
     let pkt3 = out_rx.recv().await.unwrap();
     assert_eq!(pkt3.header.command, Command::Wrte);
-    assert_eq!(pkt3.header.arg0, id1);
+    assert_eq!(pkt3.header.arg0, id1.get());
     assert_eq!(pkt3.payload, b"s1-pkt2");
 
     // Send OKAY for stream 1 second write
     in_tx
-        .send(Packet::new(Command::Okay, 101, id1, Vec::new(), true))
+        .send(Packet::new(Command::Okay, 101, id1.get(), Vec::new(), true))
         .await
         .unwrap();
 
@@ -568,7 +612,9 @@ async fn test_protocol_violation_back_to_back_wrte_terminates_transport() {
     let registry = Arc::new(StreamRegistry::new());
 
     let (s_tx, mut s_rx) = mpsc::unbounded_channel();
-    let local_id = registry.allocate_with_remote(200, s_tx).unwrap();
+    let local_id = registry
+        .allocate_with_remote(RemoteId::from_u32(200).unwrap(), s_tx)
+        .unwrap();
 
     let reg_clone = Arc::clone(&registry);
     let router_handle = tokio::spawn(async move {
@@ -581,7 +627,7 @@ async fn test_protocol_violation_back_to_back_wrte_terminates_transport() {
         .send(Packet::new(
             Command::Wrte,
             200,
-            local_id,
+            local_id.get(),
             b"first_write".to_vec(),
             true,
         ))
@@ -599,7 +645,7 @@ async fn test_protocol_violation_back_to_back_wrte_terminates_transport() {
         .send(Packet::new(
             Command::Wrte,
             200,
-            local_id,
+            local_id.get(),
             b"violating_write".to_vec(),
             true,
         ))

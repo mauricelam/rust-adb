@@ -3,7 +3,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::thread;
 
-use adb_server::{StreamError, StreamRegistry};
+use adb_proto::{LocalId, RemoteId};
+use adb_server::StreamRegistry;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct MockStream {
@@ -22,7 +23,7 @@ fn test_basic_allocation_and_lookup() {
         })
         .expect("allocate stream 1");
     // Local IDs start at 1, matching C++ ADB
-    assert_eq!(id1, 1);
+    assert_eq!(id1.get(), 1);
     assert_eq!(registry.count(), 1);
     assert!(!registry.is_empty());
 
@@ -31,20 +32,21 @@ fn test_basic_allocation_and_lookup() {
     assert_eq!(entry1.remote_id(), None);
     assert_eq!(entry1.handle().name, "stream1");
 
+    let rid42 = RemoteId::from_u32(42).unwrap();
     let id2 = registry
         .allocate_with_remote(
-            42,
+            rid42,
             MockStream {
                 name: "stream2".into(),
             },
         )
         .expect("allocate stream 2");
-    assert_eq!(id2, 2);
+    assert_eq!(id2.get(), 2);
     assert_eq!(registry.count(), 2);
 
     let entry2 = registry.get(id2).expect("stream 2 should exist");
     assert_eq!(entry2.local_id(), id2);
-    assert_eq!(entry2.remote_id(), Some(42));
+    assert_eq!(entry2.remote_id(), Some(rid42));
     assert_eq!(entry2.handle().name, "stream2");
 }
 
@@ -59,32 +61,32 @@ fn test_remote_id_update_and_find() {
 
     assert_eq!(registry.get(local_id).unwrap().remote_id(), None);
 
-    // find with remote_id = 0 matches regardless of remote_id (C++ find_local_socket semantics)
-    assert!(registry.find(local_id, 0).is_some());
-    // find with specific non-matching remote_id fails
-    assert!(registry.find(local_id, 100).is_none());
+    // find with None matches regardless of remote_id (C++ find_local_socket semantics)
+    assert!(registry.find(local_id, None).is_some());
 
-    // Remote ID cannot be 0 (C++ invalid remote socket id (0))
-    let err = registry.set_remote_id(local_id, 0).unwrap_err();
-    assert_eq!(err, StreamError::InvalidRemoteId);
+    let rid100 = RemoteId::from_u32(100).unwrap();
+    let rid101 = RemoteId::from_u32(101).unwrap();
+    // find with specific non-matching remote_id fails
+    assert!(registry.find(local_id, Some(rid100)).is_none());
 
     // Setting valid remote ID
     registry
-        .set_remote_id(local_id, 100)
+        .set_remote_id(local_id, rid100)
         .expect("set remote id");
-    assert_eq!(registry.get(local_id).unwrap().remote_id(), Some(100));
+    assert_eq!(registry.get(local_id).unwrap().remote_id(), Some(rid100));
 
-    // find with remote_id = 0 still matches
-    assert!(registry.find(local_id, 0).is_some());
+    // find with None still matches
+    assert!(registry.find(local_id, None).is_some());
     // find with matching remote_id matches
-    assert!(registry.find(local_id, 100).is_some());
+    assert!(registry.find(local_id, Some(rid100)).is_some());
     // find with different remote_id fails
-    assert!(registry.find(local_id, 101).is_none());
+    assert!(registry.find(local_id, Some(rid101)).is_none());
 
     // find_by_remote
-    let by_remote = registry.find_by_remote(100).expect("find by remote");
+    let by_remote = registry.find_by_remote(rid100).expect("find by remote");
     assert_eq!(by_remote.local_id(), local_id);
-    assert!(registry.find_by_remote(999).is_none());
+    let rid999 = RemoteId::from_u32(999).unwrap();
+    assert!(registry.find_by_remote(rid999).is_none());
 }
 
 #[test]
@@ -114,23 +116,11 @@ fn test_removal_and_reclamation() {
 
 #[test]
 fn test_id_bounds_and_zero_prohibition() {
-    let registry = StreamRegistry::<MockStream>::new();
-
-    // In ADB, 0 is reserved/sentinel (e.g. invalid local socket id or unassigned)
-    assert!(registry.get(0).is_none());
-    assert!(registry.find(0, 0).is_none());
-    assert!(registry.remove(0).is_none());
-
-    // Remote id 0 is prohibited when allocating with remote
-    let err = registry
-        .allocate_with_remote(
-            0,
-            MockStream {
-                name: "invalid".into(),
-            },
-        )
-        .unwrap_err();
-    assert_eq!(err, StreamError::InvalidRemoteId);
+    // In ADB, 0 is prohibited/unrepresentable for LocalId and RemoteId
+    assert!(LocalId::from_u32(0).is_none());
+    assert!(RemoteId::from_u32(0).is_none());
+    assert!("0".parse::<LocalId>().is_err());
+    assert!("0".parse::<RemoteId>().is_err());
 }
 
 #[test]
@@ -150,7 +140,6 @@ fn test_parallel_stream_id_generation_10000() {
                         name: format!("t{t}-s{i}"),
                     })
                     .expect("allocation should succeed");
-                assert_ne!(id, 0, "local id must never be 0");
                 allocated.push(id);
             }
             allocated
@@ -185,7 +174,6 @@ fn test_stream_reclamation_rapid_creation_and_teardown() {
                         name: format!("t{t}-s{i}"),
                     })
                     .expect("allocation should succeed");
-                assert_ne!(id, 0);
 
                 let entry = reg.get(id).expect("stream must exist");
                 assert_eq!(entry.local_id(), id);

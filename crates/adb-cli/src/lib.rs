@@ -3,7 +3,8 @@
 use adb_client::{
     resolve_server_address, AdbClient, ClientError, ClientEvent, DeviceSelection,
     ExternalBinaryLauncher, Outcome, PtyMode, ServerAddress, ServerAddressEnv,
-    ServerAddressOptions, ShellOptions, SyncSession, TrackDevicesMode, TransportSelector,
+    ServerAddressOptions, ShellOptions, SyncSession, TrackDevicesMode, TransportId,
+    TransportSelector,
 };
 use std::io::Write;
 use std::pin::Pin;
@@ -275,7 +276,7 @@ where
             let id = id_str
                 .parse::<u64>()
                 .map_err(|_| "invalid transport id".to_string())?;
-            transport_id = Some(id);
+            transport_id = TransportId::from_u64(id);
         } else if let Some(rest) = arg.strip_prefix("-H") {
             if !rest.is_empty() {
                 server_options.host = Some(rest.to_string());
@@ -1664,7 +1665,10 @@ mod tests {
 
         // -t attaches digit
         let (opts, remaining) = parse_global(vec!["-t99", "shell"], no_env).unwrap();
-        assert_eq!(opts.device_selection.transport_id, Some(99));
+        assert_eq!(
+            opts.device_selection.transport_id,
+            TransportId::from_u64(99)
+        );
         assert_eq!(remaining, vec!["shell"]);
 
         // -s requires arg
@@ -1731,7 +1735,10 @@ mod tests {
             env_with_serial,
         )
         .unwrap();
-        assert_eq!(opts.device_selection.selector, TransportSelector::Id(42));
+        assert_eq!(
+            opts.device_selection.selector,
+            TransportSelector::Id(TransportId::from_u64(42).unwrap())
+        );
     }
 
     #[test]

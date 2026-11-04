@@ -1,4 +1,5 @@
 use crate::transport::TransportSelector;
+use adb_proto::TransportId;
 
 /// Selection errors during device option argument parsing.
 ///
@@ -28,7 +29,7 @@ impl std::error::Error for SelectionError {}
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct DeviceSelection {
     pub serial: Option<String>,
-    pub transport_id: Option<u64>,
+    pub transport_id: Option<TransportId>,
     pub usb: bool,
     pub local: bool,
     pub selector: TransportSelector,
@@ -100,7 +101,7 @@ impl DeviceSelection {
                 let id = id_str
                     .parse::<u64>()
                     .map_err(|_| SelectionError::InvalidTransportId)?;
-                transport_id = Some(id);
+                transport_id = TransportId::from_u64(id);
             } else {
                 remaining.push(arg);
                 break;

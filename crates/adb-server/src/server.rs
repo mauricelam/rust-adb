@@ -12,8 +12,8 @@ use crate::registry::{DeviceEntry, DeviceRegistry, TransportId};
 use crate::tracker::{format_devices_raw, TrackerFormat};
 use crate::transport_type::TransportType;
 
-/// ADB server internal protocol version.
-pub const ADB_SERVER_VERSION: u32 = 41;
+/// Re-export ADB server internal protocol version from adb-proto.
+pub use adb_proto::ADB_SERVER_VERSION;
 
 /// Default ADB server port.
 pub const DEFAULT_SERVER_PORT: u16 = 5037;
@@ -87,8 +87,12 @@ pub fn parse_smart_socket_request(request: &str) -> SmartSocketRequest {
             let id_str = &rest[..colon_pos];
             let cmd = &rest[colon_pos + 1..];
             if let Ok(id) = id_str.parse::<u64>() {
+                let target = match TransportId::from_u64(id) {
+                    Some(tid) => TransportTarget::TransportId(tid),
+                    None => TransportTarget::Any,
+                };
                 SmartSocketRequest::Host {
-                    target: TransportTarget::TransportId(id),
+                    target,
                     service: cmd.to_string(),
                 }
             } else {
@@ -526,7 +530,11 @@ async fn handle_host_service(
             (true, TransportTarget::Serial(serial.to_string()))
         } else if let Some(id_str) = service.strip_prefix("transport-id:") {
             if let Ok(id) = id_str.parse::<u64>() {
-                (true, TransportTarget::TransportId(id))
+                let target = match TransportId::from_u64(id) {
+                    Some(tid) => TransportTarget::TransportId(tid),
+                    None => TransportTarget::Any,
+                };
+                (true, target)
             } else {
                 session
                     .stream

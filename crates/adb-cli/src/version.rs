@@ -12,7 +12,7 @@ pub const ADB_VERSION_MAJOR: u32 = 1;
 pub const ADB_VERSION_MINOR: u32 = 0;
 
 /// Internal server version (`ADB_SERVER_VERSION` in `original/adb.h`).
-pub const ADB_SERVER_VERSION: u32 = 41;
+pub use adb_proto::ADB_SERVER_VERSION;
 
 /// Platform tools version string (`PLATFORM_TOOLS_VERSION` in `original/adb.cpp`).
 pub const PLATFORM_TOOLS_VERSION: &str = "37.0.1";

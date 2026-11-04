@@ -5,6 +5,7 @@ pub mod handshake;
 pub mod tcp;
 pub mod transport;
 
+pub use adb_proto::{AdbPort, ConsolePort};
 pub use emulator::{
     console_port_for_adb_port, emulator_serial, scan_for_emulators, scan_for_emulators_with_config,
     DiscoveredEmulator, EmulatorScanConfig, DEFAULT_ADB_LOCAL_TRANSPORT_MAX_PORT,

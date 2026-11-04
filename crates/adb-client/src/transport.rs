@@ -1,3 +1,5 @@
+use adb_proto::TransportId;
+
 /// Specifies how a connection selects a device transport.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub enum TransportSelector {
@@ -11,7 +13,7 @@ pub enum TransportSelector {
     /// Specific device serial number (`host:tport:serial:<serial>`).
     Serial(String),
     /// Specific transport ID (`host:transport-id:<id>`).
-    Id(u64),
+    Id(TransportId),
 }
 
 impl TransportSelector {
@@ -26,7 +28,7 @@ impl TransportSelector {
 ///
 /// Precedence:
 /// - `TransportSelector::Id(id)` -> `host-transport-id:<id>:<cmd>`
-/// - `TransportSelector::Serial(serial)` -> `host-serial:<serial>:<cmd>`
+/// - `TransportSelector::Serial(serial)` -> `host-serial:{serial}:{cmd}`
 /// - `TransportSelector::Usb` -> `host-usb:<cmd>`
 /// - `TransportSelector::Local` -> `host-local:<cmd>`
 /// - `TransportSelector::Any` -> `host:<cmd>`
