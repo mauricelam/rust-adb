@@ -140,13 +140,19 @@ fn append_transport(t: &DeviceEntry, result: &mut String, long_listing: bool) {
         &t.serial
     };
 
+    let state_str = if t.state == ConnectionState::NoPerm {
+        crate::diagnose::usb_no_permissions_short_help_text()
+    } else {
+        t.state.as_str().to_string()
+    };
+
     if !long_listing {
         result.push_str(serial);
         result.push('\t');
-        result.push_str(t.state.as_str());
+        result.push_str(&state_str);
     } else {
         // android::base::StringAppendF(result, "%-22s %s", serial.c_str(), to_string(...));
-        let _ = write!(result, "{:<22} {}", serial, t.state.as_str());
+        let _ = write!(result, "{:<22} {}", serial, state_str);
         append_transport_info(result, "", t.devpath.as_deref(), false);
         append_transport_info(result, "product:", t.product.as_deref(), false);
         append_transport_info(result, "model:", t.model.as_deref(), true);

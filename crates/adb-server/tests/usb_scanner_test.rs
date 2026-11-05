@@ -290,3 +290,57 @@ async fn test_mutant_ignoring_detach_fails() {
         "detach event must unregister the device"
     );
 }
+
+#[tokio::test]
+async fn test_usb_scanner_permission_denied_registered_as_no_perm() {
+    let mock_backend = Arc::new(MockUsbBackend::new());
+    let registry = Arc::new(DeviceRegistry::new());
+
+    let dev = UsbDeviceInfo {
+        bus_number: 1,
+        device_address: 4,
+        device_path: "usb:1-4".to_string(),
+        vendor_id: 0x18d1,
+        product_id: 0x4ee7,
+        serial: None,
+        interfaces: vec![make_adb_interface()],
+    };
+
+    mock_backend.set_devices(vec![dev]).await;
+    mock_backend
+        .set_open_error(Some(adb_transport::UsbError::PermissionDenied))
+        .await;
+
+    let scanner = UsbDeviceScanner::new(mock_backend, Arc::clone(&registry));
+    let registered = scanner.scan_once().await.expect("scan success");
+    assert_eq!(registered, 1);
+
+    // Device should be registered using its devpath when serial is unavailable
+    let entry = registry
+        .get_by_serial("usb:1-4")
+        .expect("device should be registered under devpath");
+    assert_eq!(entry.state, adb_server::ConnectionState::NoPerm);
+
+    // Short devices listing should include exact C++ short help text
+    let devices = registry.list_devices();
+    let short_bytes = adb_server::format_devices_raw(&devices, TrackerFormat::ShortText);
+    let short_str = String::from_utf8_lossy(&short_bytes);
+    let expected_short = adb_server::usb_no_permissions_short_help_text();
+    assert_eq!(short_str, format!("usb:1-4\t{expected_short}\n"));
+
+    // Long devices listing should format properly
+    let long_bytes = adb_server::format_devices_raw(&devices, TrackerFormat::LongText);
+    let long_str = String::from_utf8_lossy(&long_bytes);
+    assert!(long_str.contains("usb:1-4"));
+    assert!(long_str.contains(&expected_short));
+
+    // Transport acquisition for shell should fail with exact C++ long help text
+    let err = adb_server::server::acquire_one_transport(
+        &registry,
+        &adb_server::server::TransportTarget::Any,
+        false,
+    )
+    .unwrap_err();
+    let expected_long = adb_server::usb_no_permissions_long_help_text();
+    assert_eq!(err, expected_long);
+}

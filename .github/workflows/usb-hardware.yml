@@ -1,0 +1,124 @@
+name: USB Hardware Tests
+
+on:
+  workflow_dispatch:
+  schedule:
+    # Run nightly at 03:00 UTC
+    - cron: '0 3 * * *'
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  usb-linux:
+    name: USB Hardware Tests (Linux)
+    runs-on: [self-hosted, usb-linux]
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Verify USB device attached (Linux)
+        shell: bash
+        run: |
+          echo "Checking for attached ADB USB devices..."
+          # Check via lsusb or sysfs. Interface class 0xff, subclass 0x42, protocol 0x01
+          FOUND=0
+          if command -v lsusb >/dev/null 2>&1; then
+            if lsusb -v 2>/dev/null | grep -E "bInterfaceClass\s+255\s+Vendor\s+Specific\s+Class" -A 4 | grep -E "bInterfaceSubClass\s+66" -A 2 | grep -qE "bInterfaceProtocol\s+1"; then
+              FOUND=1
+            fi
+          fi
+          if [ "$FOUND" -eq 0 ]; then
+            # Direct sysfs scan fallback
+            for dev in /sys/bus/usb/devices/*; do
+              if [ -f "$dev/bInterfaceClass" ]; then
+                cls=$(cat "$dev/bInterfaceClass" 2>/dev/null || true)
+                subcls=$(cat "$dev/bInterfaceSubClass" 2>/dev/null || true)
+                proto=$(cat "$dev/bInterfaceProtocol" 2>/dev/null || true)
+                if [ "$cls" = "ff" ] && [ "$subcls" = "42" ] && [ "$proto" = "01" ]; then
+                  FOUND=1
+                  break
+                fi
+              fi
+            done
+          fi
+          if [ "$FOUND" -eq 0 ]; then
+            echo "::error::No attached ADB USB device found on runner. Failing immediately instead of timing out."
+            exit 1
+          fi
+          echo "ADB USB device detected."
+
+      - name: Run USB hardware tests (Linux)
+        shell: bash
+        run: |
+          cargo test -p adb-transport --features usb --test usb_hw_test -- --ignored --nocapture 2>&1 | tee linux-usb-output.log
+
+      - name: Upload test output (Linux)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: usb-linux-hardware-log
+          path: linux-usb-output.log
+
+  usb-macos:
+    name: USB Hardware Tests (macOS)
+    runs-on: [self-hosted, usb-macos]
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Verify USB device attached (macOS)
+        shell: bash
+        run: |
+          echo "Checking for attached ADB USB devices..."
+          if ! system_profiler SPUSBDataType 2>/dev/null | grep -iqE "(android|adb|google)"; then
+            echo "::error::No attached ADB USB device found on macOS runner. Failing immediately instead of timing out."
+            exit 1
+          fi
+          echo "ADB USB device detected."
+
+      - name: Run USB hardware tests (macOS)
+        shell: bash
+        run: |
+          cargo test -p adb-transport --features usb --test usb_hw_test -- --ignored --nocapture 2>&1 | tee macos-usb-output.log
+
+      - name: Upload test output (macOS)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: usb-macos-hardware-log
+          path: macos-usb-output.log
+
+  usb-windows:
+    name: USB Hardware Tests (Windows)
+    runs-on: [self-hosted, usb-windows]
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Verify USB device attached (Windows)
+        shell: powershell
+        run: |
+          Write-Host "Checking for attached ADB USB devices..."
+          $dev = Get-PnpDevice -PresentOnly | Where-Object { $_.Class -match "Android" -or $_.Service -match "WinUSB" -or $_.FriendlyName -match "ADB" }
+          if (-not $dev) {
+            Write-Error "No attached ADB USB device found on Windows runner. Failing immediately instead of timing out."
+            exit 1
+          }
+          Write-Host "ADB USB device detected: $($dev.FriendlyName)"
+
+      - name: Run USB hardware tests (Windows)
+        shell: powershell
+        run: |
+          cargo test -p adb-transport --features usb --test usb_hw_test -- --ignored --nocapture 2>&1 | Tee-Object -FilePath windows-usb-output.log
+
+      - name: Upload test output (Windows)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: usb-windows-hardware-log
+          path: windows-usb-output.log
