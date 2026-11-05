@@ -10,7 +10,7 @@ use std::fmt;
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
-use tokio::sync::Mutex;
+use tokio::sync::{mpsc, Mutex};
 
 /// USB Class code for ADB (Vendor Specific: 0xFF).
 pub const ADB_CLASS: u8 = 0xFF;
@@ -148,6 +148,15 @@ pub struct UsbDeviceInfo {
     pub serial: Option<String>,
     /// Available interfaces.
     pub interfaces: Vec<UsbInterfaceInfo>,
+}
+
+/// Hotplug event emitted when a USB device is attached or detached.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum UsbHotplugEvent {
+    /// A new USB device has been attached to the bus.
+    Attached(UsbDeviceInfo),
+    /// A USB device has been detached from the bus, identified by device path or address.
+    Detached(String),
 }
 
 /// Information on a matched ADB interface and its bulk endpoints.
@@ -324,6 +333,18 @@ pub trait UsbBackend: Send + Sync {
         &'a self,
         device: &'a UsbDeviceInfo,
     ) -> Pin<Box<dyn Future<Output = Result<Box<dyn UsbDeviceHandle>, UsbError>> + Send + 'a>>;
+
+    /// Subscribes to attach and detach hotplug events.
+    ///
+    /// If native hotplug callbacks are unavailable, implementations provide a polling fallback.
+    fn subscribe_hotplug_events(
+        &self,
+    ) -> Pin<Box<dyn Future<Output = Result<mpsc::UnboundedReceiver<UsbHotplugEvent>, UsbError>> + Send + '_>> {
+        Box::pin(async move {
+            let (_tx, rx) = mpsc::unbounded_channel();
+            Ok(rx)
+        })
+    }
 }
 
 /// Record of a bulk transfer performed on `MockUsbDeviceHandle`.
@@ -441,6 +462,7 @@ pub struct MockUsbBackend {
     devices: Arc<Mutex<Vec<UsbDeviceInfo>>>,
     list_error: Arc<Mutex<Option<UsbError>>>,
     open_error: Arc<Mutex<Option<UsbError>>>,
+    event_senders: Arc<Mutex<Vec<mpsc::UnboundedSender<UsbHotplugEvent>>>>,
 }
 
 impl MockUsbBackend {
@@ -466,6 +488,12 @@ impl MockUsbBackend {
         let mut lock = self.open_error.lock().await;
         *lock = error;
     }
+
+    /// Emits a hotplug event to all active event subscribers.
+    pub async fn emit_event(&self, event: UsbHotplugEvent) {
+        let mut senders = self.event_senders.lock().await;
+        senders.retain(|tx| tx.send(event.clone()).is_ok());
+    }
 }
 
 impl UsbBackend for MockUsbBackend {
@@ -490,6 +518,17 @@ impl UsbBackend for MockUsbBackend {
                 return Err(err);
             }
             Ok(Box::new(MockUsbDeviceHandle::default()) as Box<dyn UsbDeviceHandle>)
+        })
+    }
+
+    fn subscribe_hotplug_events(
+        &self,
+    ) -> Pin<Box<dyn Future<Output = Result<mpsc::UnboundedReceiver<UsbHotplugEvent>, UsbError>> + Send + '_>> {
+        Box::pin(async move {
+            let (tx, rx) = mpsc::unbounded_channel();
+            let mut senders = self.event_senders.lock().await;
+            senders.push(tx);
+            Ok(rx)
         })
     }
 }

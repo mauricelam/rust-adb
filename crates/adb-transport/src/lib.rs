@@ -25,8 +25,8 @@ pub use transport::{
 pub use usb::{
     find_adb_interface, is_adb_interface, AdbInterfaceMatch, EndpointDirection, EndpointType,
     MockUsbBackend, MockUsbDeviceHandle, RecordedTransfer, UsbBackend, UsbDeviceHandle,
-    UsbDeviceInfo, UsbEndpointInfo, UsbError, UsbInterfaceInfo, ADB_CLASS, ADB_DBC_CLASS,
-    ADB_DBC_SUBCLASS, ADB_PROTOCOL, ADB_SUBCLASS,
+    UsbDeviceInfo, UsbEndpointInfo, UsbError, UsbHotplugEvent, UsbInterfaceInfo, ADB_CLASS,
+    ADB_DBC_CLASS, ADB_DBC_SUBCLASS, ADB_PROTOCOL, ADB_SUBCLASS,
 };
 pub use usb_transport::UsbTransport;
 
