@@ -641,7 +641,7 @@ where
 
             print_events(&outcome.events, &mut output.stderr);
             match outcome.result {
-                Ok(code) => code,
+                Ok(code) => code.as_i32(),
                 Err(err) => {
                     let err_msg = err.to_string();
                     if err_msg.contains("only supports allocating a pty") {

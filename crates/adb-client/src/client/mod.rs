@@ -16,7 +16,7 @@ pub use device_tracker::TrackDevicesMode;
 pub use error::{ClientError, ClientErrorKind, LaunchError};
 pub use events::{ClientEvent, Outcome};
 pub use forward::{forward_dest_is_featured, forward_targets_are_valid};
-pub use shell::{escape_arg, ShellOptions};
+pub use shell::{escape_arg, ExitCode, ShellOptions};
 
 /// Re-export ADB server version and newtype from `adb_proto`.
 pub use adb_proto::{ADB_SERVER_VERSION, SERVER_VERSION};
