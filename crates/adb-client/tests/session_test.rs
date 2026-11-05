@@ -221,12 +221,12 @@ async fn test_mock_adbd_transport_switch_success() {
     };
 
     // Connect session, select device by serial with host:tport:serial:<addr>
-    let mut session = timeout(Duration::from_secs(5), Session::connect(&addr))
+    let session = timeout(Duration::from_secs(5), Session::connect(&addr))
         .await
         .expect("test timed out")
         .expect("connect to server failed");
 
-    let transport_id = session
+    let (session, transport_id) = session
         .select_transport(&TransportSelector::Serial(mock.addr.clone()))
         .await
         .expect("select_transport by serial failed");
@@ -237,12 +237,12 @@ async fn test_mock_adbd_transport_switch_success() {
     );
 
     // Send service over selected transport
-    session
+    let awaiting = session
         .send_service("shell:echo hello")
         .await
         .expect("send_service failed");
 
-    session
+    let _ready = awaiting
         .read_status()
         .await
         .expect("read_status after shell service failed");
@@ -266,10 +266,10 @@ async fn test_fake_server_invalid_status() {
         port,
     };
 
-    let mut session = Session::connect(&addr).await.unwrap();
-    session.send_service("host:version").await.unwrap();
+    let session = Session::connect(&addr).await.unwrap();
+    let awaiting = session.send_service("host:version").await.unwrap();
 
-    let err = session
+    let err = awaiting
         .read_status()
         .await
         .expect_err("should fail on invalid status");
@@ -295,10 +295,10 @@ async fn test_fake_server_closed_before_status() {
         port,
     };
 
-    let mut session = Session::connect(&addr).await.unwrap();
-    session.send_service("host:version").await.unwrap();
+    let session = Session::connect(&addr).await.unwrap();
+    let awaiting = session.send_service("host:version").await.unwrap();
 
-    let err = session
+    let err = awaiting
         .read_status()
         .await
         .expect_err("should fail on closed connection");
@@ -327,10 +327,10 @@ async fn test_fake_server_fail_empty_reason() {
         port,
     };
 
-    let mut session = Session::connect(&addr).await.unwrap();
-    session.send_service("host:version").await.unwrap();
+    let session = Session::connect(&addr).await.unwrap();
+    let awaiting = session.send_service("host:version").await.unwrap();
 
-    let err = session
+    let err = awaiting
         .read_status()
         .await
         .expect_err("should fail on FAIL status");
@@ -362,4 +362,69 @@ async fn test_bad_service_name_length() {
         err_oversized.to_string(),
         format!("bad service name length ({})", adb_proto::MAX_PAYLOAD + 1)
     );
+}
+
+#[tokio::test]
+async fn test_in_memory_client_session_without_socket() {
+    use adb_client::{AdbClient, BoxedStream, ServerLauncher, Session, SessionFactory};
+    use std::future::Future;
+    use std::pin::Pin;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    struct InMemorySessionFactory;
+
+    impl SessionFactory for InMemorySessionFactory {
+        fn connect<'a>(
+            &'a self,
+            _addr: &'a ServerAddress,
+        ) -> adb_client::client::ConnectFuture<'a> {
+            Box::pin(async move {
+                let (client_stream, mut server_stream) = tokio::io::duplex(4096);
+
+                tokio::spawn(async move {
+                    let mut buf = [0u8; 128];
+                    let n = server_stream.read(&mut buf).await.unwrap();
+                    let req = String::from_utf8_lossy(&buf[..n]);
+                    if req.contains("host:version") {
+                        server_stream.write_all(b"OKAY00040029").await.unwrap();
+                    } else if req.contains("host:devices") {
+                        server_stream
+                            .write_all(b"OKAY0013mock_device\tdevice\n")
+                            .await
+                            .unwrap();
+                    }
+                });
+
+                Ok(Session::new(Box::new(client_stream) as BoxedStream))
+            })
+        }
+    }
+
+    struct NoOpLauncher;
+    impl ServerLauncher for NoOpLauncher {
+        fn launch<'a>(
+            &'a self,
+            _spec: &'a str,
+            _listen_all: bool,
+            _one_device: Option<&'a str>,
+        ) -> Pin<Box<dyn Future<Output = Result<(), adb_client::LaunchError>> + Send + 'a>>
+        {
+            Box::pin(async move { Ok(()) })
+        }
+    }
+
+    let addr = ServerAddress {
+        host: None,
+        port: 5037,
+    };
+
+    let client = AdbClient::builder(addr)
+        .session_factory(InMemorySessionFactory)
+        .launcher(NoOpLauncher)
+        .build();
+
+    let outcome = client.devices(false).await;
+    assert!(outcome.result.is_ok());
+    let list = outcome.result.unwrap();
+    assert_eq!(list, "List of devices attached\nmock_device\tdevice\n\n");
 }

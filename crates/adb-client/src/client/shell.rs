@@ -1,6 +1,7 @@
 use super::error::ClientError;
 use super::events::Outcome;
 use super::AdbClient;
+use crate::session::Session;
 use crate::shell_interactive::{EscapeChar, PtyKind, PtyMode, ShellProtocol};
 use crate::transport::TransportSelector;
 
@@ -248,18 +249,33 @@ impl AdbClient {
             .as_ref()
             .and_then(|r| crate::shell_interactive::find_tty_fd(r));
 
+        #[cfg(unix)]
+        let _raw_guard = if pty_dec.raw_stdin {
+            stdin_tty_fd.and_then(|fd| {
+                use std::os::fd::BorrowedFd;
+                unsafe {
+                    crate::shell_interactive::RawTerminalGuard::new(BorrowedFd::borrow_raw(fd))
+                }
+            })
+        } else {
+            None
+        };
+        #[cfg(not(unix))]
         let _raw_guard = if pty_dec.raw_stdin {
             stdin_tty_fd.and_then(crate::shell_interactive::RawTerminalGuard::new)
         } else {
             None
         };
 
-        let mut session = self.session_factory.connect(&self.addr).await?;
-        session.select_transport(selector).await?;
-        session.send_service(service_string).await?;
-        session.read_status().await?;
+        let session = Session::open(
+            self.session_factory.as_ref(),
+            &self.addr,
+            selector,
+            service_string,
+        )
+        .await?;
 
-        let stream = session.into_inner();
+        let stream = session.into_stream();
         let (mut read_half, mut write_half) = tokio::io::split(stream);
 
         let mut stdin_reader = stdin;
@@ -281,7 +297,17 @@ impl AdbClient {
             // Send initial window size if available and requesting PTY
             if pty_dec.is_pty() {
                 if let Some(fd) = stdin_tty_fd {
-                    if let Some((r, c, x, y)) = crate::shell_interactive::get_window_size(fd) {
+                    #[cfg(unix)]
+                    let ws_opt = {
+                        use std::os::fd::BorrowedFd;
+                        crate::shell_interactive::get_window_size(unsafe {
+                            BorrowedFd::borrow_raw(fd)
+                        })
+                    };
+                    #[cfg(not(unix))]
+                    let ws_opt = crate::shell_interactive::get_window_size(fd);
+
+                    if let Some((r, c, x, y)) = ws_opt {
                         let payload = crate::shell_interactive::format_window_size(r, c, x, y);
                         let winsz_pkt = adb_proto::ShellPacket::new(
                             adb_proto::ShellPacketId::WindowSizeChange,
@@ -302,12 +328,15 @@ impl AdbClient {
             let sigwinch_task = if pty_dec.is_pty() {
                 stdin_tty_fd.map(|fd| {
                     tokio::spawn(async move {
+                        use std::os::fd::BorrowedFd;
                         if let Ok(mut sig) = tokio::signal::unix::signal(
                             tokio::signal::unix::SignalKind::window_change(),
                         ) {
                             while sig.recv().await.is_some() {
                                 if let Some((r, c, x, y)) =
-                                    crate::shell_interactive::get_window_size(fd)
+                                    crate::shell_interactive::get_window_size(unsafe {
+                                        BorrowedFd::borrow_raw(fd)
+                                    })
                                 {
                                     let payload =
                                         crate::shell_interactive::format_window_size(r, c, x, y);
@@ -530,12 +559,10 @@ impl AdbClient {
 
         self.with_server(async move {
             use crate::session::SessionError;
-            let mut session = self.session_factory.connect(&self.addr).await?;
-            session.select_transport(selector).await?;
-            session.send_service(&cmd).await?;
-            session.read_status().await?;
+            let session =
+                Session::open(self.session_factory.as_ref(), &self.addr, selector, &cmd).await?;
 
-            let mut stream = session.into_inner();
+            let mut stream = session.into_stream();
             tokio::io::copy(&mut stdin, &mut stream)
                 .await
                 .map_err(|e| ClientError::Session(SessionError::WriteFailure(e)))?;
@@ -572,12 +599,10 @@ impl AdbClient {
 
         self.with_server(async move {
             use crate::session::SessionError;
-            let mut session = self.session_factory.connect(&self.addr).await?;
-            session.select_transport(selector).await?;
-            session.send_service(&cmd).await?;
-            session.read_status().await?;
+            let session =
+                Session::open(self.session_factory.as_ref(), &self.addr, selector, &cmd).await?;
 
-            let mut stream = session.into_inner();
+            let mut stream = session.into_stream();
             tokio::io::copy(&mut stream, &mut stdout)
                 .await
                 .map_err(|e| ClientError::Session(SessionError::ReadStatusFailed(e)))?;
