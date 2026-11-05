@@ -82,6 +82,7 @@ dependencies = [
  "adb-auth",
  "adb-proto",
  "adb-transport",
+ "libc",
  "parking_lot",
  "rand 0.8.8",
  "rsa",

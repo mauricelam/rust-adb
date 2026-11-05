@@ -867,7 +867,7 @@ pub fn acquire_one_transport(
 
     for t in all_devices {
         if t.state == crate::state::ConnectionState::NoPerm {
-            default_error = "insufficient permissions for device".to_string();
+            default_error = crate::diagnose::usb_no_permissions_long_help_text();
             continue;
         }
 

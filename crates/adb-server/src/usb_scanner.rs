@@ -43,18 +43,44 @@ impl UsbDeviceScanner {
     }
 
     /// Handles attaching a discovered USB device.
-    pub fn handle_device_attached(&self, dev: &UsbDeviceInfo) -> bool {
+    pub async fn handle_device_attached(&self, dev: &UsbDeviceInfo) -> bool {
         if find_adb_interface(&dev.interfaces).is_none() {
             return false;
         }
 
+        // Attempt to open device to determine permissions
+        let open_res = self.backend.open(dev).await;
+        let is_no_perm = matches!(open_res, Err(adb_transport::UsbError::PermissionDenied));
+
         let serial = match dev.serial.as_deref() {
-            Some(s) if !s.is_empty() => s,
-            _ => return false,
+            Some(s) if !s.is_empty() => s.to_string(),
+            _ => {
+                if is_no_perm {
+                    // On Linux, if permission is denied, serial is inaccessible from descriptor,
+                    // so devpath is used as the identifier.
+                    dev.device_path.clone()
+                } else {
+                    return false;
+                }
+            }
         };
 
+        if is_no_perm {
+            let res = self.registry.register_with_devpath(
+                &serial,
+                TransportType::Usb,
+                Some(dev.device_path.clone()),
+            );
+            if let Ok(tid) = res {
+                self.registry
+                    .update_state(tid, crate::state::ConnectionState::NoPerm);
+                return true;
+            }
+            return false;
+        }
+
         self.registry
-            .register_with_devpath(serial, TransportType::Usb, Some(dev.device_path.clone()))
+            .register_with_devpath(&serial, TransportType::Usb, Some(dev.device_path.clone()))
             .is_ok()
     }
 
@@ -84,17 +110,36 @@ impl UsbDeviceScanner {
                 continue;
             }
 
+            let open_res = self.backend.open(&dev).await;
+            let is_no_perm = matches!(open_res, Err(adb_transport::UsbError::PermissionDenied));
+
             let serial = match dev.serial.as_deref() {
-                Some(s) if !s.is_empty() => s,
-                _ => continue,
+                Some(s) if !s.is_empty() => s.to_string(),
+                _ => {
+                    if is_no_perm {
+                        dev.device_path.clone()
+                    } else {
+                        continue;
+                    }
+                }
             };
 
             current_paths.insert(dev.device_path.clone());
-            current_serials.insert(serial.to_string());
+            current_serials.insert(serial.clone());
 
-            if self
+            if is_no_perm {
+                if let Ok(tid) = self.registry.register_with_devpath(
+                    &serial,
+                    TransportType::Usb,
+                    Some(dev.device_path),
+                ) {
+                    self.registry
+                        .update_state(tid, crate::state::ConnectionState::NoPerm);
+                    registered_count += 1;
+                }
+            } else if self
                 .registry
-                .register_with_devpath(serial, TransportType::Usb, Some(dev.device_path))
+                .register_with_devpath(&serial, TransportType::Usb, Some(dev.device_path))
                 .is_ok()
             {
                 registered_count += 1;
@@ -137,7 +182,7 @@ impl UsbDeviceScanner {
                         }
                     }
                 }
-                let _ = self.handle_device_attached(&dev);
+                let _ = self.handle_device_attached(&dev).await;
             }
             UsbHotplugEvent::Detached(path_or_serial) => {
                 let _ = self.handle_device_detached(&path_or_serial);
