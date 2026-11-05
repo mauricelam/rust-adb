@@ -158,3 +158,135 @@ async fn test_usb_devices_sort_before_local_in_tracker() {
     assert!(lines[0].starts_with("USB_DEVICE_A\t"));
     assert!(lines[1].starts_with("127.0.0.1:5555\t"));
 }
+
+#[tokio::test]
+async fn test_hotplug_events_attach_and_detach_updates_registry_and_tracker() {
+    let mock_backend = Arc::new(MockUsbBackend::new());
+    let registry = Arc::new(DeviceRegistry::new());
+
+    // Subscribe to device tracker
+    let mut tracker_rx = registry.subscribe(TrackerFormat::ShortText);
+    // Read initial empty tracker state
+    let initial = tracker_rx.recv().await.expect("initial tracker");
+    assert_eq!(initial, b"0000");
+
+    let scanner = Arc::new(UsbDeviceScanner::with_debounce(
+        Arc::clone(&mock_backend) as Arc<dyn adb_transport::UsbBackend>,
+        Arc::clone(&registry),
+        std::time::Duration::from_millis(5),
+    ));
+
+    // Spawn scanner in background
+    let scanner_clone = Arc::clone(&scanner);
+    let run_handle = tokio::spawn(async move {
+        scanner_clone
+            .run(std::time::Duration::from_millis(20))
+            .await;
+    });
+
+    let dev = UsbDeviceInfo {
+        bus_number: 1,
+        device_address: 4,
+        device_path: "usb:1-4".to_string(),
+        vendor_id: 0x18d1,
+        product_id: 0x4ee7,
+        serial: Some("HOTPLUG_DEVICE_1".to_string()),
+        interfaces: vec![make_adb_interface()],
+    };
+
+    // 1. Device appears after server starts
+    mock_backend.set_devices(vec![dev.clone()]).await;
+    mock_backend
+        .emit_event(adb_transport::UsbHotplugEvent::Attached(dev.clone()))
+        .await;
+
+    // Tracker should receive update containing the new device
+    let update = tracker_rx.recv().await.expect("tracker update on attach");
+    let update_str = String::from_utf8_lossy(&update);
+    assert!(
+        update_str.contains("HOTPLUG_DEVICE_1\toffline"),
+        "tracker received device arrival"
+    );
+
+    let reg_dev = registry
+        .get_by_serial("HOTPLUG_DEVICE_1")
+        .expect("device in registry");
+    assert_eq!(reg_dev.devpath.as_deref(), Some("usb:1-4"));
+
+    // 2. Device disappears
+    mock_backend.set_devices(vec![]).await;
+    mock_backend
+        .emit_event(adb_transport::UsbHotplugEvent::Detached(
+            "usb:1-4".to_string(),
+        ))
+        .await;
+
+    // Tracker should receive update indicating empty device list
+    let detach_update = tracker_rx.recv().await.expect("tracker update on detach");
+    let detach_str = String::from_utf8_lossy(&detach_update);
+    assert_eq!(detach_str, "0000", "tracker empty on detach");
+    assert!(registry.get_by_serial("HOTPLUG_DEVICE_1").is_none());
+
+    run_handle.abort();
+}
+
+#[tokio::test]
+async fn test_hotplug_debounce_rapid_attach_detach_leaves_clean_state() {
+    let mock_backend = Arc::new(MockUsbBackend::new());
+    let registry = Arc::new(DeviceRegistry::new());
+
+    let scanner = UsbDeviceScanner::with_debounce(
+        Arc::clone(&mock_backend) as Arc<dyn adb_transport::UsbBackend>,
+        Arc::clone(&registry),
+        std::time::Duration::from_millis(30),
+    );
+
+    let dev = UsbDeviceInfo {
+        bus_number: 1,
+        device_address: 6,
+        device_path: "usb:1-6".to_string(),
+        vendor_id: 0x18d1,
+        product_id: 0x4ee7,
+        serial: Some("FLAPPING_DEV".to_string()),
+        interfaces: vec![make_adb_interface()],
+    };
+
+    // Device appears briefly, but disappears before debounce completes
+    mock_backend.set_devices(vec![]).await; // already gone in backend
+    scanner
+        .process_hotplug_event(adb_transport::UsbHotplugEvent::Attached(dev))
+        .await;
+
+    // Due to debounce check, device should NOT be registered
+    assert!(registry.get_by_serial("FLAPPING_DEV").is_none());
+}
+
+#[tokio::test]
+async fn test_mutant_ignoring_detach_fails() {
+    let registry = Arc::new(DeviceRegistry::new());
+    registry
+        .register_with_devpath(
+            "DETACH_TEST",
+            TransportType::Usb,
+            Some("usb:1-9".to_string()),
+        )
+        .unwrap();
+
+    let mock_backend = Arc::new(MockUsbBackend::new());
+    let scanner = UsbDeviceScanner::with_debounce(
+        mock_backend,
+        Arc::clone(&registry),
+        std::time::Duration::from_millis(0),
+    );
+
+    // If detach is processed, device is unregistered
+    scanner
+        .process_hotplug_event(adb_transport::UsbHotplugEvent::Detached(
+            "usb:1-9".to_string(),
+        ))
+        .await;
+    assert!(
+        registry.get_by_serial("DETACH_TEST").is_none(),
+        "detach event must unregister the device"
+    );
+}

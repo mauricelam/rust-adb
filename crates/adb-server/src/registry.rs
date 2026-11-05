@@ -324,6 +324,26 @@ impl DeviceRegistry {
         }
     }
 
+    /// Unregisters a device by its device path (e.g. `usb:1-2`).
+    pub fn unregister_by_devpath(&self, devpath: &str) -> Option<Arc<DeviceEntry>> {
+        let mut inner = self.inner.write();
+        let target_id = inner.by_id.iter().find_map(|(id, entry)| {
+            if entry.devpath.as_deref() == Some(devpath) {
+                Some(*id)
+            } else {
+                None
+            }
+        })?;
+
+        if let Some(entry) = inner.by_id.remove(&target_id) {
+            inner.by_serial.remove(&entry.serial);
+            self.notify_subscribers(&mut inner);
+            Some(entry)
+        } else {
+            None
+        }
+    }
+
     /// Unregisters a device by its serial number.
     pub fn unregister_by_serial(&self, serial: &str) -> Option<Arc<DeviceEntry>> {
         let mut inner = self.inner.write();
