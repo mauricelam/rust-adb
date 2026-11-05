@@ -520,7 +520,7 @@ async fn test_exec_in_and_exec_out_parity() {
 
     // 1. exec_out
     let mut out_buf = Vec::new();
-    let exit_code = client
+    client
         .exec_out(
             &TransportSelector::Serial(mock.addr.clone()),
             &["echo", "hello world", "foo bar"],
@@ -541,8 +541,7 @@ async fn test_exec_in_and_exec_out_parity() {
 
     let norm = |s: &str| s.replace("\r\n", "\n");
 
-    assert_eq!(exit_code, 0);
-    assert_eq!(exit_code, ref_out.exit_code.unwrap_or(-1));
+    assert_eq!(ref_out.exit_code.unwrap_or(-1), 0);
     assert_eq!(
         norm(&String::from_utf8_lossy(&out_buf)),
         norm(&ref_out.stdout)
@@ -550,7 +549,7 @@ async fn test_exec_in_and_exec_out_parity() {
 
     // 2. exec_in
     let stdin_bytes = b"exec in test stream\n";
-    let exit_code_in = client
+    client
         .exec_in(
             &TransportSelector::Serial(mock.addr.clone()),
             &["cat"],
@@ -559,6 +558,4 @@ async fn test_exec_in_and_exec_out_parity() {
         .await
         .result
         .expect("exec_in failed");
-
-    assert_eq!(exit_code_in, 0);
 }

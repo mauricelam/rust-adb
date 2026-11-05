@@ -14,8 +14,8 @@ pub use client::{
     check_server_version, check_server_version_with_options, escape_arg, forward_dest_is_featured,
     forward_targets_are_valid, kill_server, start_server, start_server_with_one_device,
     start_server_with_options, AdbClient, AdbClientBuilder, ClientError, ClientErrorKind,
-    ClientEvent, DefaultSessionFactory, ExternalBinaryLauncher, LaunchConfig, LaunchError, Outcome,
-    SelfExecLauncher, ServerLauncher, SessionFactory, ShellOptions, TrackDevicesMode,
+    ClientEvent, DefaultSessionFactory, ExitCode, ExternalBinaryLauncher, LaunchConfig, LaunchError,
+    Outcome, SelfExecLauncher, ServerLauncher, SessionFactory, ShellOptions, TrackDevicesMode,
     ADB_SERVER_VERSION,
 };
 pub use device_selection::{DeviceSelection, SelectionError};
