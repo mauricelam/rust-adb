@@ -1,4 +1,5 @@
 use crate::client::{ClientError, ShellOptions};
+use adb_proto::WindowSize;
 
 /// Mode for PTY allocation requested by client options (`-t`, `-tt`, `-T`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -147,13 +148,6 @@ pub fn determine_pty_allocation(
     })
 }
 
-/// Formats window size for `ShellPacketId::WindowSizeChange`.
-///
-/// Text format: `<rows>x<cols>,<xpixels>x<ypixels>\0` matching C++ `send_window_size_change`.
-pub fn format_window_size(rows: u16, cols: u16, xpixel: u16, ypixel: u16) -> Vec<u8> {
-    format!("{rows}x{cols},{xpixel}x{ypixel}\0").into_bytes()
-}
-
 /// Guard object that sets local terminal to raw mode and restores original attributes on drop.
 #[cfg(unix)]
 pub struct RawTerminalGuard {
@@ -212,17 +206,22 @@ impl RawTerminalGuard {
 
 /// Reads current terminal window size using `TIOCGWINSZ`.
 #[cfg(unix)]
-pub fn get_window_size(fd: std::os::fd::RawFd) -> Option<(u16, u16, u16, u16)> {
+pub fn get_window_size(fd: std::os::fd::RawFd) -> Option<WindowSize> {
     let mut ws: libc::winsize = unsafe { std::mem::zeroed() };
     if unsafe { libc::ioctl(fd, libc::TIOCGWINSZ, &mut ws) } == 0 {
-        Some((ws.ws_row, ws.ws_col, ws.ws_xpixel, ws.ws_ypixel))
+        Some(WindowSize::new(
+            ws.ws_row,
+            ws.ws_col,
+            ws.ws_xpixel,
+            ws.ws_ypixel,
+        ))
     } else {
         None
     }
 }
 
 #[cfg(not(unix))]
-pub fn get_window_size(_fd: i32) -> Option<(u16, u16, u16, u16)> {
+pub fn get_window_size(_fd: i32) -> Option<WindowSize> {
     None
 }
 
@@ -371,12 +370,12 @@ mod tests {
     }
 
     #[test]
-    fn test_format_window_size() {
-        let bytes = format_window_size(24, 80, 0, 0);
-        assert_eq!(bytes, b"24x80,0x0\0");
+    fn test_window_size_encode() {
+        let ws = WindowSize::new(24, 80, 0, 0);
+        assert_eq!(ws.encode_to_bytes(), b"24x80,0x0\0");
 
-        let bytes_pixels = format_window_size(40, 120, 800, 600);
-        assert_eq!(bytes_pixels, b"40x120,800x600\0");
+        let ws_pixels = WindowSize::new(40, 120, 800, 600);
+        assert_eq!(ws_pixels.encode_to_bytes(), b"40x120,800x600\0");
     }
 
     #[test]

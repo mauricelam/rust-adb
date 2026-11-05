@@ -2,9 +2,7 @@ use std::sync::Arc;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 
-use adb_proto::smart_socket::{
-    parse_protocol_string, parse_reply, ProtocolString, SmartSocketReply,
-};
+use adb_proto::smart_socket::{parse_protocol_string, parse_reply, Decoded, SmartSocketReply};
 use adb_server::{ConnectionState, DeviceRegistry, SmartSocketServer, TransportType};
 
 #[tokio::test]
@@ -30,7 +28,13 @@ async fn test_smart_socket_valid_length_request_routed() {
     let n = stream.read(&mut buf).await.expect("read response");
     assert!(n > 0, "server should reply before closing socket");
 
-    let (reply, consumed) = parse_reply(&buf[..n]).expect("parse smart socket reply");
+    let Decoded::Complete {
+        value: reply,
+        consumed,
+    } = parse_reply(&buf[..n]).expect("parse smart socket reply")
+    else {
+        panic!("incomplete")
+    };
     assert_eq!(consumed, n);
     match reply {
         SmartSocketReply::Fail(reason) => {
@@ -75,11 +79,18 @@ async fn test_smart_socket_target_selection_by_serial() {
 
     let mut buf = vec![0u8; 1024];
     let n = stream.read(&mut buf).await.expect("read response");
-    let (reply, consumed) = parse_reply(&buf[..n]).expect("parse reply");
+    let Decoded::Complete {
+        value: reply,
+        consumed,
+    } = parse_reply(&buf[..n]).expect("parse reply")
+    else {
+        panic!("incomplete")
+    };
     assert_eq!(reply, SmartSocketReply::Okay);
-    let (proto_str, _) = parse_protocol_string(&buf[consumed..n]).expect("parse payload");
+    let proto_str: Decoded<String> =
+        parse_protocol_string(&buf[consumed..n]).expect("parse payload");
     match proto_str {
-        ProtocolString::Complete(s) => assert_eq!(s, "123456"),
+        Decoded::Complete { value: s, .. } => assert_eq!(s, "123456"),
         other => panic!("expected Complete, got {other:?}"),
     }
 
@@ -116,7 +127,10 @@ async fn test_smart_socket_target_ambiguous_error() {
 
     let mut buf = vec![0u8; 1024];
     let n = stream.read(&mut buf).await.expect("read response");
-    let (reply, _) = parse_reply(&buf[..n]).expect("parse reply");
+    let Decoded::Complete { value: reply, .. } = parse_reply(&buf[..n]).expect("parse reply")
+    else {
+        panic!("incomplete")
+    };
     match reply {
         SmartSocketReply::Fail(reason) => {
             assert_eq!(reason, "more than one device/emulator");
@@ -147,7 +161,10 @@ async fn test_smart_socket_missing_device_errors() {
 
     let mut buf = vec![0u8; 1024];
     let n = stream.read(&mut buf).await.expect("read response");
-    let (reply, _) = parse_reply(&buf[..n]).expect("parse reply");
+    let Decoded::Complete { value: reply, .. } = parse_reply(&buf[..n]).expect("parse reply")
+    else {
+        panic!("incomplete")
+    };
     match reply {
         SmartSocketReply::Fail(reason) => {
             assert_eq!(reason, "device 'nonexistent' not found");
@@ -162,7 +179,10 @@ async fn test_smart_socket_missing_device_errors() {
     stream2.write_all(framed2.as_bytes()).await.expect("write");
 
     let n2 = stream2.read(&mut buf).await.expect("read response");
-    let (reply2, _) = parse_reply(&buf[..n2]).expect("parse reply");
+    let Decoded::Complete { value: reply2, .. } = parse_reply(&buf[..n2]).expect("parse reply")
+    else {
+        panic!("incomplete")
+    };
     match reply2 {
         SmartSocketReply::Fail(reason) => {
             assert_eq!(reason, "no devices/emulators found");
@@ -177,7 +197,10 @@ async fn test_smart_socket_missing_device_errors() {
     stream3.write_all(framed3.as_bytes()).await.expect("write");
 
     let n3 = stream3.read(&mut buf).await.expect("read response");
-    let (reply3, _) = parse_reply(&buf[..n3]).expect("parse reply");
+    let Decoded::Complete { value: reply3, .. } = parse_reply(&buf[..n3]).expect("parse reply")
+    else {
+        panic!("incomplete")
+    };
     match reply3 {
         SmartSocketReply::Fail(reason) => {
             assert_eq!(reason, "no devices found");
@@ -192,7 +215,10 @@ async fn test_smart_socket_missing_device_errors() {
     stream4.write_all(framed4.as_bytes()).await.expect("write");
 
     let n4 = stream4.read(&mut buf).await.expect("read response");
-    let (reply4, _) = parse_reply(&buf[..n4]).expect("parse reply");
+    let Decoded::Complete { value: reply4, .. } = parse_reply(&buf[..n4]).expect("parse reply")
+    else {
+        panic!("incomplete")
+    };
     match reply4 {
         SmartSocketReply::Fail(reason) => {
             assert_eq!(reason, "no emulators found");
@@ -207,7 +233,10 @@ async fn test_smart_socket_missing_device_errors() {
     stream5.write_all(framed5.as_bytes()).await.expect("write");
 
     let n5 = stream5.read(&mut buf).await.expect("read response");
-    let (reply5, _) = parse_reply(&buf[..n5]).expect("parse reply");
+    let Decoded::Complete { value: reply5, .. } = parse_reply(&buf[..n5]).expect("parse reply")
+    else {
+        panic!("incomplete")
+    };
     match reply5 {
         SmartSocketReply::Fail(reason) => {
             assert_eq!(reason, "no device with transport id '99'");
@@ -241,7 +270,13 @@ async fn test_smart_socket_malformed_length_prefix_returns_fail() {
         "server should reply with FAIL payload before closing"
     );
 
-    let (reply, consumed) = parse_reply(&buf[..n]).expect("parse smart socket reply");
+    let Decoded::Complete {
+        value: reply,
+        consumed,
+    } = parse_reply(&buf[..n]).expect("parse smart socket reply")
+    else {
+        panic!("incomplete")
+    };
     assert_eq!(consumed, n);
     match reply {
         SmartSocketReply::Fail(reason) => {
@@ -377,7 +412,13 @@ async fn test_smart_socket_unknown_host_service() {
     let mut buf = vec![0u8; 1024];
     let n = stream.read(&mut buf).await.expect("read response");
 
-    let (reply, consumed) = parse_reply(&buf[..n]).expect("parse reply");
+    let Decoded::Complete {
+        value: reply,
+        consumed,
+    } = parse_reply(&buf[..n]).expect("parse reply")
+    else {
+        panic!("incomplete")
+    };
     assert_eq!(consumed, n);
     match reply {
         SmartSocketReply::Fail(reason) => {
@@ -427,7 +468,11 @@ async fn test_smart_socket_transport_switching_and_stream_routing() {
     let n2 = stream.read(&mut buf).await.expect("read response 2");
     assert!(n2 > 0);
     // Transport was selected, so error is NOT "device offline (no transport)"
-    if let Ok((SmartSocketReply::Fail(reason), _)) = parse_reply(&buf[..n2]) {
+    if let Ok(Decoded::Complete {
+        value: SmartSocketReply::Fail(reason),
+        ..
+    }) = parse_reply(&buf[..n2])
+    {
         assert_ne!(reason, "device offline (no transport)");
     }
 
@@ -512,11 +557,18 @@ async fn test_smart_socket_host_devices_multiple() {
     stream.write_all(b"000chost:devices").await.expect("write");
     let mut buf = vec![0u8; 1024];
     let n = stream.read(&mut buf).await.expect("read response");
-    let (reply, consumed) = parse_reply(&buf[..n]).expect("parse reply");
+    let Decoded::Complete {
+        value: reply,
+        consumed,
+    } = parse_reply(&buf[..n]).expect("parse reply")
+    else {
+        panic!("incomplete")
+    };
     assert_eq!(reply, SmartSocketReply::Okay);
-    let (proto_str, _) = parse_protocol_string(&buf[consumed..n]).expect("parse payload");
+    let proto_str: Decoded<String> =
+        parse_protocol_string(&buf[consumed..n]).expect("parse payload");
     match proto_str {
-        ProtocolString::Complete(payload) => {
+        Decoded::Complete { value: payload, .. } => {
             assert_eq!(payload, "serial-usb-1\tdevice\n127.0.0.1:5555\tdevice\n");
         }
         other => panic!("expected Complete, got: {other:?}"),
@@ -529,11 +581,18 @@ async fn test_smart_socket_host_devices_multiple() {
         .await
         .expect("write");
     let n_l = stream_l.read(&mut buf).await.expect("read response");
-    let (reply_l, consumed_l) = parse_reply(&buf[..n_l]).expect("parse reply");
+    let Decoded::Complete {
+        value: reply_l,
+        consumed: consumed_l,
+    } = parse_reply(&buf[..n_l]).expect("parse reply")
+    else {
+        panic!("incomplete")
+    };
     assert_eq!(reply_l, SmartSocketReply::Okay);
-    let (proto_str_l, _) = parse_protocol_string(&buf[consumed_l..n_l]).expect("parse payload");
+    let proto_str_l: Decoded<String> =
+        parse_protocol_string(&buf[consumed_l..n_l]).expect("parse payload");
     match proto_str_l {
-        ProtocolString::Complete(payload) => {
+        Decoded::Complete { value: payload, .. } => {
             assert!(
                 payload.contains("serial-usb-1           device product:mock_product model:mock_model device:mock_device transport_id:1\n"),
                 "devices-l should contain tabular info for serial-usb-1: {payload}"
@@ -573,7 +632,10 @@ async fn test_smart_socket_host_disconnect() {
         .expect("write");
     let mut buf = vec![0u8; 1024];
     let n = stream.read(&mut buf).await.expect("read response");
-    let (reply, _) = parse_reply(&buf[..n]).expect("parse reply");
+    let Decoded::Complete { value: reply, .. } = parse_reply(&buf[..n]).expect("parse reply")
+    else {
+        panic!("incomplete")
+    };
     match reply {
         SmartSocketReply::Fail(reason) => {
             assert_eq!(reason, "no such device '1.2.3.4:5555'");
@@ -588,11 +650,18 @@ async fn test_smart_socket_host_disconnect() {
         .await
         .expect("write");
     let n2 = stream2.read(&mut buf).await.expect("read response");
-    let (reply2, consumed2) = parse_reply(&buf[..n2]).expect("parse reply");
+    let Decoded::Complete {
+        value: reply2,
+        consumed: consumed2,
+    } = parse_reply(&buf[..n2]).expect("parse reply")
+    else {
+        panic!("incomplete")
+    };
     assert_eq!(reply2, SmartSocketReply::Okay);
-    let (proto_str2, _) = parse_protocol_string(&buf[consumed2..n2]).expect("parse payload");
+    let proto_str2: Decoded<String> =
+        parse_protocol_string(&buf[consumed2..n2]).expect("parse payload");
     match proto_str2 {
-        ProtocolString::Complete(msg) => {
+        Decoded::Complete { value: msg, .. } => {
             assert_eq!(msg, "disconnected 127.0.0.1:5555");
         }
         other => panic!("expected Complete, got: {other:?}"),
@@ -611,11 +680,18 @@ async fn test_smart_socket_host_disconnect() {
         .await
         .expect("write");
     let n3 = stream3.read(&mut buf).await.expect("read response");
-    let (reply3, consumed3) = parse_reply(&buf[..n3]).expect("parse reply");
+    let Decoded::Complete {
+        value: reply3,
+        consumed: consumed3,
+    } = parse_reply(&buf[..n3]).expect("parse reply")
+    else {
+        panic!("incomplete")
+    };
     assert_eq!(reply3, SmartSocketReply::Okay);
-    let (proto_str3, _) = parse_protocol_string(&buf[consumed3..n3]).expect("parse payload");
+    let proto_str3: Decoded<String> =
+        parse_protocol_string(&buf[consumed3..n3]).expect("parse payload");
     match proto_str3 {
-        ProtocolString::Complete(msg) => {
+        Decoded::Complete { value: msg, .. } => {
             assert_eq!(msg, "disconnected everything");
         }
         other => panic!("expected Complete, got: {other:?}"),
@@ -646,11 +722,18 @@ async fn test_smart_socket_host_connect() {
         .expect("write");
     let mut buf = vec![0u8; 1024];
     let n = stream.read(&mut buf).await.expect("read response");
-    let (reply, consumed) = parse_reply(&buf[..n]).expect("parse reply");
+    let Decoded::Complete {
+        value: reply,
+        consumed,
+    } = parse_reply(&buf[..n]).expect("parse reply")
+    else {
+        panic!("incomplete")
+    };
     assert_eq!(reply, SmartSocketReply::Okay);
-    let (proto_str, _) = parse_protocol_string(&buf[consumed..n]).expect("parse payload");
+    let proto_str: Decoded<String> =
+        parse_protocol_string(&buf[consumed..n]).expect("parse payload");
     match proto_str {
-        ProtocolString::Complete(msg) => {
+        Decoded::Complete { value: msg, .. } => {
             assert!(
                 msg.starts_with("failed to connect to '127.0.0.1:1'"),
                 "unexpected message: {msg}"

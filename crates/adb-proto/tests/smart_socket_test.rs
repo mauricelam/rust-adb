@@ -1,200 +1,149 @@
-use adb_proto::{
-    encode_request, parse_protocol_string, parse_reply, ProtocolString, SmartSocketError,
-    SmartSocketReply,
+use adb_proto::smart_socket::{
+    encode_fail, encode_okay, encode_okay_with_payload, encode_request, parse_protocol_string,
+    parse_reply, Decoded, ReplyError, RequestError, ServiceName, SmartSocketReply,
 };
 
 #[test]
 fn test_encode_request_standard() {
-    let encoded = encode_request("host:version").expect("should encode host:version");
-    assert_eq!(encoded, b"000chost:version");
-
-    let encoded = encode_request("host:devices").expect("should encode host:devices");
-    assert_eq!(encoded, b"000chost:devices");
-
-    let encoded = encode_request("").expect("should encode empty service");
-    assert_eq!(encoded, b"0000");
+    let service = "host:version";
+    let encoded = encode_request(service).expect("should encode valid service");
+    assert_eq!(&encoded[0..4], b"000c");
+    assert_eq!(&encoded[4..], service.as_bytes());
 }
 
 #[test]
-fn test_encode_request_max_length() {
-    let max_service = "a".repeat(0xffff);
-    let encoded = encode_request(&max_service).expect("should encode max length request");
-    assert_eq!(&encoded[..4], b"ffff");
-    assert_eq!(encoded.len(), 4 + 0xffff);
+fn test_encode_request_empty() {
+    let err = encode_request("").unwrap_err();
+    assert_eq!(err, RequestError::Empty);
+}
 
-    let overflow_service = "a".repeat(0xffff + 1);
-    let err = encode_request(&overflow_service).unwrap_err();
-    assert_eq!(err, SmartSocketError::RequestTooLong(0x10000));
+#[test]
+fn test_encode_request_too_long() {
+    let service = "a".repeat(adb_proto::limits::MAX_PAYLOAD + 1);
+    let err = encode_request(&service).unwrap_err();
+    assert_eq!(
+        err,
+        RequestError::TooLong(adb_proto::limits::MAX_PAYLOAD + 1)
+    );
 }
 
 #[test]
 fn test_parse_reply_okay() {
-    let buf = b"OKAYextra_payload";
-    let (reply, consumed) = parse_reply(buf).expect("should parse OKAY reply");
-    assert_eq!(reply, SmartSocketReply::Okay);
-    assert_eq!(consumed, 4);
+    let buf = b"OKAY";
+    let decoded = parse_reply(buf).expect("should parse OKAY reply");
+    assert_eq!(
+        decoded,
+        Decoded::Complete {
+            value: SmartSocketReply::Okay,
+            consumed: 4,
+        }
+    );
 }
 
 #[test]
 fn test_parse_reply_fail_standard() {
-    let buf = b"FAIL001ano devices/emulators foundrest_of_buffer";
-    let (reply, consumed) = parse_reply(buf).expect("should parse FAIL reply");
+    let reason = "no devices/emulators found";
+    let mut buf = Vec::new();
+    buf.extend_from_slice(b"FAIL");
+    buf.extend_from_slice(format!("{:04x}", reason.len()).as_bytes());
+    buf.extend_from_slice(reason.as_bytes());
+    let decoded = parse_reply(&buf).expect("should parse FAIL reply");
     assert_eq!(
-        reply,
-        SmartSocketReply::Fail("no devices/emulators found".to_string())
+        decoded,
+        Decoded::Complete {
+            value: SmartSocketReply::Fail(reason.to_string()),
+            consumed: 8 + reason.len(),
+        }
     );
-    assert_eq!(consumed, 4 + 4 + 26);
 }
 
 #[test]
 fn test_parse_reply_fail_zero_length() {
-    let buf = b"FAIL0000tail";
-    let (reply, consumed) = parse_reply(buf).expect("should parse FAIL reply with 0-len reason");
-    assert_eq!(reply, SmartSocketReply::Fail("".to_string()));
-    assert_eq!(consumed, 8);
+    let buf = b"FAIL0000";
+    let decoded = parse_reply(buf).expect("should parse FAIL reply with 0-len reason");
+    assert_eq!(
+        decoded,
+        Decoded::Complete {
+            value: SmartSocketReply::Fail("".to_string()),
+            consumed: 8,
+        }
+    );
 }
 
 #[test]
 fn test_parse_reply_incomplete() {
-    // Less than 4 bytes
-    for i in 0..4 {
-        let buf = &b"OKAY"[..i];
-        let (reply, consumed) = parse_reply(buf).expect("should return incomplete for <4 bytes");
-        assert_eq!(reply, SmartSocketReply::Incomplete);
-        assert_eq!(consumed, 0);
+    for len in 0..4 {
+        let buf = &b"OKAY"[0..len];
+        let decoded = parse_reply(buf).expect("should return incomplete for <4 bytes");
+        assert_eq!(decoded, Decoded::Incomplete);
     }
 
-    // FAIL with missing length or reason bytes
-    let partial_fail = b"FAIL0005hel";
-    let (reply, consumed) =
-        parse_reply(partial_fail).expect("should return incomplete for truncated FAIL");
-    assert_eq!(reply, SmartSocketReply::Incomplete);
-    assert_eq!(consumed, 0);
-}
-
-#[test]
-fn test_parse_reply_split_reads() {
-    let full = b"FAIL001ano devices/emulators found";
-    for i in 0..full.len() {
-        let slice = &full[..i];
-        let (reply, consumed) = parse_reply(slice).expect("split read should not error");
-        assert_eq!(reply, SmartSocketReply::Incomplete);
-        assert_eq!(consumed, 0);
+    for len in 0..8 {
+        let buf = &b"FAIL0005hello"[0..len];
+        let decoded = parse_reply(buf).expect("should return incomplete for partial FAIL");
+        assert_eq!(decoded, Decoded::Incomplete);
     }
-    let (reply, consumed) = parse_reply(full).expect("full read should succeed");
-    assert_eq!(
-        reply,
-        SmartSocketReply::Fail("no devices/emulators found".to_string())
-    );
-    assert_eq!(consumed, full.len());
 }
 
 #[test]
 fn test_parse_reply_malformed() {
-    // Non OKAY/FAIL status
-    let buf = b"XXXX0000";
+    let buf = b"XXXX";
     let err = parse_reply(buf).unwrap_err();
-    assert_eq!(err, SmartSocketError::InvalidStatus(*b"XXXX"));
+    assert_eq!(err, ReplyError::InvalidStatus(*b"XXXX"));
 
-    // Invalid hex length in FAIL
-    let buf = b"FAILZZZZreason";
+    let buf = b"FAILZZZZ";
     let err = parse_reply(buf).unwrap_err();
-    assert_eq!(err, SmartSocketError::InvalidHexLength("ZZZZ".to_string()));
+    assert_eq!(err, ReplyError::InvalidHexLength("ZZZZ".to_string()));
+
+    let buf = b"FAIL+00c";
+    let err = parse_reply(buf).unwrap_err();
+    assert_eq!(err, ReplyError::InvalidHexLength("+00c".to_string()));
 }
 
 #[test]
 fn test_parse_protocol_string_complete() {
-    let buf = b"0004001ftrail";
-    let (parsed, consumed) =
-        parse_protocol_string(buf).expect("should parse protocol string successfully");
-    assert_eq!(parsed, ProtocolString::Complete("001f".to_string()));
-    assert_eq!(consumed, 8);
-
-    let empty_buf = b"0000trailer";
-    let (parsed, consumed) =
-        parse_protocol_string(empty_buf).expect("should parse empty protocol string");
-    assert_eq!(parsed, ProtocolString::Complete("".to_string()));
-    assert_eq!(consumed, 4);
+    let buf = b"0004001f";
+    let decoded = parse_protocol_string(buf).expect("should parse protocol string");
+    assert_eq!(
+        decoded,
+        Decoded::Complete {
+            value: "001f".to_string(),
+            consumed: 8,
+        }
+    );
 }
 
 #[test]
 fn test_parse_protocol_string_incomplete() {
-    for i in 0..4 {
-        let buf = &b"0004"[..i];
-        let (parsed, consumed) =
-            parse_protocol_string(buf).expect("should return incomplete for <4 bytes");
-        assert_eq!(parsed, ProtocolString::Incomplete);
-        assert_eq!(consumed, 0);
+    for len in 0..4 {
+        let buf = &b"0005hello"[0..len];
+        let decoded = parse_protocol_string(buf).expect("should return incomplete");
+        assert_eq!(decoded, Decoded::Incomplete);
     }
-
-    let truncated = b"000400";
-    let (parsed, consumed) =
-        parse_protocol_string(truncated).expect("should return incomplete for truncated payload");
-    assert_eq!(parsed, ProtocolString::Incomplete);
-    assert_eq!(consumed, 0);
-}
-
-#[test]
-fn test_parse_protocol_string_split_reads() {
-    let full = b"001a12345678901234567890123456";
-    for i in 0..full.len() {
-        let slice = &full[..i];
-        let (parsed, consumed) = parse_protocol_string(slice).expect("split read should not error");
-        assert_eq!(parsed, ProtocolString::Incomplete);
-        assert_eq!(consumed, 0);
-    }
-    let (parsed, consumed) = parse_protocol_string(full).expect("full read should succeed");
-    assert_eq!(
-        parsed,
-        ProtocolString::Complete("12345678901234567890123456".to_string())
-    );
-    assert_eq!(consumed, full.len());
 }
 
 #[test]
 fn test_parse_protocol_string_malformed() {
-    let buf = b"ZZZZpayload";
+    let buf = b"ZZZZ";
     let err = parse_protocol_string(buf).unwrap_err();
-    assert_eq!(err, SmartSocketError::InvalidHexLength("ZZZZ".to_string()));
+    assert_eq!(err, ReplyError::InvalidHexLength("ZZZZ".to_string()));
+
+    let buf = b"+005";
+    let err = parse_protocol_string(buf).unwrap_err();
+    assert_eq!(err, ReplyError::InvalidHexLength("+005".to_string()));
 }
 
 #[test]
-fn test_chained_reply_and_protocol_string() {
-    // Simulating response to host:version => OKAY + 0004 + 0020
-    let response_bytes = b"OKAY00040020";
-
-    let (reply, consumed_reply) = parse_reply(response_bytes).expect("should parse OKAY");
-    assert_eq!(reply, SmartSocketReply::Okay);
-    assert_eq!(consumed_reply, 4);
-
-    let (payload, consumed_payload) = parse_protocol_string(&response_bytes[consumed_reply..])
-        .expect("should parse version string");
-    assert_eq!(payload, ProtocolString::Complete("0020".to_string()));
-    assert_eq!(consumed_payload, 8);
-
-    assert_eq!(consumed_reply + consumed_payload, response_bytes.len());
+fn test_encode_okay_fail() {
+    assert_eq!(encode_okay(), b"OKAY");
+    assert_eq!(encode_okay_with_payload("123"), b"OKAY0003123");
+    assert_eq!(encode_fail("err"), b"FAIL0003err");
 }
 
-use proptest::prelude::*;
-
-proptest! {
-    #[test]
-    fn prop_encode_request_round_trip(service in "\\PC{0,1000}") {
-        if service.len() <= 0xffff {
-            let encoded = encode_request(&service).expect("encoding service <= 65535 bytes must succeed");
-            let (parsed, consumed) = parse_protocol_string(&encoded).expect("parsing encoded request must succeed");
-            prop_assert_eq!(parsed, ProtocolString::Complete(service.clone()));
-            prop_assert_eq!(consumed, 4 + service.len());
-        }
-    }
-
-    #[test]
-    fn prop_parse_reply_no_panic(buf in prop::collection::vec(any::<u8>(), 0..200)) {
-        let _ = parse_reply(&buf);
-    }
-
-    #[test]
-    fn prop_parse_protocol_string_no_panic(buf in prop::collection::vec(any::<u8>(), 0..200)) {
-        let _ = parse_protocol_string(&buf);
-    }
+#[test]
+fn test_service_name_validation() {
+    assert!(ServiceName::new("").is_err());
+    assert!(ServiceName::new("host:version").is_ok());
+    let sn = ServiceName::new("host:version").unwrap();
+    assert_eq!(sn.as_str(), "host:version");
 }

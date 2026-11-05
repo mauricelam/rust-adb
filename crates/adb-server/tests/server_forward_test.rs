@@ -2,9 +2,7 @@ use std::sync::Arc;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 
-use adb_proto::smart_socket::{
-    parse_protocol_string, parse_reply, ProtocolString, SmartSocketReply,
-};
+use adb_proto::smart_socket::{parse_protocol_string, parse_reply, Decoded, SmartSocketReply};
 use adb_server::{ConnectionState, DeviceRegistry, SmartSocketServer, TransportType};
 
 #[tokio::test]
@@ -32,11 +30,17 @@ async fn test_forward_lifecycle_and_norebind() {
         .expect("write");
     let mut buf = vec![0u8; 1024];
     let n = stream.read(&mut buf).await.expect("read response");
-    let (reply, consumed) = parse_reply(&buf[..n]).expect("parse reply");
+    let Decoded::Complete {
+        value: reply,
+        consumed,
+    } = parse_reply(&buf[..n]).expect("parse reply")
+    else {
+        panic!("incomplete")
+    };
     assert_eq!(reply, SmartSocketReply::Okay);
-    let (proto_str, _) = parse_protocol_string(&buf[consumed..n]).expect("parse payload");
+    let proto_str = parse_protocol_string(&buf[consumed..n]).expect("parse payload");
     match proto_str {
-        ProtocolString::Complete(list) => assert_eq!(list, ""),
+        Decoded::Complete { value: list, .. } => assert_eq!(list, ""),
         other => panic!("expected Complete, got {other:?}"),
     }
 
@@ -56,9 +60,11 @@ async fn test_forward_lifecycle_and_norebind() {
     assert!(n >= 8);
     assert_eq!(&buf[0..4], b"OKAY");
     assert_eq!(&buf[4..8], b"OKAY");
-    let (proto_str, _) = parse_protocol_string(&buf[8..n]).expect("parse port");
+    let proto_str = parse_protocol_string(&buf[8..n]).expect("parse port");
     let allocated_port: u16 = match proto_str {
-        ProtocolString::Complete(port_str) => port_str.parse().expect("port number"),
+        Decoded::Complete {
+            value: port_str, ..
+        } => port_str.parse::<u16>().expect("port number"),
         other => panic!("expected Complete, got {other:?}"),
     };
     assert!(allocated_port > 0);
@@ -70,11 +76,17 @@ async fn test_forward_lifecycle_and_norebind() {
         .await
         .expect("write");
     let n = stream.read(&mut buf).await.expect("read response");
-    let (reply, consumed) = parse_reply(&buf[..n]).expect("parse reply");
+    let Decoded::Complete {
+        value: reply,
+        consumed,
+    } = parse_reply(&buf[..n]).expect("parse reply")
+    else {
+        panic!("incomplete")
+    };
     assert_eq!(reply, SmartSocketReply::Okay);
-    let (proto_str, _) = parse_protocol_string(&buf[consumed..n]).expect("parse payload");
+    let proto_str = parse_protocol_string(&buf[consumed..n]).expect("parse payload");
     match proto_str {
-        ProtocolString::Complete(list) => {
+        Decoded::Complete { value: list, .. } => {
             let expected_line = format!("device-1 tcp:{allocated_port} tcp:8080\n");
             assert_eq!(list, expected_line);
         }
@@ -90,7 +102,10 @@ async fn test_forward_lifecycle_and_norebind() {
         .await
         .expect("write");
     let n = stream.read(&mut buf).await.expect("read response");
-    let (reply, _) = parse_reply(&buf[..n]).expect("parse reply");
+    let Decoded::Complete { value: reply, .. } = parse_reply(&buf[..n]).expect("parse reply")
+    else {
+        panic!("incomplete")
+    };
     match reply {
         SmartSocketReply::Fail(reason) => {
             assert_eq!(reason, "cannot rebind existing socket");
@@ -129,11 +144,17 @@ async fn test_forward_lifecycle_and_norebind() {
         .await
         .expect("write");
     let n = stream.read(&mut buf).await.expect("read response");
-    let (reply, consumed) = parse_reply(&buf[..n]).expect("parse reply");
+    let Decoded::Complete {
+        value: reply,
+        consumed,
+    } = parse_reply(&buf[..n]).expect("parse reply")
+    else {
+        panic!("incomplete")
+    };
     assert_eq!(reply, SmartSocketReply::Okay);
-    let (proto_str, _) = parse_protocol_string(&buf[consumed..n]).expect("parse payload");
+    let proto_str = parse_protocol_string(&buf[consumed..n]).expect("parse payload");
     match proto_str {
-        ProtocolString::Complete(list) => assert_eq!(list, ""),
+        Decoded::Complete { value: list, .. } => assert_eq!(list, ""),
         other => panic!("expected Complete, got {other:?}"),
     }
 
@@ -146,7 +167,10 @@ async fn test_forward_lifecycle_and_norebind() {
         .await
         .expect("write");
     let n = stream.read(&mut buf).await.expect("read response");
-    let (reply, _) = parse_reply(&buf[..n]).expect("parse reply");
+    let Decoded::Complete { value: reply, .. } = parse_reply(&buf[..n]).expect("parse reply")
+    else {
+        panic!("incomplete")
+    };
     match reply {
         SmartSocketReply::Fail(reason) => {
             assert!(
@@ -212,9 +236,11 @@ async fn test_forward_proxy_traffic_end_to_end() {
     let n = stream.read(&mut buf).await.expect("read response");
     assert_eq!(&buf[0..4], b"OKAY");
     assert_eq!(&buf[4..8], b"OKAY");
-    let (proto_str, _) = parse_protocol_string(&buf[8..n]).expect("parse port");
+    let proto_str = parse_protocol_string(&buf[8..n]).expect("parse port");
     let local_port: u16 = match proto_str {
-        ProtocolString::Complete(port_str) => port_str.parse().expect("port number"),
+        Decoded::Complete {
+            value: port_str, ..
+        } => port_str.parse::<u16>().expect("port number"),
         other => panic!("expected Complete, got {other:?}"),
     };
 

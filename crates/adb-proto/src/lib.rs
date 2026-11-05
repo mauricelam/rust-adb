@@ -25,16 +25,21 @@ pub use limits::{
 };
 pub use message::{Message, MessageDecodeError};
 pub use shell::{
-    ShellDecodeError, ShellDecoder, ShellEncodeError, ShellPacket, ShellPacketId, WindowSize,
+    ShellDecodeError, ShellDecoder, ShellEncodeError, ShellMessage, ShellPacket, ShellPacketId,
+    WindowSize,
 };
 pub use smart_socket::{
-    encode_request, parse_protocol_string, parse_reply, ProtocolString, SmartSocketError,
+    encode_fail, encode_okay, encode_okay_with_payload, encode_request, parse_hex_len4,
+    parse_protocol_string, parse_reply, Decoded, ReplyError, RequestError, ServiceName,
     SmartSocketReply,
 };
 pub use sync::{
-    SyncDecodeError, SyncDecoder, SyncDecoderMode, SyncEncodeError, SyncMessage, ID_DATA,
-    ID_DENT_V1, ID_DONE, ID_FAIL, ID_LIST_V1, ID_LSTAT_V1, ID_OKAY, ID_QUIT, ID_RECV_V1,
-    ID_SEND_V1, SYNC_DATA_MAX, SYNC_PATH_MAX,
+    DataChunk, FileMode, FileType, RecvFlags, RemotePath, SendFlags, SyncDecodeError, SyncDentV1,
+    SyncDentV2, SyncEncodeError, SyncId, SyncRecvV2, SyncRequest, SyncRequestDecoder, SyncResponse,
+    SyncResponseDecoder, SyncSendV2, SyncStatV1, SyncStatV2, UnixTime, ID_DATA, ID_DENT_V1,
+    ID_DENT_V2, ID_DONE, ID_FAIL, ID_LIST_V1, ID_LIST_V2, ID_LSTAT_V1, ID_LSTAT_V2, ID_OKAY,
+    ID_QUIT, ID_RECV_V1, ID_RECV_V2, ID_SEND_V1, ID_SEND_V2, ID_STAT_V2, SYNC_DATA_MAX,
+    SYNC_NAME_MAX, SYNC_PATH_MAX,
 };
 pub use types::{
     AdbPort, ConsolePort, IdError, LocalId, MaxPayload, ProtocolVersion, RemoteId, ServerVersion,

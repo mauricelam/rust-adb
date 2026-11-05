@@ -25,8 +25,8 @@ pub use server_address::{
 };
 pub use session::{Session, SessionConfig, SessionError};
 pub use shell_interactive::{
-    determine_pty_allocation, format_window_size, parse_escape_char_arg, EscapeChar, EscapeResult,
-    EscapeState, EscapeStateMachine, PtyDecision, PtyKind, PtyMode, ShellProtocol,
+    determine_pty_allocation, parse_escape_char_arg, EscapeChar, EscapeResult, EscapeState,
+    EscapeStateMachine, PtyDecision, PtyKind, PtyMode, ShellProtocol,
 };
 pub use sync_session::{
     errno_from_wire, errno_to_string, AckMode, AckResult, CompressionType, DestinationKind,

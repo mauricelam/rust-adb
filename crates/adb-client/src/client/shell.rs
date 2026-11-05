@@ -225,13 +225,9 @@ impl AdbClient {
             // Send initial window size if available and requesting PTY
             if pty_dec.is_pty() {
                 if let Some(fd) = stdin_tty_fd {
-                    if let Some((r, c, x, y)) = crate::shell_interactive::get_window_size(fd) {
-                        let payload = crate::shell_interactive::format_window_size(r, c, x, y);
-                        let winsz_pkt = adb_proto::ShellPacket::new(
-                            adb_proto::ShellPacketId::WindowSizeChange,
-                            payload,
-                        );
-                        if let Ok(encoded) = winsz_pkt.encode() {
+                    if let Some(ws) = crate::shell_interactive::get_window_size(fd) {
+                        let winsz_msg = adb_proto::ShellMessage::WindowSize(ws);
+                        if let Ok(encoded) = winsz_msg.encode() {
                             let _ = write_half.write_all(&encoded).await;
                             let _ = write_half.flush().await;
                         }
@@ -241,7 +237,8 @@ impl AdbClient {
 
             // SIGWINCH watcher channel
             #[cfg(unix)]
-            let (winch_tx, mut winch_rx) = tokio::sync::mpsc::unbounded_channel::<Vec<u8>>();
+            let (winch_tx, mut winch_rx) =
+                tokio::sync::mpsc::unbounded_channel::<adb_proto::WindowSize>();
             #[cfg(unix)]
             let sigwinch_task = if pty_dec.is_pty() {
                 stdin_tty_fd.map(|fd| {
@@ -250,12 +247,8 @@ impl AdbClient {
                             tokio::signal::unix::SignalKind::window_change(),
                         ) {
                             while sig.recv().await.is_some() {
-                                if let Some((r, c, x, y)) =
-                                    crate::shell_interactive::get_window_size(fd)
-                                {
-                                    let payload =
-                                        crate::shell_interactive::format_window_size(r, c, x, y);
-                                    if winch_tx.send(payload).is_err() {
+                                if let Some(ws) = crate::shell_interactive::get_window_size(fd) {
+                                    if winch_tx.send(ws).is_err() {
                                         break;
                                     }
                                 }
@@ -268,9 +261,8 @@ impl AdbClient {
             };
 
             if stdin_reader.is_none() || options.close_stdin {
-                let close_pkt =
-                    adb_proto::ShellPacket::new(adb_proto::ShellPacketId::CloseStdin, vec![]);
-                if let Ok(encoded) = close_pkt.encode() {
+                let close_msg = adb_proto::ShellMessage::CloseStdin;
+                if let Ok(encoded) = close_msg.encode() {
                     let _ = write_half.write_all(&encoded).await;
                     let _ = write_half.flush().await;
                 }
@@ -286,28 +278,29 @@ impl AdbClient {
                         }
                         decoder.feed(&read_buf[..n]);
 
-                        while let Ok(Some(pkt)) = decoder.pop_packet() {
-                            match pkt.id {
-                                adb_proto::ShellPacketId::Stdout => {
+                        loop {
+                            let maybe_msg = decoder.pop_message()
+                                .map_err(|e| ClientError::QueryFailed(format!("protocol fault: {e}")))?;
+                            let Some(msg) = maybe_msg else { break; };
+                            match msg {
+                                adb_proto::ShellMessage::Stdout(data) => {
                                     if let Some(ref mut w) = stdout_writer {
-                                        if w.write_all(&pkt.data).await.is_err() || w.flush().await.is_err() {
+                                        if w.write_all(&data).await.is_err() || w.flush().await.is_err() {
                                             exit_code = Some(128 + 13);
                                             break;
                                         }
                                     }
                                 }
-                                adb_proto::ShellPacketId::Stderr => {
+                                adb_proto::ShellMessage::Stderr(data) => {
                                     if let Some(ref mut w) = stderr_writer {
-                                        if w.write_all(&pkt.data).await.is_err() || w.flush().await.is_err() {
+                                        if w.write_all(&data).await.is_err() || w.flush().await.is_err() {
                                             exit_code = Some(128 + 13);
                                             break;
                                         }
                                     }
                                 }
-                                adb_proto::ShellPacketId::Exit => {
-                                    if let Ok(code) = pkt.parse_exit_code() {
-                                        exit_code = Some(code as i32);
-                                    }
+                                adb_proto::ShellMessage::Exit(code) => {
+                                    exit_code = Some(code as i32);
                                 }
                                 _ => {}
                             }
@@ -317,22 +310,19 @@ impl AdbClient {
                             break;
                         }
                     }
-                    winch_payload = async {
+                    winch_ws = async {
                         #[cfg(unix)]
                         {
                             winch_rx.recv().await
                         }
                         #[cfg(not(unix))]
                         {
-                            std::future::pending::<Option<Vec<u8>>>().await
+                            std::future::pending::<Option<adb_proto::WindowSize>>().await
                         }
                     } => {
-                        if let Some(payload) = winch_payload {
-                            let winsz_pkt = adb_proto::ShellPacket::new(
-                                adb_proto::ShellPacketId::WindowSizeChange,
-                                payload,
-                            );
-                            if let Ok(encoded) = winsz_pkt.encode() {
+                        if let Some(ws) = winch_ws {
+                            let winsz_msg = adb_proto::ShellMessage::WindowSize(ws);
+                            if let Ok(encoded) = winsz_msg.encode() {
                                 let _ = write_half.write_all(&encoded).await;
                                 let _ = write_half.flush().await;
                             }
@@ -348,11 +338,8 @@ impl AdbClient {
                         match n_res {
                             Ok(0) => {
                                 stdin_eof = true;
-                                let close_pkt = adb_proto::ShellPacket::new(
-                                    adb_proto::ShellPacketId::CloseStdin,
-                                    vec![],
-                                );
-                                if let Ok(encoded) = close_pkt.encode() {
+                                let close_msg = adb_proto::ShellMessage::CloseStdin;
+                                if let Ok(encoded) = close_msg.encode() {
                                     let _ = write_half.write_all(&encoded).await;
                                     let _ = write_half.flush().await;
                                 }
@@ -362,11 +349,8 @@ impl AdbClient {
                                 match esc_res {
                                     crate::shell_interactive::EscapeResult::Output(out_bytes) => {
                                         if !out_bytes.is_empty() {
-                                            let stdin_pkt = adb_proto::ShellPacket::new(
-                                                adb_proto::ShellPacketId::Stdin,
-                                                out_bytes,
-                                            );
-                                            if let Ok(encoded) = stdin_pkt.encode() {
+                                            let stdin_msg = adb_proto::ShellMessage::Stdin(out_bytes);
+                                            if let Ok(encoded) = stdin_msg.encode() {
                                                 if write_half.write_all(&encoded).await.is_err() || write_half.flush().await.is_err() {
                                                     stdin_eof = true;
                                                 }

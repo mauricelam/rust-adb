@@ -70,30 +70,7 @@ pub enum SmartSocketRequest {
     Device(String),
 }
 
-/// Formats an `OKAY` reply without payload.
-pub fn encode_okay() -> &'static [u8] {
-    b"OKAY"
-}
-
-/// Formats an `OKAY` reply with a 4-hex-digit length-prefixed payload string.
-pub fn encode_okay_with_payload(payload: &str) -> Vec<u8> {
-    let mut out = Vec::with_capacity(4 + 4 + payload.len());
-    out.extend_from_slice(b"OKAY");
-    let hex_len = format!("{:04x}", payload.len());
-    out.extend_from_slice(hex_len.as_bytes());
-    out.extend_from_slice(payload.as_bytes());
-    out
-}
-
-/// Formats a `FAIL` reply with a 4-hex-digit length-prefixed error message.
-pub fn encode_fail(reason: &str) -> Vec<u8> {
-    let mut out = Vec::with_capacity(4 + 4 + reason.len());
-    out.extend_from_slice(b"FAIL");
-    let hex_len = format!("{:04x}", reason.len());
-    out.extend_from_slice(hex_len.as_bytes());
-    out.extend_from_slice(reason.as_bytes());
-    out
-}
+pub use adb_proto::smart_socket::{encode_fail, encode_okay, encode_okay_with_payload};
 
 /// Parses a smart socket service request string into a [`SmartSocketRequest`].
 ///
