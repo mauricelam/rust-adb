@@ -1,3 +1,5 @@
+//! Client session management and typestate machine.
+
 use crate::server_address::ServerAddress;
 use crate::transport::TransportSelector;
 use adb_proto::smart_socket::{
@@ -6,8 +8,32 @@ use adb_proto::smart_socket::{
 use adb_proto::TransportId;
 use adb_proto::MAX_PAYLOAD;
 use std::fmt;
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use std::marker::PhantomData;
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::net::TcpStream;
+
+/// Trait representing an asynchronous duplex byte stream suitable for ADB client sessions.
+pub trait AsyncStream: AsyncRead + AsyncWrite + Unpin + Send + fmt::Debug {}
+impl<T: AsyncRead + AsyncWrite + Unpin + Send + fmt::Debug> AsyncStream for T {}
+
+/// Boxed abstract stream type for mockable sessions.
+pub type BoxedStream = Box<dyn AsyncStream>;
+
+/// Typestate marker: initial connected state before service or transport is selected.
+#[derive(Debug)]
+pub struct Fresh;
+
+/// Typestate marker: transport has been selected for a target device.
+#[derive(Debug)]
+pub struct TransportSelected;
+
+/// Typestate marker: service request was transmitted, awaiting OKAY or FAIL status.
+#[derive(Debug)]
+pub struct AwaitingStatus;
+
+/// Typestate marker: OKAY status received; session is ready for data exchange or stream consumption.
+#[derive(Debug)]
+pub struct Ready;
 
 /// Configuration for smart-socket sessions (timeouts).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -131,109 +157,76 @@ impl std::error::Error for SessionError {
     }
 }
 
-/// Represents an active smart-socket session with an ADB server.
+/// Represents an active smart-socket session with an ADB server with state machine typestate.
 #[derive(Debug)]
-pub struct Session {
-    stream: TcpStream,
+pub struct Session<S = BoxedStream, State = Fresh> {
+    stream: S,
     read_buf: Vec<u8>,
     config: SessionConfig,
+    _state: PhantomData<State>,
 }
 
-impl Session {
-    /// Creates a new `Session` wrapping an existing `TcpStream` with default configuration.
-    pub fn new(stream: TcpStream) -> Self {
+impl<S, State> Session<S, State> {
+    fn transition<NewState>(self) -> Session<S, NewState> {
+        Session {
+            stream: self.stream,
+            read_buf: self.read_buf,
+            config: self.config,
+            _state: PhantomData,
+        }
+    }
+
+    /// Maps the underlying stream to another stream type (e.g., boxing it).
+    pub fn map_stream<T, F>(self, f: F) -> Session<T, State>
+    where
+        F: FnOnce(S) -> T,
+    {
+        Session {
+            stream: f(self.stream),
+            read_buf: self.read_buf,
+            config: self.config,
+            _state: PhantomData,
+        }
+    }
+
+    /// Boxes the underlying stream into `BoxedStream`.
+    pub fn boxed(self) -> Session<BoxedStream, State>
+    where
+        S: AsyncStream + 'static,
+    {
+        self.map_stream(|s| Box::new(s) as BoxedStream)
+    }
+
+    /// Consumes the session and yields the underlying stream.
+    pub fn into_inner(self) -> S {
+        self.stream
+    }
+}
+
+impl<S: AsyncStream> Session<S, Fresh> {
+    /// Creates a new `Session` wrapping an existing stream in `Fresh` state with default configuration.
+    pub fn new(stream: S) -> Self {
         Self::new_with_config(stream, SessionConfig::default())
     }
 
-    /// Creates a new `Session` wrapping an existing `TcpStream` with specific configuration.
-    pub fn new_with_config(stream: TcpStream, config: SessionConfig) -> Self {
+    /// Creates a new `Session` wrapping an existing stream in `Fresh` state with specific configuration.
+    pub fn new_with_config(stream: S, config: SessionConfig) -> Self {
         Self {
             stream,
             read_buf: Vec::new(),
             config,
+            _state: PhantomData,
         }
-    }
-
-    /// Connects to the ADB server at the given address using default configuration.
-    pub async fn connect(addr: &ServerAddress) -> Result<Self, SessionError> {
-        Self::connect_with_config(addr, SessionConfig::default()).await
-    }
-
-    /// Connects to the ADB server at the given address using specified `SessionConfig`.
-    ///
-    /// Ports `_adb_connect` socket connection phase with connect timeout.
-    pub async fn connect_with_config(
-        addr: &ServerAddress,
-        config: SessionConfig,
-    ) -> Result<Self, SessionError> {
-        let spec = addr.to_spec();
-        let host = addr.host.as_deref().unwrap_or("127.0.0.1");
-        let host = if host == "localhost" {
-            "127.0.0.1"
-        } else {
-            host
-        };
-
-        crate::adb_trace!(
-            crate::trace::TraceCategory::Sockets,
-            "connecting to daemon at {spec}"
-        );
-
-        let mut last_err = None;
-        for i in 0..5 {
-            let conn_res = tokio::time::timeout(
-                config.connect_timeout,
-                TcpStream::connect((host, addr.port)),
-            )
-            .await;
-
-            match conn_res {
-                Ok(Ok(stream)) => {
-                    return Ok(Self {
-                        stream,
-                        read_buf: Vec::new(),
-                        config,
-                    });
-                }
-                Ok(Err(err)) => {
-                    let retryable = matches!(
-                        err.kind(),
-                        std::io::ErrorKind::ConnectionReset
-                            | std::io::ErrorKind::ConnectionRefused
-                            | std::io::ErrorKind::ConnectionAborted
-                    );
-                    last_err = Some(SessionError::CannotConnect {
-                        spec: spec.clone(),
-                        cause: err.to_string(),
-                    });
-                    if retryable && i < 4 {
-                        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
-                    } else {
-                        break;
-                    }
-                }
-                Err(_) => {
-                    return Err(SessionError::Timeout);
-                }
-            }
-        }
-
-        Err(last_err.unwrap_or(SessionError::CannotConnect {
-            spec,
-            cause: "connection failed".to_string(),
-        }))
     }
 
     /// Selects a device transport on this connection.
     ///
     /// Ports `switch_socket_transport` from C++ `adb_client.cpp`.
-    ///
-    /// Returns `Ok(Some(transport_id))` if transport switch succeeded and a transport ID was read/set,
-    /// or `Ok(None)` for host transport.
+    /// Consumes the session in `Fresh` state and yields `Session<S, TransportSelected>`.
     pub async fn select_transport(
-        &mut self,
+        mut self,
         selector: &TransportSelector,
-    ) -> Result<Option<TransportId>, SessionError> {
+    ) -> Result<(Session<S, TransportSelected>, Option<TransportId>), SessionError> {
         let (service, read_transport) = match selector {
             TransportSelector::Id(id) => (format!("host:transport-id:{id}"), false),
             TransportSelector::Serial(s) => (format!("host:tport:serial:{s}"), true),
@@ -250,19 +243,22 @@ impl Session {
             .await
             .map_err(SessionError::WriteFailure)?;
 
-        self.read_status().await?;
+        let session_awaiting = self.transition::<AwaitingStatus>();
+        let mut session_ready = session_awaiting.read_status().await?;
 
-        if read_transport {
+        let tid = if read_transport {
             let mut buf = [0u8; 8];
             let mut read_bytes = 0;
             while read_bytes < 8 {
-                if !self.read_buf.is_empty() {
-                    let avail = (8 - read_bytes).min(self.read_buf.len());
-                    buf[read_bytes..read_bytes + avail].copy_from_slice(&self.read_buf[..avail]);
-                    self.read_buf.drain(..avail);
+                if !session_ready.read_buf.is_empty() {
+                    let avail = (8 - read_bytes).min(session_ready.read_buf.len());
+                    buf[read_bytes..read_bytes + avail]
+                        .copy_from_slice(&session_ready.read_buf[..avail]);
+                    session_ready.read_buf.drain(..avail);
                     read_bytes += avail;
                 } else {
-                    self.stream
+                    session_ready
+                        .stream
                         .read_exact(&mut buf[read_bytes..])
                         .await
                         .map_err(|_| SessionError::ReadTransportIdFailed)?;
@@ -270,18 +266,21 @@ impl Session {
                 }
             }
             let tid = TransportId::from_ne_bytes(buf).ok_or(SessionError::ReadTransportIdFailed)?;
-            Ok(Some(tid))
+            Some(tid)
         } else if let TransportSelector::Id(id) = selector {
-            Ok(Some(*id))
+            Some(*id)
         } else {
-            Ok(None)
-        }
+            None
+        };
+
+        Ok((session_ready.transition::<TransportSelected>(), tid))
     }
 
-    /// Sends a service name over the connection.
-    ///
-    /// Validates service name length (1..=MAX_PAYLOAD).
-    pub async fn send_service(&mut self, service: &str) -> Result<(), SessionError> {
+    /// Sends a service name directly from `Fresh` state (e.g. for `host:` services).
+    pub async fn send_service(
+        mut self,
+        service: &str,
+    ) -> Result<Session<S, AwaitingStatus>, SessionError> {
         if service.is_empty() || service.len() > MAX_PAYLOAD {
             return Err(SessionError::BadServiceLength(service.len()));
         }
@@ -299,15 +298,45 @@ impl Session {
             .await
             .map_err(SessionError::WriteFailure)?;
 
-        Ok(())
+        Ok(self.transition::<AwaitingStatus>())
     }
+}
 
+impl<S: AsyncStream> Session<S, TransportSelected> {
+    /// Sends a service request to the selected device transport.
+    pub async fn send_service(
+        mut self,
+        service: &str,
+    ) -> Result<Session<S, AwaitingStatus>, SessionError> {
+        if service.is_empty() || service.len() > MAX_PAYLOAD {
+            return Err(SessionError::BadServiceLength(service.len()));
+        }
+
+        crate::adb_trace!(
+            crate::trace::TraceCategory::Services,
+            "sending service request to selected transport: {service}"
+        );
+
+        let req_bytes = adb_proto::smart_socket::encode_request(service)
+            .map_err(|_| SessionError::BadServiceLength(service.len()))?;
+
+        self.stream
+            .write_all(&req_bytes)
+            .await
+            .map_err(SessionError::WriteFailure)?;
+
+        Ok(self.transition::<AwaitingStatus>())
+    }
+}
+
+impl<S: AsyncStream> Session<S, AwaitingStatus> {
     /// Reads smart-socket status response (`OKAY` or `FAIL` + length-prefixed reason), subject to handshake timeout.
-    pub async fn read_status(&mut self) -> Result<(), SessionError> {
-        let res =
+    pub async fn read_status(mut self) -> Result<Session<S, Ready>, SessionError> {
+        let timeout_res =
             tokio::time::timeout(self.config.handshake_timeout, self.read_status_internal()).await;
-        match res {
-            Ok(r) => r,
+        match timeout_res {
+            Ok(Ok(())) => Ok(self.transition::<Ready>()),
+            Ok(Err(err)) => Err(err),
             Err(_) => Err(SessionError::Timeout),
         }
     }
@@ -360,7 +389,9 @@ impl Session {
             }
         }
     }
+}
 
+impl<S: AsyncStream> Session<S, Ready> {
     /// Reads a 4-hex-length prefixed string response after `OKAY`, subject to handshake timeout.
     pub async fn read_string(&mut self) -> Result<String, SessionError> {
         let res =
@@ -408,14 +439,100 @@ impl Session {
         }
     }
 
+    /// Reads a second status response (e.g. for forward commands after transport selection).
+    pub async fn read_second_status(self) -> Result<Session<S, Ready>, SessionError> {
+        let awaiting = self.transition::<AwaitingStatus>();
+        awaiting.read_status().await
+    }
+
     /// Reads all remaining bytes until socket is closed by server (orderly shutdown).
-    pub async fn read_to_close(&mut self) -> Result<Vec<u8>, SessionError> {
+    pub async fn read_to_close(mut self) -> Result<Vec<u8>, SessionError> {
         let mut buf = std::mem::take(&mut self.read_buf);
         self.stream
             .read_to_end(&mut buf)
             .await
             .map_err(SessionError::ReadStatusFailed)?;
         Ok(buf)
+    }
+
+    /// Consumes the session and yields the underlying stream.
+    ///
+    /// Available only in the `Ready` typestate.
+    pub fn into_stream(self) -> S {
+        self.stream
+    }
+}
+
+impl Session<TcpStream, Fresh> {
+    /// Connects to the ADB server at the given address using default configuration.
+    pub async fn connect(addr: &ServerAddress) -> Result<Self, SessionError> {
+        Self::connect_with_config(addr, SessionConfig::default()).await
+    }
+
+    /// Connects to the ADB server at the given address using specified `SessionConfig`.
+    ///
+    /// Ports `_adb_connect` socket connection phase with connect timeout.
+    pub async fn connect_with_config(
+        addr: &ServerAddress,
+        config: SessionConfig,
+    ) -> Result<Self, SessionError> {
+        let spec = addr.to_spec();
+        let host = addr.host.as_deref().unwrap_or("127.0.0.1");
+        let host = if host == "localhost" {
+            "127.0.0.1"
+        } else {
+            host
+        };
+
+        crate::adb_trace!(
+            crate::trace::TraceCategory::Sockets,
+            "connecting to daemon at {spec}"
+        );
+
+        let mut last_err = None;
+        for i in 0..5 {
+            let conn_res = tokio::time::timeout(
+                config.connect_timeout,
+                TcpStream::connect((host, addr.port)),
+            )
+            .await;
+
+            match conn_res {
+                Ok(Ok(stream)) => {
+                    return Ok(Self {
+                        stream,
+                        read_buf: Vec::new(),
+                        config,
+                        _state: PhantomData,
+                    });
+                }
+                Ok(Err(err)) => {
+                    let retryable = matches!(
+                        err.kind(),
+                        std::io::ErrorKind::ConnectionReset
+                            | std::io::ErrorKind::ConnectionRefused
+                            | std::io::ErrorKind::ConnectionAborted
+                    );
+                    last_err = Some(SessionError::CannotConnect {
+                        spec: spec.clone(),
+                        cause: err.to_string(),
+                    });
+                    if retryable && i < 4 {
+                        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+                    } else {
+                        break;
+                    }
+                }
+                Err(_) => {
+                    return Err(SessionError::Timeout);
+                }
+            }
+        }
+
+        Err(last_err.unwrap_or(SessionError::CannotConnect {
+            spec,
+            cause: "connection failed".to_string(),
+        }))
     }
 
     /// Convenience helper executing full `_adb_connect` flow:
@@ -425,7 +542,7 @@ impl Session {
         selector: &TransportSelector,
         service: &str,
         force_switch: bool,
-    ) -> Result<Self, SessionError> {
+    ) -> Result<Session<TcpStream, Ready>, SessionError> {
         Self::connect_and_switch_with_config(
             addr,
             selector,
@@ -443,35 +560,44 @@ impl Session {
         service: &str,
         force_switch: bool,
         config: SessionConfig,
-    ) -> Result<Self, SessionError> {
+    ) -> Result<Session<TcpStream, Ready>, SessionError> {
         if service.is_empty() || service.len() > MAX_PAYLOAD {
             return Err(SessionError::BadServiceLength(service.len()));
         }
 
-        let mut session = Self::connect_with_config(addr, config).await?;
+        let session = Self::connect_with_config(addr, config).await?;
 
         if !service.starts_with("host") || force_switch {
-            session.select_transport(selector).await?;
+            let (session, _) = session.select_transport(selector).await?;
+            let awaiting = session.send_service(service).await?;
+            awaiting.read_status().await
+        } else {
+            let awaiting = session.send_service(service).await?;
+            awaiting.read_status().await
+        }
+    }
+}
+
+impl Session<BoxedStream, Fresh> {
+    /// Opens an end-to-end ready session using any `SessionFactory` and `TransportSelector`.
+    pub async fn open(
+        factory: &dyn crate::client::SessionFactory,
+        addr: &ServerAddress,
+        selector: &TransportSelector,
+        service: &str,
+    ) -> Result<Session<BoxedStream, Ready>, SessionError> {
+        if service.is_empty() || service.len() > MAX_PAYLOAD {
+            return Err(SessionError::BadServiceLength(service.len()));
         }
 
-        session.send_service(service).await?;
-        session.read_status().await?;
-
-        Ok(session)
-    }
-
-    /// Consumes this session and returns the underlying `TcpStream`.
-    pub fn into_inner(self) -> TcpStream {
-        self.stream
-    }
-
-    /// Returns a mutable reference to the underlying `TcpStream`.
-    pub fn stream_mut(&mut self) -> &mut TcpStream {
-        &mut self.stream
-    }
-
-    /// Returns a reference to the underlying `TcpStream`.
-    pub fn stream_ref(&self) -> &TcpStream {
-        &self.stream
+        let session = factory.connect(addr).await?;
+        if !service.starts_with("host") {
+            let (session, _) = session.select_transport(selector).await?;
+            let awaiting = session.send_service(service).await?;
+            awaiting.read_status().await
+        } else {
+            let awaiting = session.send_service(service).await?;
+            awaiting.read_status().await
+        }
     }
 }

@@ -27,10 +27,13 @@ async fn test_smart_socket_server_never_replies_times_out() {
     };
 
     let session_factory = DefaultSessionFactory::with_config(config);
-    let mut session = session_factory.connect(&addr).await.unwrap();
+    let session = session_factory.connect(&addr).await.unwrap();
 
-    session.send_service("host:version").await.unwrap();
-    let err = session.read_status().await.unwrap_err();
+    let awaiting = session.send_service("host:version").await.unwrap();
+    let err = match awaiting.read_status().await {
+        Err(e) => e,
+        Ok(_) => panic!("Expected timeout error"),
+    };
     match err {
         SessionError::Timeout => {}
         other => panic!("Expected SessionError::Timeout, got {:?}", other),

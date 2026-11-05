@@ -6,7 +6,7 @@ pub mod reverse;
 pub mod shell;
 
 use crate::server_address::ServerAddress;
-use crate::session::{Session, SessionConfig, SessionError};
+use crate::session::{BoxedStream, Fresh, Session, SessionConfig, SessionError};
 use crate::transport::{format_host_command, TransportSelector};
 use std::future::Future;
 use std::pin::Pin;
@@ -35,12 +35,20 @@ impl Default for LaunchConfig {
     }
 }
 
+/// Options controlling server startup passed to launchers.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ServerLaunchOptions {
+    pub listen_all: bool,
+    pub one_device: Option<String>,
+}
+
+/// Future returned when connecting via a `SessionFactory`.
+pub type ConnectFuture<'a> =
+    Pin<Box<dyn Future<Output = Result<Session<BoxedStream, Fresh>, SessionError>> + Send + 'a>>;
+
 /// Trait for creating sessions to an ADB server address.
 pub trait SessionFactory: Send + Sync {
-    fn connect<'a>(
-        &'a self,
-        addr: &'a ServerAddress,
-    ) -> Pin<Box<dyn Future<Output = Result<Session, SessionError>> + Send + 'a>>;
+    fn connect<'a>(&'a self, addr: &'a ServerAddress) -> ConnectFuture<'a>;
 }
 
 /// Default implementation of `SessionFactory` using `Session::connect_with_config`.
@@ -67,12 +75,12 @@ impl Default for DefaultSessionFactory {
 }
 
 impl SessionFactory for DefaultSessionFactory {
-    fn connect<'a>(
-        &'a self,
-        addr: &'a ServerAddress,
-    ) -> Pin<Box<dyn Future<Output = Result<Session, SessionError>> + Send + 'a>> {
+    fn connect<'a>(&'a self, addr: &'a ServerAddress) -> ConnectFuture<'a> {
         let config = self.config;
-        Box::pin(async move { Session::connect_with_config(addr, config).await })
+        Box::pin(async move {
+            let session = Session::connect_with_config(addr, config).await?;
+            Ok(session.boxed())
+        })
     }
 }
 
@@ -380,7 +388,7 @@ pub async fn kill_server(
     session_factory: &dyn SessionFactory,
     events: &mut Vec<ClientEvent>,
 ) -> Result<(), ClientError> {
-    let mut session = match session_factory.connect(addr).await {
+    let session = match session_factory.connect(addr).await {
         Ok(s) => s,
         Err(err) => {
             let cause = match &err {
@@ -395,15 +403,18 @@ pub async fn kill_server(
         }
     };
 
-    if let Err(err) = session.send_service("host:kill").await {
-        let msg = format!("write failure during connection: {err}");
-        events.push(ClientEvent::ErrorLine(msg.clone()));
-        return Err(ClientError::KillFailed(msg));
-    }
+    let awaiting = match session.send_service("host:kill").await {
+        Ok(s) => s,
+        Err(err) => {
+            let msg = format!("write failure during connection: {err}");
+            events.push(ClientEvent::ErrorLine(msg.clone()));
+            return Err(ClientError::KillFailed(msg));
+        }
+    };
 
-    match session.read_status().await {
-        Ok(()) => {
-            let _ = session.read_to_close().await;
+    match awaiting.read_status().await {
+        Ok(ready) => {
+            let _ = ready.read_to_close().await;
             Ok(())
         }
         Err(SessionError::Fail(reason)) => {
@@ -486,7 +497,7 @@ pub async fn check_server_version_with_options(
     let connect_res = session_factory.connect(addr).await;
     let local = addr.is_local();
 
-    let mut session = match connect_res {
+    let session = match connect_res {
         Err(SessionError::CannotConnect { cause, .. }) => {
             if !local {
                 events.push(ClientEvent::CannotStartRemote);
@@ -507,14 +518,15 @@ pub async fn check_server_version_with_options(
         Ok(s) => s,
     };
 
-    if let Err(err) = session.send_service("host:version").await {
-        return Err(err.into());
-    }
+    let awaiting = match session.send_service("host:version").await {
+        Ok(a) => a,
+        Err(err) => return Err(err.into()),
+    };
 
-    let version = match session.read_status().await {
-        Ok(()) => {
-            let version_string = session.read_string().await?;
-            let _ = session.read_to_close().await;
+    let version = match awaiting.read_status().await {
+        Ok(mut ready) => {
+            let version_string = ready.read_string().await?;
+            let _ = ready.read_to_close().await;
 
             match u32::from_str_radix(&version_string, 16) {
                 Ok(v) => v,
@@ -547,6 +559,7 @@ pub struct AdbClientBuilder {
     launcher: Option<Arc<dyn ServerLauncher>>,
     session_config: SessionConfig,
     launch_config: LaunchConfig,
+    launch_options: ServerLaunchOptions,
 }
 
 impl AdbClientBuilder {
@@ -557,6 +570,7 @@ impl AdbClientBuilder {
             launcher: None,
             session_config: SessionConfig::default(),
             launch_config: LaunchConfig::default(),
+            launch_options: ServerLaunchOptions::default(),
         }
     }
 
@@ -580,6 +594,11 @@ impl AdbClientBuilder {
         self
     }
 
+    pub fn launch_options(mut self, options: ServerLaunchOptions) -> Self {
+        self.launch_options = options;
+        self
+    }
+
     pub fn build(self) -> AdbClient {
         let session_factory = self
             .session_factory
@@ -592,6 +611,7 @@ impl AdbClientBuilder {
             addr: self.addr,
             session_factory,
             launcher,
+            launch_options: self.launch_options,
             version_checked: tokio::sync::OnceCell::new(),
         }
     }
@@ -602,6 +622,7 @@ pub struct AdbClient {
     addr: ServerAddress,
     session_factory: Arc<dyn SessionFactory>,
     launcher: Arc<dyn ServerLauncher>,
+    launch_options: ServerLaunchOptions,
     version_checked: tokio::sync::OnceCell<()>,
 }
 
@@ -628,7 +649,10 @@ impl AdbClient {
 
     /// Ensures the server is running and version matches before executing host operations.
     pub(crate) async fn ensure_server(&self) -> Outcome<()> {
-        self.ensure_server_with_options(false, None).await
+        let listen_all = self.launch_options.listen_all;
+        let one_device = self.launch_options.one_device.as_deref();
+        self.ensure_server_with_options(listen_all, one_device)
+            .await
     }
 
     /// Ensures the server is running and version matches before executing host operations, passing launch options.
@@ -720,9 +744,13 @@ impl AdbClient {
         };
 
         self.with_server(async {
-            let mut session = self.session_factory.connect(&self.addr).await?;
-            session.send_service(service).await?;
-            session.read_status().await?;
+            let mut session = Session::open(
+                self.session_factory.as_ref(),
+                &self.addr,
+                &TransportSelector::Any,
+                service,
+            )
+            .await?;
             let payload = session.read_string().await?;
             Ok(format!("List of devices attached\n{payload}\n"))
         })
@@ -739,9 +767,13 @@ impl AdbClient {
     ) -> Outcome<String> {
         let service = format_host_command(command, selector);
         self.with_server(async {
-            let mut session = self.session_factory.connect(&self.addr).await?;
-            session.send_service(&service).await?;
-            session.read_status().await?;
+            let mut session = Session::open(
+                self.session_factory.as_ref(),
+                &self.addr,
+                &TransportSelector::Any,
+                &service,
+            )
+            .await?;
             let payload = session.read_string().await?;
             Ok(format!("{payload}\n"))
         })
@@ -769,15 +801,12 @@ impl AdbClient {
     /// Ports `transport-id` handling from `original/client/commandline.cpp`.
     pub async fn transport_id(&self, selector: &TransportSelector) -> Outcome<String> {
         self.with_server(async {
-            let mut session = self.session_factory.connect(&self.addr).await?;
-            let transport_id = session
-                .select_transport(selector)
-                .await?
-                .map(|id| id.get())
-                .unwrap_or(0);
-            session.send_service("host:features").await?;
-            session.read_status().await?;
-            Ok(format!("{transport_id}\n"))
+            let session = self.session_factory.connect(&self.addr).await?;
+            let (session, transport_id) = session.select_transport(selector).await?;
+            let tid = transport_id.map(|id| id.get()).unwrap_or(0);
+            let awaiting = session.send_service("host:features").await?;
+            let _ready = awaiting.read_status().await?;
+            Ok(format!("{tid}\n"))
         })
         .await
     }
@@ -792,9 +821,13 @@ impl AdbClient {
     ) -> Outcome<String> {
         let service = format_host_command("features", selector);
         self.with_server(async {
-            let mut session = self.session_factory.connect(&self.addr).await?;
-            session.send_service(&service).await?;
-            session.read_status().await?;
+            let mut session = Session::open(
+                self.session_factory.as_ref(),
+                &self.addr,
+                &TransportSelector::Any,
+                &service,
+            )
+            .await?;
             let payload = session.read_string().await?;
 
             let device_features = adb_proto::Features::parse(&payload);
@@ -827,9 +860,13 @@ impl AdbClient {
     pub async fn connect(&self, target: &str) -> Outcome<String> {
         let service = format!("host:connect:{target}");
         self.with_server(async {
-            let mut session = self.session_factory.connect(&self.addr).await?;
-            session.send_service(&service).await?;
-            session.read_status().await?;
+            let mut session = Session::open(
+                self.session_factory.as_ref(),
+                &self.addr,
+                &TransportSelector::Any,
+                &service,
+            )
+            .await?;
             let payload = session.read_string().await?;
             Ok(payload)
         })
@@ -843,9 +880,13 @@ impl AdbClient {
     pub async fn disconnect(&self, target: Option<&str>) -> Outcome<String> {
         let service = format!("host:disconnect:{}", target.unwrap_or(""));
         self.with_server(async {
-            let mut session = self.session_factory.connect(&self.addr).await?;
-            session.send_service(&service).await?;
-            session.read_status().await?;
+            let mut session = Session::open(
+                self.session_factory.as_ref(),
+                &self.addr,
+                &TransportSelector::Any,
+                &service,
+            )
+            .await?;
             let payload = session.read_string().await?;
             Ok(payload)
         })
