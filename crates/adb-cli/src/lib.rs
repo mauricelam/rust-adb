@@ -1699,7 +1699,10 @@ mod tests {
             env_with_serial,
         )
         .unwrap();
-        assert_eq!(opts.device_selection.selector, TransportSelector::Id(42));
+        assert_eq!(
+            opts.device_selection.selector,
+            TransportSelector::Id(adb_client::TransportId::from_u64(42).unwrap())
+        );
     }
 
     #[test]

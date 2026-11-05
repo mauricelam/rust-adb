@@ -1,4 +1,5 @@
 use crate::transport::TransportSelector;
+use adb_proto::TransportId;
 
 /// Selection errors during device option argument parsing.
 ///
@@ -56,7 +57,7 @@ impl DeviceSelection {
 
     pub fn transport_id(&self) -> Option<u64> {
         match self.selector {
-            TransportSelector::Id(id) => Some(id),
+            TransportSelector::Id(id) => Some(id.get()),
             _ => None,
         }
     }
@@ -115,6 +116,7 @@ impl DeviceSelection {
             let id = id_str
                 .parse::<u64>()
                 .map_err(|_| SelectionError::InvalidTransportId)?;
+            let id = TransportId::from_u64(id).ok_or(SelectionError::InvalidTransportId)?;
             Ok(Some((TransportSelector::Id(id), true)))
         } else {
             Ok(None)

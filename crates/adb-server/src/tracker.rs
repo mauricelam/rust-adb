@@ -278,7 +278,7 @@ pub fn format_devices_raw(devices: &[Arc<DeviceEntry>], format: TrackerFormat) -
                 encode_varint_field(7, conn_type_val as u64, &mut dev_buf);
 
                 // 10: transport_id (int64 varint)
-                encode_varint_field(10, dev.transport_id, &mut dev_buf);
+                encode_varint_field(10, dev.transport_id.get(), &mut dev_buf);
 
                 // Append Device submessage to Devices message (field 1, repeated message)
                 encode_bytes_field(1, &dev_buf, &mut devices_buf);

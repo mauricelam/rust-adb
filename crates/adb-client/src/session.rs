@@ -3,6 +3,7 @@ use crate::transport::TransportSelector;
 use adb_proto::smart_socket::{
     parse_protocol_string, parse_reply, ProtocolString, SmartSocketError, SmartSocketReply,
 };
+use adb_proto::TransportId;
 use adb_proto::MAX_PAYLOAD;
 use std::fmt;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -232,7 +233,7 @@ impl Session {
     pub async fn select_transport(
         &mut self,
         selector: &TransportSelector,
-    ) -> Result<Option<u64>, SessionError> {
+    ) -> Result<Option<TransportId>, SessionError> {
         let (service, read_transport) = match selector {
             TransportSelector::Id(id) => (format!("host:transport-id:{id}"), false),
             TransportSelector::Serial(s) => (format!("host:tport:serial:{s}"), true),
@@ -268,8 +269,8 @@ impl Session {
                     read_bytes = 8;
                 }
             }
-            let id = u64::from_ne_bytes(buf);
-            Ok(Some(id))
+            let tid = TransportId::from_ne_bytes(buf).ok_or(SessionError::ReadTransportIdFailed)?;
+            Ok(Some(tid))
         } else if let TransportSelector::Id(id) = selector {
             Ok(Some(*id))
         } else {

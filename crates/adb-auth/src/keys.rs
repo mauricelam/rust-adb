@@ -200,24 +200,108 @@ pub fn sign_token(key: &RsaPrivateKey, token: &[u8]) -> Result<Vec<u8>, SignErro
         .map_err(|e| SignError::SigningFailed(e.to_string()))
 }
 
+/// Strongly-typed 32-byte SHA-256 fingerprint of an RSA public key.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct KeyFingerprint(pub [u8; 32]);
+
+impl KeyFingerprint {
+    /// Creates a new `KeyFingerprint`.
+    pub const fn new(bytes: [u8; 32]) -> Self {
+        Self(bytes)
+    }
+
+    /// Returns a reference to the raw 32-byte array.
+    pub const fn as_bytes(&self) -> &[u8; 32] {
+        &self.0
+    }
+
+    /// Consumes the wrapper and returns the raw 32-byte array.
+    pub const fn into_inner(self) -> [u8; 32] {
+        self.0
+    }
+
+    /// Formats the fingerprint as an uppercase hex string.
+    pub fn to_hex(&self) -> String {
+        let mut s = String::with_capacity(64);
+        for b in &self.0 {
+            use std::fmt::Write;
+            let _ = write!(s, "{:02X}", b);
+        }
+        s
+    }
+}
+
+impl std::fmt::Display for KeyFingerprint {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        for b in &self.0 {
+            write!(f, "{:02X}", b)?;
+        }
+        Ok(())
+    }
+}
+
+impl AsRef<[u8; 32]> for KeyFingerprint {
+    fn as_ref(&self) -> &[u8; 32] {
+        &self.0
+    }
+}
+
+impl std::ops::Deref for KeyFingerprint {
+    type Target = [u8; 32];
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl AsRef<[u8]> for KeyFingerprint {
+    fn as_ref(&self) -> &[u8] {
+        &self.0
+    }
+}
+
+impl From<[u8; 32]> for KeyFingerprint {
+    fn from(bytes: [u8; 32]) -> Self {
+        Self(bytes)
+    }
+}
+
+impl From<KeyFingerprint> for [u8; 32] {
+    fn from(fp: KeyFingerprint) -> Self {
+        fp.0
+    }
+}
+
+impl PartialEq<[u8; 32]> for KeyFingerprint {
+    fn eq(&self, other: &[u8; 32]) -> bool {
+        &self.0 == other
+    }
+}
+
+impl PartialEq<KeyFingerprint> for [u8; 32] {
+    fn eq(&self, other: &KeyFingerprint) -> bool {
+        self == &other.0
+    }
+}
+
 /// Compute SHA-256 fingerprint of an RSA private key based on its SubjectPublicKeyInfo DER encoding.
 ///
 /// Ported from `hash_key` in `original/client/auth.cpp`.
-pub fn fingerprint(key: &RsaPrivateKey) -> Result<[u8; 32], KeyError> {
+pub fn fingerprint(key: &RsaPrivateKey) -> Result<KeyFingerprint, KeyError> {
     let pub_key = key.to_public_key();
     let der = pub_key
         .to_public_key_der()
         .map_err(|e| KeyError::PublicKeyEncoding(e.to_string()))?;
     let mut hasher = Sha256::new();
     hasher.update(der.as_bytes());
-    Ok(hasher.finalize().into())
+    Ok(KeyFingerprint(hasher.finalize().into()))
 }
 
 /// Compute SHA-256 fingerprint of an RSA private key as a `Vec<u8>`.
 ///
 /// Ported from `hash_key` in `original/client/auth.cpp`.
 pub fn hash_key(key: &RsaPrivateKey) -> Result<Vec<u8>, KeyError> {
-    fingerprint(key).map(|fp| fp.to_vec())
+    fingerprint(key).map(|fp| fp.as_bytes().to_vec())
 }
 
 /// Store for ADB authentication RSA private keys, supporting standard user key
@@ -228,7 +312,7 @@ pub fn hash_key(key: &RsaPrivateKey) -> Result<Vec<u8>, KeyError> {
 #[derive(Debug, Clone, Default)]
 pub struct KeyStore {
     user_key: Option<RsaPrivateKey>,
-    keys: BTreeMap<[u8; 32], RsaPrivateKey>,
+    keys: BTreeMap<KeyFingerprint, RsaPrivateKey>,
 }
 
 impl KeyStore {

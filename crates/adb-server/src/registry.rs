@@ -13,8 +13,8 @@ use crate::state::ConnectionState;
 use crate::tracker::{format_devices_framed, TrackerFormat};
 use crate::transport_type::TransportType;
 
-/// Monotonically increasing transport ID, starting at 1.
-pub type TransportId = u64;
+/// Re-export strongly-typed TransportId from adb-proto.
+pub use adb_proto::TransportId;
 
 /// Error occurring during device registration.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -207,7 +207,8 @@ impl DeviceRegistry {
     /// }
     /// ```
     pub fn next_transport_id(&self) -> TransportId {
-        self.next_id.fetch_add(1, Ordering::Relaxed)
+        let val = self.next_id.fetch_add(1, Ordering::Relaxed);
+        TransportId::from_u64(val).expect("monotonic transport id never zero")
     }
 
     /// Subscribes to device change notifications in the specified `TrackerFormat`.
@@ -279,6 +280,19 @@ impl DeviceRegistry {
         serial: &str,
         transport_type: TransportType,
     ) -> Result<TransportId, RegistrationError> {
+        self.register_with_devpath(serial, transport_type, None)
+    }
+
+    /// Registers a new device transport with serial, transport type, and optional devpath.
+    ///
+    /// Rejects duplicate registrations if a device with the same serial is already registered.
+    /// Returns the allocated `TransportId` on success.
+    pub fn register_with_devpath(
+        &self,
+        serial: &str,
+        transport_type: TransportType,
+        devpath: Option<String>,
+    ) -> Result<TransportId, RegistrationError> {
         let mut inner = self.inner.write();
 
         if inner.by_serial.contains_key(serial) {
@@ -286,7 +300,9 @@ impl DeviceRegistry {
         }
 
         let transport_id = self.next_transport_id();
-        let entry = Arc::new(DeviceEntry::new(transport_id, serial, transport_type));
+        let mut entry = DeviceEntry::new(transport_id, serial, transport_type);
+        entry.devpath = devpath;
+        let entry = Arc::new(entry);
 
         inner.by_id.insert(transport_id, Arc::clone(&entry));
         inner.by_serial.insert(serial.to_string(), transport_id);

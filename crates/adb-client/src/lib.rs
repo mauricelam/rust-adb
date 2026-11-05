@@ -9,6 +9,7 @@ pub mod sync_session;
 pub mod trace;
 pub mod transport;
 
+pub use adb_proto::{ServerVersion, TransportId, SERVER_VERSION};
 pub use client::{
     check_server_version, check_server_version_with_options, escape_arg, forward_dest_is_featured,
     forward_targets_are_valid, kill_server, start_server, start_server_with_one_device,

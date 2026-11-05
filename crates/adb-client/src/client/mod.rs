@@ -18,8 +18,8 @@ pub use events::{ClientEvent, Outcome};
 pub use forward::{forward_dest_is_featured, forward_targets_are_valid};
 pub use shell::{escape_arg, ShellOptions};
 
-/// Expected ADB server version matching C++ `ADB_SERVER_VERSION` in `original/adb.h`.
-pub const ADB_SERVER_VERSION: u32 = 41;
+/// Re-export ADB server version and newtype from `adb_proto`.
+pub use adb_proto::{ADB_SERVER_VERSION, SERVER_VERSION};
 
 /// Configuration for launching an ADB server process.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -770,7 +770,11 @@ impl AdbClient {
     pub async fn transport_id(&self, selector: &TransportSelector) -> Outcome<String> {
         self.with_server(async {
             let mut session = self.session_factory.connect(&self.addr).await?;
-            let transport_id = session.select_transport(selector).await?.unwrap_or(0);
+            let transport_id = session
+                .select_transport(selector)
+                .await?
+                .map(|id| id.get())
+                .unwrap_or(0);
             session.send_service("host:features").await?;
             session.read_status().await?;
             Ok(format!("{transport_id}\n"))

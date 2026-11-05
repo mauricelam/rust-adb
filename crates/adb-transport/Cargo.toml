@@ -5,9 +5,14 @@ edition.workspace = true
 rust-version.workspace = true
 publish.workspace = true
 
+[features]
+default = []
+usb = ["dep:nusb"]
+
 [dependencies]
 adb-proto = { path = "../adb-proto" }
-tokio = { version = "1", features = ["io-util", "net", "time", "rt"] }
+tokio = { version = "1", features = ["io-util", "net", "time", "rt", "sync"] }
+nusb = { version = "0.2", optional = true }
 
 [[bench]]
 name = "transport_throughput"
