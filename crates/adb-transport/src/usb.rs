@@ -339,7 +339,13 @@ pub trait UsbBackend: Send + Sync {
     /// If native hotplug callbacks are unavailable, implementations provide a polling fallback.
     fn subscribe_hotplug_events(
         &self,
-    ) -> Pin<Box<dyn Future<Output = Result<mpsc::UnboundedReceiver<UsbHotplugEvent>, UsbError>> + Send + '_>> {
+    ) -> Pin<
+        Box<
+            dyn Future<Output = Result<mpsc::UnboundedReceiver<UsbHotplugEvent>, UsbError>>
+                + Send
+                + '_,
+        >,
+    > {
         Box::pin(async move {
             let (_tx, rx) = mpsc::unbounded_channel();
             Ok(rx)
@@ -523,7 +529,13 @@ impl UsbBackend for MockUsbBackend {
 
     fn subscribe_hotplug_events(
         &self,
-    ) -> Pin<Box<dyn Future<Output = Result<mpsc::UnboundedReceiver<UsbHotplugEvent>, UsbError>> + Send + '_>> {
+    ) -> Pin<
+        Box<
+            dyn Future<Output = Result<mpsc::UnboundedReceiver<UsbHotplugEvent>, UsbError>>
+                + Send
+                + '_,
+        >,
+    > {
         Box::pin(async move {
             let (tx, rx) = mpsc::unbounded_channel();
             let mut senders = self.event_senders.lock().await;

@@ -147,10 +147,7 @@ impl UsbDeviceScanner {
 
     /// Runs the scanner loop, processing hotplug events and periodic polling passes.
     pub async fn run(&self, interval: Duration) {
-        let mut event_rx = match self.backend.subscribe_hotplug_events().await {
-            Ok(rx) => Some(rx),
-            Err(_) => None,
-        };
+        let mut event_rx = self.backend.subscribe_hotplug_events().await.ok();
 
         // Initial scan pass
         let _ = self.scan_once().await;
