@@ -10,27 +10,68 @@ pub enum PtyMode {
     Definitely,
 }
 
+/// Kind of PTY allocated for Shell v2 protocol.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PtyKind {
+    Pty,
+    Raw,
+}
+
+/// Shell protocol selection and PTY allocation kind.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ShellProtocol {
+    V1,
+    V2(PtyKind),
+}
+
+/// Validated single-byte escape character newtype.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct EscapeChar(pub u8);
+
+impl EscapeChar {
+    pub const DEFAULT: Self = Self(b'~');
+
+    pub fn as_byte(self) -> u8 {
+        self.0
+    }
+
+    pub fn as_char(self) -> char {
+        self.0 as char
+    }
+}
+
 /// Result of PTY allocation decision logic matching C++ `commandline.cpp`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PtyDecision {
-    /// Service type argument ("pty", "raw", or "" for v1).
-    pub type_arg: &'static str,
+    /// Resolved shell protocol and PTY kind.
+    pub protocol: ShellProtocol,
     /// Warning message to print to stderr, if any.
     pub warning: Option<String>,
     /// Whether local stdin should be set to raw mode.
     pub raw_stdin: bool,
-    /// Whether Shell v2 protocol should be used.
-    pub use_shell_protocol: bool,
 }
 
-/// Parses the `-e` argument string into an optional escape character.
+impl PtyDecision {
+    /// Returns whether the shell is using the v2 protocol.
+    pub fn use_shell_protocol(&self) -> bool {
+        matches!(self.protocol, ShellProtocol::V2(_))
+    }
+
+    /// Returns true if a remote PTY is allocated.
+    pub fn is_pty(&self) -> bool {
+        matches!(self.protocol, ShellProtocol::V2(PtyKind::Pty))
+    }
+}
+
+/// Parses the `-e` argument string into an optional validated `EscapeChar`.
 ///
-/// Accepts a single character or `'none'`. Returns error on any other string.
-pub fn parse_escape_char_arg(s: &str) -> Result<Option<char>, ClientError> {
+/// Accepts a single 1-byte ASCII character or `'none'`. Returns error on any other string.
+/// Ports C++ `-e` argument validation `strlen(optarg) == 1 || strcmp(optarg, "none") == 0`.
+pub fn parse_escape_char_arg(s: &str) -> Result<Option<EscapeChar>, ClientError> {
     if s == "none" {
         Ok(None)
-    } else if s.chars().count() == 1 {
-        Ok(Some(s.chars().next().unwrap()))
+    } else if s.len() == 1 {
+        Ok(Some(EscapeChar(s.as_bytes()[0])))
     } else {
         Err(ClientError::QueryFailed(
             "-e requires a single-character argument or 'none'".to_string(),
@@ -49,9 +90,7 @@ pub fn determine_pty_allocation(
 ) -> Result<PtyDecision, ClientError> {
     let use_shell_protocol = device_supports_shell2 && !options.disable_shell_protocol;
 
-    let effective_pty_mode = if options.no_pty {
-        PtyMode::No
-    } else if options.pty_mode == PtyMode::Auto && !use_shell_protocol {
+    let effective_pty_mode = if options.pty_mode == PtyMode::Auto && !use_shell_protocol {
         PtyMode::Definitely
     } else {
         options.pty_mode
@@ -59,13 +98,13 @@ pub fn determine_pty_allocation(
 
     let mut warning = None;
 
-    let requested_type = match effective_pty_mode {
-        PtyMode::No => "raw",
+    let requested_kind = match effective_pty_mode {
+        PtyMode::No => PtyKind::Raw,
         PtyMode::Auto => {
             if !stdin_isatty || !is_interactive {
-                "raw"
+                PtyKind::Raw
             } else {
-                "pty"
+                PtyKind::Pty
             }
         }
         PtyMode::Yes => {
@@ -75,16 +114,16 @@ pub fn determine_pty_allocation(
                      Use multiple -t options to force remote PTY allocation.\n"
                         .to_string(),
                 );
-                "raw"
+                PtyKind::Raw
             } else {
-                "pty"
+                PtyKind::Pty
             }
         }
-        PtyMode::Definitely => "pty",
+        PtyMode::Definitely => PtyKind::Pty,
     };
 
-    let type_arg = if !use_shell_protocol {
-        if requested_type != "pty" {
+    let (protocol, raw_stdin) = if !use_shell_protocol {
+        if requested_kind != PtyKind::Pty {
             if !device_supports_shell2 {
                 return Err(ClientError::QueryFailed(
                     "device only supports allocating a pty".to_string(),
@@ -95,18 +134,16 @@ pub fn determine_pty_allocation(
                 ));
             }
         }
-        ""
+        (ShellProtocol::V1, is_interactive)
     } else {
-        requested_type
+        let is_raw_stdin = requested_kind == PtyKind::Pty;
+        (ShellProtocol::V2(requested_kind), is_raw_stdin)
     };
 
-    let raw_stdin = type_arg == "pty" || (type_arg.is_empty() && is_interactive);
-
     Ok(PtyDecision {
-        type_arg,
+        protocol,
         warning,
         raw_stdin,
-        use_shell_protocol,
     })
 }
 
@@ -259,9 +296,9 @@ pub struct EscapeStateMachine {
 }
 
 impl EscapeStateMachine {
-    pub fn new(escape_char: Option<char>) -> Self {
+    pub fn new(escape_char: Option<EscapeChar>) -> Self {
         Self {
-            escape_char: escape_char.map(|c| c as u8),
+            escape_char: escape_char.map(|e| e.as_byte()),
             state: EscapeState::StartOfLine,
         }
     }
@@ -326,10 +363,11 @@ mod tests {
     #[test]
     fn test_parse_escape_char_arg() {
         assert_eq!(parse_escape_char_arg("none").unwrap(), None);
-        assert_eq!(parse_escape_char_arg("~").unwrap(), Some('~'));
-        assert_eq!(parse_escape_char_arg("@").unwrap(), Some('@'));
+        assert_eq!(parse_escape_char_arg("~").unwrap(), Some(EscapeChar(b'~')));
+        assert_eq!(parse_escape_char_arg("@").unwrap(), Some(EscapeChar(b'@')));
         assert!(parse_escape_char_arg("invalid").is_err());
         assert!(parse_escape_char_arg("").is_err());
+        assert!(parse_escape_char_arg("é").is_err());
     }
 
     #[test]
@@ -346,20 +384,22 @@ mod tests {
         // Auto, interactive, tty, shell2 -> pty, v2
         let opt = ShellOptions::default();
         let dec = determine_pty_allocation(&opt, true, true, true).unwrap();
-        assert_eq!(dec.type_arg, "pty");
+        assert_eq!(dec.protocol, ShellProtocol::V2(PtyKind::Pty));
         assert_eq!(dec.warning, None);
         assert!(dec.raw_stdin);
-        assert!(dec.use_shell_protocol);
+        assert!(dec.use_shell_protocol());
+        assert!(dec.is_pty());
 
         // Auto, non-interactive, tty, shell2 -> raw, v2
         let dec = determine_pty_allocation(&opt, false, true, true).unwrap();
-        assert_eq!(dec.type_arg, "raw");
+        assert_eq!(dec.protocol, ShellProtocol::V2(PtyKind::Raw));
         assert_eq!(dec.warning, None);
         assert!(!dec.raw_stdin);
+        assert!(!dec.is_pty());
 
         // Auto, interactive, non-tty, shell2 -> raw, v2
         let dec = determine_pty_allocation(&opt, true, false, true).unwrap();
-        assert_eq!(dec.type_arg, "raw");
+        assert_eq!(dec.protocol, ShellProtocol::V2(PtyKind::Raw));
         assert_eq!(dec.warning, None);
         assert!(!dec.raw_stdin);
 
@@ -369,7 +409,7 @@ mod tests {
             ..Default::default()
         };
         let dec = determine_pty_allocation(&opt_t, true, false, true).unwrap();
-        assert_eq!(dec.type_arg, "raw");
+        assert_eq!(dec.protocol, ShellProtocol::V2(PtyKind::Raw));
         assert!(dec
             .warning
             .as_ref()
@@ -383,7 +423,7 @@ mod tests {
             ..Default::default()
         };
         let dec = determine_pty_allocation(&opt_tt, true, false, true).unwrap();
-        assert_eq!(dec.type_arg, "pty");
+        assert_eq!(dec.protocol, ShellProtocol::V2(PtyKind::Pty));
         assert_eq!(dec.warning, None);
         assert!(dec.raw_stdin);
 
@@ -393,56 +433,47 @@ mod tests {
             ..Default::default()
         };
         let dec = determine_pty_allocation(&opt_no, true, true, true).unwrap();
-        assert_eq!(dec.type_arg, "raw");
+        assert_eq!(dec.protocol, ShellProtocol::V2(PtyKind::Raw));
         assert_eq!(dec.warning, None);
         assert!(!dec.raw_stdin);
 
-        // no_pty field set -> raw
-        let opt_no_pty = ShellOptions {
-            no_pty: true,
-            ..Default::default()
-        };
-        let dec = determine_pty_allocation(&opt_no_pty, true, true, true).unwrap();
-        assert_eq!(dec.type_arg, "raw");
-
-        // v1 (no shell2 on device), Auto, interactive, tty -> type_arg = "", raw_stdin = true
+        // v1 (no shell2 on device), Auto, interactive, tty -> v1, raw_stdin = true
         let dec = determine_pty_allocation(&opt, true, true, false).unwrap();
-        assert_eq!(dec.type_arg, "");
+        assert_eq!(dec.protocol, ShellProtocol::V1);
         assert!(dec.raw_stdin);
-        assert!(!dec.use_shell_protocol);
+        assert!(!dec.use_shell_protocol());
 
-        // v1 (no shell2 on device), Auto, non-interactive -> defaults to kPtyDefinitely for v1, so type_arg = ""
+        // v1 (no shell2 on device), Auto, non-interactive -> v1, raw_stdin = false
         let dec = determine_pty_allocation(&opt, false, true, false).unwrap();
-        assert_eq!(dec.type_arg, "");
+        assert_eq!(dec.protocol, ShellProtocol::V1);
         assert!(!dec.raw_stdin);
 
         // v1 (no shell2 on device) with -T (requests raw) -> device only supports allocating a pty
-        let err = determine_pty_allocation(&opt_no_pty, false, true, false).unwrap_err();
+        let err = determine_pty_allocation(&opt_no, false, true, false).unwrap_err();
         assert_eq!(err.to_string(), "device only supports allocating a pty");
 
-        // -x (disable shell protocol), non-interactive -> defaults to kPtyDefinitely for -x, so type_arg = ""
+        // -x (disable shell protocol), non-interactive -> defaults to kPtyDefinitely for -x, so v1
         let opt_x = ShellOptions {
             disable_shell_protocol: true,
             ..Default::default()
         };
         let dec = determine_pty_allocation(&opt_x, false, true, true).unwrap();
-        assert_eq!(dec.type_arg, "");
+        assert_eq!(dec.protocol, ShellProtocol::V1);
         assert!(!dec.raw_stdin);
 
         // -x with -T (requests raw) -> -x only supports allocating a pty
-        let opt_x_no_pty = ShellOptions {
+        let opt_x_no = ShellOptions {
             disable_shell_protocol: true,
-            no_pty: true,
             pty_mode: PtyMode::No,
             ..Default::default()
         };
-        let err = determine_pty_allocation(&opt_x_no_pty, false, true, true).unwrap_err();
+        let err = determine_pty_allocation(&opt_x_no, false, true, true).unwrap_err();
         assert_eq!(err.to_string(), "-x only supports allocating a pty");
     }
 
     #[test]
     fn test_escape_state_machine_transitions() {
-        let mut sm = EscapeStateMachine::new(Some('~'));
+        let mut sm = EscapeStateMachine::new(Some(EscapeChar(b'~')));
 
         // StartOfLine swallows ~
         assert_eq!(sm.process_byte(b'~'), EscapeResult::Output(vec![]));
@@ -452,7 +483,7 @@ mod tests {
         assert_eq!(sm.process_byte(b'.'), EscapeResult::Disconnect);
 
         // Reset state machine
-        let mut sm = EscapeStateMachine::new(Some('~'));
+        let mut sm = EscapeStateMachine::new(Some(EscapeChar(b'~')));
         assert_eq!(sm.process_byte(b'~'), EscapeResult::Output(vec![]));
         // InEscape followed by ~ emits ~ (since ~ escapes ~) and state becomes MidFlow
         assert_eq!(sm.process_byte(b'~'), EscapeResult::Output(vec![b'~']));
@@ -463,7 +494,7 @@ mod tests {
         assert_eq!(sm.state(), EscapeState::MidFlow);
 
         // In Escape followed by x emits ~x
-        let mut sm = EscapeStateMachine::new(Some('~'));
+        let mut sm = EscapeStateMachine::new(Some(EscapeChar(b'~')));
         assert_eq!(sm.process_byte(b'~'), EscapeResult::Output(vec![]));
         assert_eq!(
             sm.process_byte(b'x'),
@@ -481,11 +512,11 @@ mod tests {
         assert_eq!(sm.process_byte(b'.'), EscapeResult::Disconnect);
 
         // Carriage return \r puts state back to StartOfLine
-        let mut sm = EscapeStateMachine::new(Some('~'));
+        let mut sm = EscapeStateMachine::new(Some(EscapeChar(b'~')));
         assert_eq!(sm.process_chunk(b"foo\r~."), EscapeResult::Disconnect);
 
         // MidLine ~ followed by . does NOT disconnect
-        let mut sm = EscapeStateMachine::new(Some('~'));
+        let mut sm = EscapeStateMachine::new(Some(EscapeChar(b'~')));
         let res = sm.process_chunk(b"hello ~.");
         assert_eq!(res, EscapeResult::Output(b"hello ~.".to_vec()));
 

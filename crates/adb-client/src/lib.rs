@@ -25,12 +25,14 @@ pub use server_address::{
 };
 pub use session::{Session, SessionConfig, SessionError};
 pub use shell_interactive::{
-    determine_pty_allocation, format_window_size, parse_escape_char_arg, EscapeResult, EscapeState,
-    EscapeStateMachine, PtyDecision, PtyMode,
+    determine_pty_allocation, format_window_size, parse_escape_char_arg, EscapeChar, EscapeResult,
+    EscapeState, EscapeStateMachine, PtyDecision, PtyKind, PtyMode, ShellProtocol,
 };
 pub use sync_session::{
-    errno_from_wire, errno_to_string, CompressionType, DirEntry, PullOptions, PullResult,
-    PullSourceOutcome, PushOptions, PushResult, PushSourceOutcome, Stat, SyncError, SyncSession,
+    errno_from_wire, errno_to_string, AckMode, AckResult, CompressionType, DestinationKind,
+    DirEntry, ListVersion, PullOptions, PullResult, PullSourceOutcome, PushMode, PushOptions,
+    PushResult, PushSourceOutcome, SendRecvVersion, Stat, StatVersion, SyncCapabilities, SyncError,
+    SyncSession,
 };
 pub use transport::{format_host_command, TransportSelector};
 

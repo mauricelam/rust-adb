@@ -146,15 +146,126 @@ impl From<SessionError> for SyncError {
     }
 }
 
-/// Compression algorithm option for sync operations.
+/// Concrete compression algorithm option for sync operations.
+/// Note: CompressionType::Any is resolved to concrete types at CLI parsing time.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum CompressionType {
     #[default]
     None,
-    Any,
     Brotli,
     LZ4,
     Zstd,
+}
+
+/// Push operation execution mode.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum PushMode {
+    #[default]
+    Normal,
+    Sync,
+    DryRun,
+}
+
+/// Stat protocol version negotiated with the device.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StatVersion {
+    V1,
+    V2,
+}
+
+/// List (directory entry) protocol version negotiated with the device.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ListVersion {
+    V1,
+    V2,
+}
+
+/// Send/Recv transfer protocol version negotiated with the device.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SendRecvVersion {
+    V1,
+    V2 {
+        brotli: bool,
+        lz4: bool,
+        zstd: bool,
+        dry_run_send: bool,
+    },
+}
+
+/// Negotiated sync capabilities derived from device features.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SyncCapabilities {
+    pub stat: StatVersion,
+    pub list: ListVersion,
+    pub send_recv: SendRecvVersion,
+    pub fixed_push_mkdir: bool,
+}
+
+impl SyncCapabilities {
+    /// Derives sync capabilities from advertised device features.
+    pub fn from_features(features: &adb_proto::Features) -> Self {
+        let stat = if features.contains(&adb_proto::Feature::Stat2) {
+            StatVersion::V2
+        } else {
+            StatVersion::V1
+        };
+
+        let list = if features.contains(&adb_proto::Feature::Ls2) {
+            ListVersion::V2
+        } else {
+            ListVersion::V1
+        };
+
+        let send_recv = if features.contains(&adb_proto::Feature::SendRecv2) {
+            SendRecvVersion::V2 {
+                brotli: features.contains(&adb_proto::Feature::SendRecv2Brotli),
+                lz4: features.contains(&adb_proto::Feature::SendRecv2LZ4),
+                zstd: features.contains(&adb_proto::Feature::SendRecv2Zstd),
+                dry_run_send: features.contains(&adb_proto::Feature::SendRecv2DryRunSend),
+            }
+        } else {
+            SendRecvVersion::V1
+        };
+
+        let fixed_push_mkdir = features.contains(&adb_proto::Feature::FixedPushMkdir);
+
+        Self {
+            stat,
+            list,
+            send_recv,
+            fixed_push_mkdir,
+        }
+    }
+}
+
+/// Kind of destination path for file transfers.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DestinationKind {
+    Missing,
+    File,
+    Directory,
+}
+
+/// Mode for reading deferred transfer acknowledgments.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AckMode {
+    Poll,
+    Drain,
+}
+
+/// Result of reading transfer acknowledgments.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AckResult {
+    Success,
+    Error,
+}
+
+/// Copy attribute policy during pull.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum CopyAttrsMode {
+    #[default]
+    PreserveNone,
+    PreserveAll,
 }
 
 /// Options controlling `pull` behavior.
@@ -187,9 +298,14 @@ pub struct PullResult {
 /// Options controlling `push` behavior.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct PushOptions {
-    pub sync: bool,
+    pub mode: PushMode,
     pub compression: CompressionType,
-    pub dry_run: bool,
+}
+
+impl PushOptions {
+    pub fn new(mode: PushMode, compression: CompressionType) -> Self {
+        Self { mode, compression }
+    }
 }
 
 /// Outcome of pushing a single source file.
@@ -266,14 +382,7 @@ impl Stat {
 pub struct SyncSession {
     session: Session,
     features: adb_proto::Features,
-    have_stat_v2: bool,
-    have_ls_v2: bool,
-    have_sendrecv_v2: bool,
-    have_sendrecv_v2_brotli: bool,
-    have_sendrecv_v2_lz4: bool,
-    have_sendrecv_v2_zstd: bool,
-    have_sendrecv_v2_dry_run_send: bool,
-    have_fixed_push_mkdir: bool,
+    capabilities: SyncCapabilities,
 }
 
 impl SyncSession {
@@ -303,16 +412,7 @@ impl SyncSession {
         };
 
         let features = adb_proto::Features::parse(&features_str.replace('\n', ","));
-
-        let have_stat_v2 = features.contains(&adb_proto::Feature::Stat2);
-        let have_ls_v2 = features.contains(&adb_proto::Feature::Ls2);
-        let have_sendrecv_v2 = features.contains(&adb_proto::Feature::SendRecv2);
-        let have_sendrecv_v2_brotli = features.contains(&adb_proto::Feature::SendRecv2Brotli);
-        let have_sendrecv_v2_lz4 = features.contains(&adb_proto::Feature::SendRecv2LZ4);
-        let have_sendrecv_v2_zstd = features.contains(&adb_proto::Feature::SendRecv2Zstd);
-        let have_sendrecv_v2_dry_run_send =
-            features.contains(&adb_proto::Feature::SendRecv2DryRunSend);
-        let have_fixed_push_mkdir = features.contains(&adb_proto::Feature::FixedPushMkdir);
+        let capabilities = SyncCapabilities::from_features(&features);
 
         let session_res = client.session_factory().connect(client.addr()).await;
         let mut session = match session_res {
@@ -354,14 +454,7 @@ impl SyncSession {
             result: Ok(Self {
                 session,
                 features,
-                have_stat_v2,
-                have_ls_v2,
-                have_sendrecv_v2,
-                have_sendrecv_v2_brotli,
-                have_sendrecv_v2_lz4,
-                have_sendrecv_v2_zstd,
-                have_sendrecv_v2_dry_run_send,
-                have_fixed_push_mkdir,
+                capabilities,
             }),
             events,
         }
@@ -371,36 +464,52 @@ impl SyncSession {
         &self.features
     }
 
+    pub fn capabilities(&self) -> &SyncCapabilities {
+        &self.capabilities
+    }
+
     pub fn have_stat_v2(&self) -> bool {
-        self.have_stat_v2
+        self.capabilities.stat == StatVersion::V2
     }
 
     pub fn have_ls_v2(&self) -> bool {
-        self.have_ls_v2
+        self.capabilities.list == ListVersion::V2
     }
 
     pub fn have_sendrecv_v2(&self) -> bool {
-        self.have_sendrecv_v2
+        matches!(self.capabilities.send_recv, SendRecvVersion::V2 { .. })
     }
 
     pub fn have_sendrecv_v2_brotli(&self) -> bool {
-        self.have_sendrecv_v2_brotli
+        match self.capabilities.send_recv {
+            SendRecvVersion::V2 { brotli, .. } => brotli,
+            SendRecvVersion::V1 => false,
+        }
     }
 
     pub fn have_sendrecv_v2_lz4(&self) -> bool {
-        self.have_sendrecv_v2_lz4
+        match self.capabilities.send_recv {
+            SendRecvVersion::V2 { lz4, .. } => lz4,
+            SendRecvVersion::V1 => false,
+        }
     }
 
     pub fn have_sendrecv_v2_zstd(&self) -> bool {
-        self.have_sendrecv_v2_zstd
+        match self.capabilities.send_recv {
+            SendRecvVersion::V2 { zstd, .. } => zstd,
+            SendRecvVersion::V1 => false,
+        }
     }
 
     pub fn have_sendrecv_v2_dry_run_send(&self) -> bool {
-        self.have_sendrecv_v2_dry_run_send
+        match self.capabilities.send_recv {
+            SendRecvVersion::V2 { dry_run_send, .. } => dry_run_send,
+            SendRecvVersion::V1 => false,
+        }
     }
 
     pub fn have_fixed_push_mkdir(&self) -> bool {
-        self.have_fixed_push_mkdir
+        self.capabilities.fixed_push_mkdir
     }
 
     async fn send_request(&mut self, id: u32, path: &str) -> Result<(), SyncError> {
@@ -423,17 +532,17 @@ impl SyncSession {
 
     /// Lists entries in directory `path` (`adb ls`).
     pub async fn ls(&mut self, path: &str) -> Result<Vec<DirEntry>, SyncError> {
-        let req_id = if self.have_ls_v2 {
-            ID_LIST_V2
-        } else {
-            ID_LIST_V1
+        let req_id = match self.capabilities.list {
+            ListVersion::V2 => ID_LIST_V2,
+            ListVersion::V1 => ID_LIST_V1,
         };
         self.send_request(req_id, path).await?;
 
+        let is_ls_v2 = self.have_ls_v2();
         let mut entries = Vec::new();
         let stream = self.session.stream_mut();
 
-        if self.have_ls_v2 {
+        if is_ls_v2 {
             loop {
                 let mut dent_buf = [0u8; 76];
                 stream.read_exact(&mut dent_buf).await?;
@@ -526,7 +635,7 @@ impl SyncSession {
 
     /// Queries file stat using `stat_v2` request.
     pub async fn stat(&mut self, path: &str) -> Result<Stat, SyncError> {
-        if !self.have_stat_v2 {
+        if self.capabilities.stat != StatVersion::V2 {
             return Err(SyncError::NotSupported("stat_v2 not supported".to_string()));
         }
         self.send_request(ID_STAT_V2, path).await?;
@@ -535,10 +644,9 @@ impl SyncSession {
 
     /// Queries file lstat using `lstat_v2` (or `lstat_v1` when `stat_v2` is absent).
     pub async fn lstat(&mut self, path: &str) -> Result<Stat, SyncError> {
-        if self.have_stat_v2 {
-            self.send_request(ID_LSTAT_V2, path).await?;
-        } else {
-            self.send_request(ID_LSTAT_V1, path).await?;
+        match self.capabilities.stat {
+            StatVersion::V2 => self.send_request(ID_LSTAT_V2, path).await?,
+            StatVersion::V1 => self.send_request(ID_LSTAT_V1, path).await?,
         }
         self.finish_stat().await
     }
@@ -566,9 +674,10 @@ impl SyncSession {
     }
 
     async fn finish_stat(&mut self) -> Result<Stat, SyncError> {
+        let is_stat_v2 = self.have_stat_v2();
         let stream = self.session.stream_mut();
 
-        if self.have_stat_v2 {
+        if is_stat_v2 {
             let mut buf = [0u8; 72];
             stream.read_exact(&mut buf).await?;
 
@@ -683,9 +792,6 @@ impl SyncSession {
             std::path::Path::new(stripped_str)
         };
 
-        let mut dst_exists = true;
-        let mut dst_isdir = false;
-
         let stripped_path_buf = stripped_path.to_path_buf();
         let dst_parent_buf = dst
             .parent()
@@ -694,9 +800,15 @@ impl SyncSession {
         let sources_len = sources.len();
         let dst_str_clone = dst_str.clone();
 
-        let meta_res =
+        let dst_kind_res: Result<DestinationKind, String> =
             tokio::task::spawn_blocking(move || match std::fs::metadata(&stripped_path_buf) {
-                Ok(st) => Ok(st.is_dir()),
+                Ok(st) => {
+                    if st.is_dir() {
+                        Ok(DestinationKind::Directory)
+                    } else {
+                        Ok(DestinationKind::File)
+                    }
+                }
                 Err(err) => {
                     if sources_len == 1 && err.kind() == std::io::ErrorKind::NotFound {
                         let parent = if dst_parent_buf.as_os_str().is_empty() {
@@ -709,7 +821,7 @@ impl SyncSession {
                                 "cannot create file/directory '{dst_str_clone}': {parent_err}"
                             ))
                         } else {
-                            Err("NOT_FOUND_OK".to_string())
+                            Ok(DestinationKind::Missing)
                         }
                     } else {
                         Err(format!("failed to access '{dst_str_clone}': {err}"))
@@ -719,28 +831,22 @@ impl SyncSession {
             .await
             .map_err(|e| SyncError::Io(std::io::Error::other(e)))?;
 
-        match meta_res {
-            Ok(is_dir) => {
-                dst_isdir = is_dir;
-            }
+        let dst_kind = match dst_kind_res {
+            Ok(k) => k,
             Err(err_msg) => {
-                if err_msg == "NOT_FOUND_OK" {
-                    dst_exists = false;
-                } else {
-                    let mut res = PullResult::default();
-                    res.errors.push(err_msg);
-                    return Ok(res);
-                }
+                let mut res = PullResult::default();
+                res.errors.push(err_msg);
+                return Ok(res);
             }
-        }
+        };
 
-        if !dst_isdir {
+        if dst_kind != DestinationKind::Directory {
             if sources.len() > 1 {
                 let mut res = PullResult::default();
                 res.errors
                     .push(format!("target '{dst_str}' is not a directory"));
                 return Ok(res);
-            } else if ends_with_sep && dst_exists {
+            } else if ends_with_sep && dst_kind == DestinationKind::File {
                 let mut res = PullResult::default();
                 res.errors
                     .push(format!("failed to access '{dst_str}': Not a directory"));
@@ -797,7 +903,7 @@ impl SyncSession {
                 continue;
             }
 
-            let target_dst_path: std::path::PathBuf = if dst_isdir {
+            let target_dst_path: std::path::PathBuf = if dst_kind == DestinationKind::Directory {
                 let basename = std::path::Path::new(src_path)
                     .file_name()
                     .and_then(|s| s.to_str())
@@ -863,12 +969,13 @@ impl SyncSession {
     }
 
     async fn sync_recv(&mut self, rpath: &str, lpath: &std::path::Path) -> Result<u64, String> {
-        if self.have_sendrecv_v2 {
-            self.send_recv_v2_req(rpath).await?;
-        } else {
-            self.send_request(ID_RECV_V1, rpath)
-                .await
-                .map_err(|e| e.to_string())?;
+        match self.capabilities.send_recv {
+            SendRecvVersion::V2 { .. } => self.send_recv_v2_req(rpath).await?,
+            SendRecvVersion::V1 => {
+                self.send_request(ID_RECV_V1, rpath)
+                    .await
+                    .map_err(|e| e.to_string())?;
+            }
         }
 
         let lpath_buf = lpath.to_path_buf();
@@ -1004,29 +1111,33 @@ impl SyncSession {
                 "compression option is not supported".to_string(),
             ));
         }
-        if options.dry_run {
-            return Err(SyncError::NotSupported(
-                "dry-run option is not supported".to_string(),
-            ));
-        }
-        if options.sync {
-            return Err(SyncError::NotSupported(
-                "sync option is not supported".to_string(),
-            ));
+        match options.mode {
+            PushMode::Normal => {}
+            PushMode::Sync => {
+                return Err(SyncError::NotSupported(
+                    "sync option is not supported".to_string(),
+                ));
+            }
+            PushMode::DryRun => {
+                return Err(SyncError::NotSupported(
+                    "dry-run option is not supported".to_string(),
+                ));
+            }
         }
 
         let dst = destination.as_ref();
         let dst_str = dst.to_string_lossy().to_string();
 
-        let mut dst_exists = true;
-        let mut dst_isdir = false;
-
-        match self.stat_with_fallback(&dst_str).await {
+        let dst_kind = match self.stat_with_fallback(&dst_str).await {
             Ok(st) => {
-                dst_isdir = st.is_dir();
+                if st.is_dir() {
+                    DestinationKind::Directory
+                } else {
+                    DestinationKind::File
+                }
             }
             Err(SyncError::Errno { errno, .. }) if errno == 2 || errno == 95 => {
-                dst_exists = false;
+                DestinationKind::Missing
             }
             Err(err) => {
                 let mut res = PushResult::default();
@@ -1035,9 +1146,9 @@ impl SyncSession {
                 ));
                 return Ok(res);
             }
-        }
+        };
 
-        if !dst_isdir {
+        if dst_kind != DestinationKind::Directory {
             if sources.len() > 1 {
                 let mut res = PushResult::default();
                 res.errors
@@ -1047,7 +1158,7 @@ impl SyncSession {
                 let dst_bytes = dst_str.as_bytes();
                 let ends_with_sep = !dst_bytes.is_empty()
                     && (dst_bytes.last() == Some(&b'/') || dst_bytes.last() == Some(&b'\\'));
-                if ends_with_sep && dst_exists {
+                if ends_with_sep && dst_kind == DestinationKind::File {
                     let mut res = PushResult::default();
                     res.errors
                         .push(format!("failed to access '{dst_str}': Not a directory"));
@@ -1086,7 +1197,7 @@ impl SyncSession {
             if file_type.is_dir() {
                 if !deferred_acks.is_empty() {
                     let _ = self
-                        .read_acknowledgements(&mut deferred_acks, &mut res, true)
+                        .read_acknowledgements(&mut deferred_acks, &mut res, AckMode::Drain)
                         .await;
                 }
                 return Err(SyncError::NotSupported(
@@ -1118,7 +1229,7 @@ impl SyncSession {
                 continue;
             }
 
-            let target_dst_str = if dst_isdir {
+            let target_dst_str = if dst_kind == DestinationKind::Directory {
                 let basename = local_path
                     .file_name()
                     .and_then(|s| s.to_str())
@@ -1153,9 +1264,10 @@ impl SyncSession {
                 Ok(bytes) => {
                     res.bytes_transferred += bytes;
                     deferred_acks.push_back((src_path.to_string(), target_dst_str.clone(), bytes));
-                    if !self
-                        .read_acknowledgements(&mut deferred_acks, &mut res, false)
+                    if self
+                        .read_acknowledgements(&mut deferred_acks, &mut res, AckMode::Poll)
                         .await
+                        == AckResult::Error
                     {
                         break;
                     }
@@ -1177,7 +1289,7 @@ impl SyncSession {
 
         if !deferred_acks.is_empty() {
             let _ = self
-                .read_acknowledgements(&mut deferred_acks, &mut res, true)
+                .read_acknowledgements(&mut deferred_acks, &mut res, AckMode::Drain)
                 .await;
         }
 
@@ -1292,7 +1404,7 @@ impl SyncSession {
         mtime: u32,
         mut file: std::fs::File,
     ) -> Result<(), String> {
-        if self.have_sendrecv_v2 {
+        if self.have_sendrecv_v2() {
             if rpath.len() > 1024 {
                 return Err(format!(
                     "SendRequest failed: path too long: {}",
@@ -1396,13 +1508,13 @@ impl SyncSession {
         &mut self,
         deferred_acks: &mut VecDeque<(String, String, u64)>,
         res: &mut PushResult,
-        read_all: bool,
-    ) -> bool {
+        mode: AckMode,
+    ) -> AckResult {
         const MAX_DEFERRED_ACKS: usize = 128;
-        let mut overall_ack_success = true;
+        let mut overall_success = true;
 
         while !deferred_acks.is_empty() {
-            let should_block = read_all || deferred_acks.len() >= MAX_DEFERRED_ACKS;
+            let should_block = mode == AckMode::Drain || deferred_acks.len() >= MAX_DEFERRED_ACKS;
 
             let stream = self.session.stream_mut();
 
@@ -1412,7 +1524,11 @@ impl SyncSession {
                     .await
                 {
                     Ok(Ok(0)) | Err(_) => {
-                        return overall_ack_success;
+                        return if overall_success {
+                            AckResult::Success
+                        } else {
+                            AckResult::Error
+                        };
                     }
                     Ok(Err(_)) => {}
                     Ok(Ok(_)) => {}
@@ -1433,7 +1549,7 @@ impl SyncSession {
                         error: Some(err_msg.clone()),
                     });
                 }
-                return false;
+                return AckResult::Error;
             }
 
             let id = u32::from_le_bytes(hdr_buf[0..4].try_into().unwrap());
@@ -1445,7 +1561,7 @@ impl SyncSession {
                     let err_msg = format!("received ID_OKAY with msg_len ({msglen} != 0)");
                     res.errors.push(err_msg.clone());
                     res.success = false;
-                    overall_ack_success = false;
+                    overall_success = false;
                     res.outcomes.push(PushSourceOutcome {
                         source: from,
                         destination: to,
@@ -1468,7 +1584,7 @@ impl SyncSession {
                     let err_msg = format!("too-long message length from daemon: msglen = {msglen}");
                     res.errors.push(err_msg.clone());
                     res.success = false;
-                    overall_ack_success = false;
+                    overall_success = false;
                     res.outcomes.push(PushSourceOutcome {
                         source: from,
                         destination: to,
@@ -1491,7 +1607,7 @@ impl SyncSession {
                                 error: Some(err_msg.clone()),
                             });
                         }
-                        return false;
+                        return AckResult::Error;
                     }
 
                     let fail_msg = String::from_utf8_lossy(&fail_buf);
@@ -1499,7 +1615,7 @@ impl SyncSession {
                     let err_msg = format!("failed to copy '{from}' to '{to}': remote {fail_msg}");
                     res.errors.push(err_msg.clone());
                     res.success = false;
-                    overall_ack_success = false;
+                    overall_success = false;
                     res.outcomes.push(PushSourceOutcome {
                         source: from,
                         destination: to,
@@ -1513,7 +1629,7 @@ impl SyncSession {
                 let err_msg = format!("unexpected response from daemon: id = 0x{id:08x}");
                 res.errors.push(err_msg.clone());
                 res.success = false;
-                overall_ack_success = false;
+                overall_success = false;
                 res.outcomes.push(PushSourceOutcome {
                     source: from,
                     destination: to,
@@ -1523,7 +1639,12 @@ impl SyncSession {
                 });
             }
         }
-        overall_ack_success
+
+        if overall_success {
+            AckResult::Success
+        } else {
+            AckResult::Error
+        }
     }
 
     /// Sends `QUIT` request to close sync session gracefully.

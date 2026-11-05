@@ -1,9 +1,9 @@
 //! Argument parsing and CLI helpers for `adb`.
 
 use adb_client::{
-    resolve_server_address, AdbClient, ClientError, ClientEvent, DeviceSelection,
-    ExternalBinaryLauncher, Outcome, PtyMode, ServerAddress, ServerAddressEnv,
-    ServerAddressOptions, ShellOptions, SyncSession, TrackDevicesMode, TransportId,
+    parse_escape_char_arg, resolve_server_address, AdbClient, ClientError, ClientEvent,
+    DeviceSelection, EscapeChar, ExternalBinaryLauncher, Outcome, PtyMode, ServerAddress,
+    ServerAddressEnv, ServerAddressOptions, ShellOptions, SyncSession, TrackDevicesMode,
     TransportSelector,
 };
 use std::io::Write;
@@ -96,7 +96,7 @@ async fn run_server_main(global_opts: &GlobalOptions, output: &mut Output) -> i3
             let _ = tokio::signal::ctrl_c().await;
         }
 
-        let _ = shutdown_handle.send(true);
+        shutdown_handle.trigger();
     });
 
     if let Err(e) = server.run().await {
@@ -191,10 +191,7 @@ where
     E: Fn(&str) -> Option<String>,
 {
     let mut server_options = ServerAddressOptions::default();
-    let mut serial = None;
-    let mut transport_id = None;
-    let mut usb = false;
-    let mut local = false;
+    let mut selector = None;
     let mut specified_d_e_s = false;
     let mut listen_all = false;
     let mut one_device = None;
@@ -236,47 +233,13 @@ where
             listen_all = true;
         } else if arg == "--exit-on-write-error" {
             exit_on_write_error = true;
-        } else if arg == "-d" {
-            usb = true;
-            local = false;
-            specified_d_e_s = true;
-        } else if arg == "-e" {
-            local = true;
-            usb = false;
-            specified_d_e_s = true;
-        } else if let Some(rest) = arg.strip_prefix("-s") {
-            specified_d_e_s = true;
-            if !rest.is_empty() {
-                if rest.chars().next().unwrap().is_ascii_digit() {
-                    serial = Some(rest.to_string());
-                } else {
-                    return Err("-s requires an argument".to_string());
-                }
-            } else if let Some(next_arg) = args_iter.next() {
-                serial = Some(next_arg);
-            } else {
-                return Err("-s requires an argument".to_string());
+        } else if let Some((parsed_sel, d_e_s)) =
+            DeviceSelection::parse_arg_step(&arg, &mut args_iter).map_err(|e| e.to_string())?
+        {
+            selector = Some(parsed_sel);
+            if d_e_s {
+                specified_d_e_s = true;
             }
-        } else if let Some(rest) = arg.strip_prefix("-t") {
-            let id_str = if !rest.is_empty() {
-                if rest.chars().next().unwrap().is_ascii_digit() {
-                    rest.to_string()
-                } else {
-                    return Err("-t requires an argument".to_string());
-                }
-            } else if let Some(next_arg) = args_iter.next() {
-                next_arg
-            } else {
-                return Err("-t requires an argument".to_string());
-            };
-
-            if id_str.is_empty() || !id_str.chars().all(|c| c.is_ascii_digit()) {
-                return Err("invalid transport id".to_string());
-            }
-            let id = id_str
-                .parse::<u64>()
-                .map_err(|_| "invalid transport id".to_string())?;
-            transport_id = TransportId::from_u64(id);
         } else if let Some(rest) = arg.strip_prefix("-H") {
             if !rest.is_empty() {
                 server_options.host = Some(rest.to_string());
@@ -318,14 +281,6 @@ where
     let server_address =
         resolve_server_address(&server_options, &server_env).map_err(|e| e.to_string())?;
 
-    if !specified_d_e_s {
-        if let Some(env_serial) = env("ANDROID_SERIAL") {
-            if !env_serial.is_empty() {
-                serial = Some(env_serial);
-            }
-        }
-    }
-
     if let Some(ref device) = one_device {
         let is_server_start =
             is_daemon || is_server || remaining.first().map(|s| s.as_str()) == Some("start-server");
@@ -337,24 +292,24 @@ where
         }
     }
 
-    let selector = if let Some(id) = transport_id {
-        TransportSelector::Id(id)
-    } else if let Some(ref s) = serial {
-        TransportSelector::Serial(s.clone())
-    } else if usb {
-        TransportSelector::Usb
-    } else if local {
-        TransportSelector::Local
+    let effective_selector = if let Some(s) = selector {
+        s
+    } else if !specified_d_e_s {
+        if let Some(env_serial) = env("ANDROID_SERIAL") {
+            if !env_serial.is_empty() {
+                TransportSelector::Serial(env_serial)
+            } else {
+                TransportSelector::Any
+            }
+        } else {
+            TransportSelector::Any
+        }
     } else {
         TransportSelector::Any
     };
 
     let device_selection = DeviceSelection {
-        serial,
-        transport_id,
-        usb,
-        local,
-        selector,
+        selector: effective_selector,
     };
 
     Ok((
@@ -440,24 +395,34 @@ fn print_error_prog(err: &ClientError, stderr: &mut Box<dyn Write + Send>) {
     let _ = writeln!(stderr, "adb: {err}");
 }
 
-fn parse_compression_type(
-    str: &str,
-    allow_numbers: bool,
-) -> Result<adb_client::CompressionType, String> {
+enum CliCompressionOption {
+    Any,
+    Type(adb_client::CompressionType),
+}
+
+fn parse_compression_type(str: &str, allow_numbers: bool) -> Result<CliCompressionOption, String> {
     if allow_numbers {
         if str == "0" {
-            return Ok(adb_client::CompressionType::None);
+            return Ok(CliCompressionOption::Type(
+                adb_client::CompressionType::None,
+            ));
         } else if str == "1" {
-            return Ok(adb_client::CompressionType::Any);
+            return Ok(CliCompressionOption::Any);
         }
     }
 
     match str {
-        "any" => Ok(adb_client::CompressionType::Any),
-        "none" => Ok(adb_client::CompressionType::None),
-        "brotli" => Ok(adb_client::CompressionType::Brotli),
-        "lz4" => Ok(adb_client::CompressionType::LZ4),
-        "zstd" => Ok(adb_client::CompressionType::Zstd),
+        "any" => Ok(CliCompressionOption::Any),
+        "none" => Ok(CliCompressionOption::Type(
+            adb_client::CompressionType::None,
+        )),
+        "brotli" => Ok(CliCompressionOption::Type(
+            adb_client::CompressionType::Brotli,
+        )),
+        "lz4" => Ok(CliCompressionOption::Type(adb_client::CompressionType::LZ4)),
+        "zstd" => Ok(CliCompressionOption::Type(
+            adb_client::CompressionType::Zstd,
+        )),
         _ => Err(format!("unexpected compression type {str}")),
     }
 }
@@ -1007,7 +972,7 @@ where
             let mut sync_flag = false;
             let mut dry_run = false;
             let mut quiet = false;
-            let mut compression = adb_client::CompressionType::Any;
+            let mut compression = CliCompressionOption::Any;
             let mut srcs = Vec::new();
             let mut dst = None;
 
@@ -1043,7 +1008,7 @@ where
                         }
                     }
                 } else if arg == "-Z" {
-                    compression = adb_client::CompressionType::None;
+                    compression = CliCompressionOption::Type(adb_client::CompressionType::None);
                 } else if arg == "-n" {
                     dry_run = true;
                 } else if arg == "--sync" {
@@ -1091,16 +1056,22 @@ where
                 }
             };
 
-            let effective_compression = if compression == adb_client::CompressionType::Any {
-                adb_client::CompressionType::None
+            let effective_compression = match compression {
+                CliCompressionOption::Any => adb_client::CompressionType::None,
+                CliCompressionOption::Type(c) => c,
+            };
+
+            let mode = if dry_run {
+                adb_client::PushMode::DryRun
+            } else if sync_flag {
+                adb_client::PushMode::Sync
             } else {
-                compression
+                adb_client::PushMode::Normal
             };
 
             let push_opts = adb_client::PushOptions {
-                sync: sync_flag,
+                mode,
                 compression: effective_compression,
-                dry_run,
             };
 
             let start_time = std::time::Instant::now();
@@ -1171,7 +1142,7 @@ where
         "pull" => {
             let mut copy_attrs = false;
             let mut quiet = false;
-            let mut compression = adb_client::CompressionType::None;
+            let mut compression = CliCompressionOption::Type(adb_client::CompressionType::None);
             let mut srcs = Vec::new();
             let mut dst = ".";
 
@@ -1207,7 +1178,7 @@ where
                         }
                     }
                 } else if arg == "-Z" {
-                    compression = adb_client::CompressionType::None;
+                    compression = CliCompressionOption::Type(adb_client::CompressionType::None);
                 } else if arg == "-q" {
                     quiet = true;
                 } else {
@@ -1237,9 +1208,14 @@ where
                 }
             };
 
+            let effective_compression = match compression {
+                CliCompressionOption::Any => adb_client::CompressionType::None,
+                CliCompressionOption::Type(c) => c,
+            };
+
             let pull_opts = adb_client::PullOptions {
                 copy_attrs,
-                compression,
+                compression: effective_compression,
             };
 
             let start_time = std::time::Instant::now();
@@ -1440,16 +1416,8 @@ pub fn parse_shell_args(args: &[&str]) -> Result<(ShellOptions, Vec<String>), St
                         } else {
                             return Err("-e requires an argument".to_string());
                         };
-                        if !(val.len() == 1 || val == "none") {
-                            return Err(
-                                "-e requires a single-character argument or 'none'".to_string()
-                            );
-                        }
-                        options.escape_char = if val == "none" {
-                            None
-                        } else {
-                            val.chars().next()
-                        };
+                        options.escape_char =
+                            parse_escape_char_arg(&val).map_err(|e| e.to_string())?;
                         break;
                     }
                     'n' => {
@@ -1458,7 +1426,7 @@ pub fn parse_shell_args(args: &[&str]) -> Result<(ShellOptions, Vec<String>), St
                     'x' => {
                         options.disable_shell_protocol = true;
                         options.pty_mode = PtyMode::Definitely;
-                        options.escape_char = Some('~');
+                        options.escape_char = Some(EscapeChar::DEFAULT);
                     }
                     't' => {
                         options.pty_mode = match options.pty_mode {
@@ -1468,7 +1436,6 @@ pub fn parse_shell_args(args: &[&str]) -> Result<(ShellOptions, Vec<String>), St
                     }
                     'T' => {
                         options.pty_mode = PtyMode::No;
-                        options.no_pty = true;
                     }
                     _ => {
                         stop = true;
@@ -1654,21 +1621,18 @@ mod tests {
         // Valid parsing
         let (opts, remaining) =
             parse_global(vec!["-s", "serial123", "-P", "5037", "devices"], no_env).unwrap();
-        assert_eq!(opts.device_selection.serial.as_deref(), Some("serial123"));
+        assert_eq!(opts.device_selection.serial(), Some("serial123"));
         assert_eq!(opts.server_address.port, 5037);
         assert_eq!(remaining, vec!["devices"]);
 
         // -s attaches digit
         let (opts, remaining) = parse_global(vec!["-s12345", "shell"], no_env).unwrap();
-        assert_eq!(opts.device_selection.serial.as_deref(), Some("12345"));
+        assert_eq!(opts.device_selection.serial(), Some("12345"));
         assert_eq!(remaining, vec!["shell"]);
 
         // -t attaches digit
         let (opts, remaining) = parse_global(vec!["-t99", "shell"], no_env).unwrap();
-        assert_eq!(
-            opts.device_selection.transport_id,
-            TransportId::from_u64(99)
-        );
+        assert_eq!(opts.device_selection.transport_id(), Some(99));
         assert_eq!(remaining, vec!["shell"]);
 
         // -s requires arg
@@ -1737,7 +1701,7 @@ mod tests {
         .unwrap();
         assert_eq!(
             opts.device_selection.selector,
-            TransportSelector::Id(TransportId::from_u64(42).unwrap())
+            TransportSelector::Id(adb_client::TransportId::from_u64(42).unwrap())
         );
     }
 
@@ -1748,13 +1712,12 @@ mod tests {
         assert!(!opts.close_stdin);
         assert!(!opts.disable_shell_protocol);
         assert_eq!(opts.pty_mode, PtyMode::Auto);
-        assert_eq!(opts.escape_char, Some('~'));
+        assert_eq!(opts.escape_char, Some(EscapeChar::DEFAULT));
         assert!(cmd.is_empty());
 
         // -n -T echo hello
         let (opts, cmd) = parse_shell_args(&["-n", "-T", "echo", "hello"]).unwrap();
         assert!(opts.close_stdin);
-        assert!(opts.no_pty);
         assert_eq!(opts.pty_mode, PtyMode::No);
         assert_eq!(cmd, vec!["echo", "hello"]);
 

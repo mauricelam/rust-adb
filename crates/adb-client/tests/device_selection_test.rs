@@ -114,13 +114,7 @@ fn test_device_selection_table() {
             args: vec!["-s123", "get-state"],
             env: no_env.clone(),
             expected_res: Ok((
-                DeviceSelection {
-                    serial: Some("123".into()),
-                    transport_id: None,
-                    usb: false,
-                    local: false,
-                    selector: TransportSelector::Serial("123".into()),
-                },
+                DeviceSelection::new(TransportSelector::Serial("123".into())),
                 vec!["get-state"],
             )),
         },
@@ -129,13 +123,7 @@ fn test_device_selection_table() {
             args: vec!["-s", "123", "get-state"],
             env: no_env.clone(),
             expected_res: Ok((
-                DeviceSelection {
-                    serial: Some("123".into()),
-                    transport_id: None,
-                    usb: false,
-                    local: false,
-                    selector: TransportSelector::Serial("123".into()),
-                },
+                DeviceSelection::new(TransportSelector::Serial("123".into())),
                 vec!["get-state"],
             )),
         },
@@ -155,37 +143,19 @@ fn test_device_selection_table() {
             name: "attached transport-id -t123",
             args: vec!["-t123", "get-state"],
             env: no_env.clone(),
-            expected_res: Ok({
-                let tid = TransportId::from_u64(123).unwrap();
-                (
-                    DeviceSelection {
-                        serial: None,
-                        transport_id: Some(tid),
-                        usb: false,
-                        local: false,
-                        selector: TransportSelector::Id(tid),
-                    },
-                    vec!["get-state"],
-                )
-            }),
+            expected_res: Ok((
+                DeviceSelection::new(TransportSelector::Id(TransportId::from_u64(123).unwrap())),
+                vec!["get-state"],
+            )),
         },
         TestCase {
             name: "spaced transport-id -t 123",
             args: vec!["-t", "123", "get-state"],
             env: no_env.clone(),
-            expected_res: Ok({
-                let tid = TransportId::from_u64(123).unwrap();
-                (
-                    DeviceSelection {
-                        serial: None,
-                        transport_id: Some(tid),
-                        usb: false,
-                        local: false,
-                        selector: TransportSelector::Id(tid),
-                    },
-                    vec!["get-state"],
-                )
-            }),
+            expected_res: Ok((
+                DeviceSelection::new(TransportSelector::Id(TransportId::from_u64(123).unwrap())),
+                vec!["get-state"],
+            )),
         },
         TestCase {
             name: "invalid option -tabc",
@@ -210,13 +180,7 @@ fn test_device_selection_table() {
             args: vec!["-d", "get-state"],
             env: no_env.clone(),
             expected_res: Ok((
-                DeviceSelection {
-                    serial: None,
-                    transport_id: None,
-                    usb: true,
-                    local: false,
-                    selector: TransportSelector::Usb,
-                },
+                DeviceSelection::new(TransportSelector::Usb),
                 vec!["get-state"],
             )),
         },
@@ -225,13 +189,7 @@ fn test_device_selection_table() {
             args: vec!["-e", "get-state"],
             env: no_env.clone(),
             expected_res: Ok((
-                DeviceSelection {
-                    serial: None,
-                    transport_id: None,
-                    usb: false,
-                    local: true,
-                    selector: TransportSelector::Local,
-                },
+                DeviceSelection::new(TransportSelector::Local),
                 vec!["get-state"],
             )),
         },
@@ -240,13 +198,7 @@ fn test_device_selection_table() {
             args: vec!["-d", "-e", "get-state"],
             env: no_env.clone(),
             expected_res: Ok((
-                DeviceSelection {
-                    serial: None,
-                    transport_id: None,
-                    usb: false,
-                    local: true,
-                    selector: TransportSelector::Local,
-                },
+                DeviceSelection::new(TransportSelector::Local),
                 vec!["get-state"],
             )),
         },
@@ -255,13 +207,7 @@ fn test_device_selection_table() {
             args: vec!["get-state"],
             env: env_serial.clone(),
             expected_res: Ok((
-                DeviceSelection {
-                    serial: Some("env_device_123".into()),
-                    transport_id: None,
-                    usb: false,
-                    local: false,
-                    selector: TransportSelector::Serial("env_device_123".into()),
-                },
+                DeviceSelection::new(TransportSelector::Serial("env_device_123".into())),
                 vec!["get-state"],
             )),
         },
@@ -269,32 +215,17 @@ fn test_device_selection_table() {
             name: "ANDROID_SERIAL fallback with -t id",
             args: vec!["-t", "456", "get-state"],
             env: env_serial.clone(),
-            expected_res: Ok({
-                let tid = TransportId::from_u64(456).unwrap();
-                (
-                    DeviceSelection {
-                        serial: Some("env_device_123".into()),
-                        transport_id: Some(tid),
-                        usb: false,
-                        local: false,
-                        selector: TransportSelector::Id(tid),
-                    },
-                    vec!["get-state"],
-                )
-            }),
+            expected_res: Ok((
+                DeviceSelection::new(TransportSelector::Id(TransportId::from_u64(456).unwrap())),
+                vec!["get-state"],
+            )),
         },
         TestCase {
             name: "ANDROID_SERIAL ignored with -d",
             args: vec!["-d", "get-state"],
             env: env_serial.clone(),
             expected_res: Ok((
-                DeviceSelection {
-                    serial: None,
-                    transport_id: None,
-                    usb: true,
-                    local: false,
-                    selector: TransportSelector::Usb,
-                },
+                DeviceSelection::new(TransportSelector::Usb),
                 vec!["get-state"],
             )),
         },
@@ -303,13 +234,7 @@ fn test_device_selection_table() {
             args: vec!["-s", "override_serial", "get-state"],
             env: env_serial.clone(),
             expected_res: Ok((
-                DeviceSelection {
-                    serial: Some("override_serial".into()),
-                    transport_id: None,
-                    usb: false,
-                    local: false,
-                    selector: TransportSelector::Serial("override_serial".into()),
-                },
+                DeviceSelection::new(TransportSelector::Serial("override_serial".into())),
                 vec!["get-state"],
             )),
         },
