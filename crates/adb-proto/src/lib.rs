@@ -4,21 +4,26 @@ pub mod auth;
 pub mod banner;
 pub mod header;
 pub mod limits;
+pub mod message;
 pub mod shell;
 pub mod smart_socket;
 pub mod sync;
 pub mod types;
 
-pub use auth::{ADB_AUTH_RSAPUBLICKEY, ADB_AUTH_SIGNATURE, ADB_AUTH_TOKEN};
+pub use auth::{
+    AuthMessage, AuthType, PublicKeyLine, ADB_AUTH_RSAPUBLICKEY, ADB_AUTH_SIGNATURE,
+    ADB_AUTH_TOKEN, TOKEN_SIZE,
+};
 pub use banner::{
     client_supported_features, negotiate_max_payload, negotiate_version,
     server_advertised_features, Banner, BannerEntry, Feature, FeatureOptions, Features,
 };
-pub use header::{Command, DecodeError, EncodeError, Header};
+pub use header::{ChecksumMode, Command, DecodeError, EncodeError, Header};
 pub use limits::{
     A_VERSION, A_VERSION_MIN, A_VERSION_SKIP_CHECKSUM, INITIAL_DELAYED_ACK_BYTES, MAX_PAYLOAD,
     MAX_PAYLOAD_V1,
 };
+pub use message::{Message, MessageDecodeError};
 pub use shell::{
     ShellDecodeError, ShellDecoder, ShellEncodeError, ShellPacket, ShellPacketId, WindowSize,
 };

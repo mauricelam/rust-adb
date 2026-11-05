@@ -99,6 +99,15 @@ impl fmt::Display for EncodeError {
 
 impl std::error::Error for EncodeError {}
 
+/// Mode for payload checksum calculation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ChecksumMode {
+    /// Compute the checksum as the sum of all unsigned bytes in the payload.
+    Compute,
+    /// Skip checksum calculation and emit 0.
+    Skip,
+}
+
 /// Represents the 24-byte header of an ADB protocol packet.
 ///
 /// Ports the `amessage` struct from `original/types.h` and `message` struct from
@@ -138,6 +147,36 @@ impl Header {
             data_crc32,
             magic: cmd_u32 ^ 0xffff_ffff,
         }
+    }
+
+    /// Returns the command identifier.
+    pub fn command(&self) -> Command {
+        self.command
+    }
+
+    /// Returns the first argument (arg0).
+    pub fn arg0(&self) -> u32 {
+        self.arg0
+    }
+
+    /// Returns the second argument (arg1).
+    pub fn arg1(&self) -> u32 {
+        self.arg1
+    }
+
+    /// Returns the length of payload in bytes.
+    pub fn data_length(&self) -> u32 {
+        self.data_length
+    }
+
+    /// Returns the payload checksum / CRC32.
+    pub fn data_crc32(&self) -> u32 {
+        self.data_crc32
+    }
+
+    /// Returns the magic value (`command ^ 0xffff_ffff`).
+    pub fn magic(&self) -> u32 {
+        self.magic
     }
 
     /// Encodes the header into a fixed 24-byte little-endian array.
