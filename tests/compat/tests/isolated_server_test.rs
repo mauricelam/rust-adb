@@ -79,3 +79,78 @@ fn test_isolated_server_drop_cleanup_on_panic() {
         port
     );
 }
+
+#[test]
+fn test_usb_backend_pinning_libusb_disabled() {
+    let mut config = compat::Config::from_env();
+    config.libusb = false;
+
+    let mut server = IsolatedServer::with_config(config);
+    let start_out = server.start_server();
+    assert!(
+        start_out.success(),
+        "Failed to start server: {:?}",
+        start_out
+    );
+
+    let host_features_out = server.run_client(&["host-features"]);
+    assert!(host_features_out.success());
+    let features: Vec<&str> = host_features_out
+        .stdout
+        .split(',')
+        .map(|s| s.trim())
+        .collect();
+    assert!(
+        !features.contains(&"libusb"),
+        "libusb should not be present when ADB_LIBUSB=0: stdout='{}'",
+        host_features_out.stdout
+    );
+}
+
+#[test]
+fn test_usb_backend_pinning_libusb_enabled() {
+    let mut config = compat::Config::from_env();
+    config.libusb = true;
+
+    let mut server = IsolatedServer::with_config(config);
+    let start_out = server.start_server();
+    assert!(
+        start_out.success(),
+        "Failed to start server: {:?}",
+        start_out
+    );
+
+    let host_features_out = server.run_client(&["host-features"]);
+    assert!(host_features_out.success());
+    let features: Vec<&str> = host_features_out
+        .stdout
+        .split(',')
+        .map(|s| s.trim())
+        .collect();
+    assert!(
+        features.contains(&"libusb"),
+        "libusb should be present when ADB_LIBUSB=1: stdout='{}'",
+        host_features_out.stdout
+    );
+}
+
+#[test]
+fn test_usb_backend_pinning_mismatch_fails() {
+    // When config has libusb=true, but verify_and_record_usb_backend is invoked with expected_libusb=false against a server with libusb=true, it should panic
+    let mut config = compat::Config::from_env();
+    config.libusb = true;
+
+    let mut server = IsolatedServer::with_config(config);
+    let start_out = server.start_server();
+    assert!(start_out.success());
+
+    // Expect verify_and_record_usb_backend to panic if expected_libusb differs from reported
+    let port = server.port;
+    let res = std::panic::catch_unwind(move || {
+        compat::verify_and_record_usb_backend(port, false);
+    });
+    assert!(
+        res.is_err(),
+        "verify_and_record_usb_backend should panic on mismatch"
+    );
+}

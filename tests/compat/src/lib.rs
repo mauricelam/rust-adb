@@ -61,6 +61,7 @@ pub struct Config {
     pub client_path: PathBuf,
     pub server_bin_path: PathBuf,
     pub server_port: Option<u16>,
+    pub libusb: bool,
 }
 
 impl Config {
@@ -68,6 +69,7 @@ impl Config {
     /// - `ADB_CLIENT`: defaults to `ADB_REFERENCE` or default workspace binary.
     /// - `ADB_SERVER_BIN`: defaults to `ADB_REFERENCE` or default workspace binary.
     /// - `ADB_SERVER_PORT`: optional port override.
+    /// - `ADB_LIBUSB`: defaults to `false` ("0") to match existing non-USB test parity.
     pub fn from_env() -> Self {
         let reference = env::var("ADB_REFERENCE")
             .ok()
@@ -90,10 +92,16 @@ impl Config {
             .ok()
             .and_then(|p| p.parse::<u16>().ok());
 
+        let libusb = match env::var("ADB_LIBUSB") {
+            Ok(val) => val == "1",
+            Err(_) => false,
+        };
+
         Config {
             client_path,
             server_bin_path,
             server_port,
+            libusb,
         }
     }
 }
@@ -162,7 +170,7 @@ impl TestServer {
 
             let mut cmd = Command::new(&config.server_bin_path);
             cmd.args(["-P", &port.to_string(), "server", "nodaemon"]);
-            set_isolated_env(&mut cmd, home_dir.path(), port);
+            set_isolated_env(&mut cmd, home_dir.path(), port, config.libusb);
 
             let mut child = match cmd.spawn() {
                 Ok(c) => c,
@@ -190,6 +198,7 @@ impl TestServer {
             }
 
             if ready {
+                verify_and_record_usb_backend(port, config.libusb);
                 return TestServer {
                     port,
                     home_dir,
@@ -226,6 +235,7 @@ impl TestServer {
         let home_str = self.home_dir.path().to_string_lossy().to_string();
         let socket_str = format!("tcp:localhost:{}", self.port);
 
+        let libusb_str = if self.config.libusb { "1" } else { "0" };
         let envs = [
             ("HOME", home_str.as_str()),
             ("USERPROFILE", home_str.as_str()),
@@ -235,6 +245,7 @@ impl TestServer {
             ("ADB_MDNS_OPENSCREEN", "0"),
             ("ANDROID_ADB_SERVER_PORT", port_str.as_str()),
             ("ADB_SERVER_SOCKET", socket_str.as_str()),
+            ("ADB_LIBUSB", libusb_str),
         ];
 
         run_command_with_timeout(
@@ -370,6 +381,9 @@ pub fn run_client_with_config(config: &Config, args: &[&str]) -> TestOutput {
         envs.push(("ADB_SERVER_SOCKET", socket_env_str.as_str()));
     }
 
+    let libusb_str = if config.libusb { "1" } else { "0" };
+    envs.push(("ADB_LIBUSB", libusb_str));
+
     run_command_with_timeout(&config.client_path, &full_args, &envs, get_cmd_timeout())
 }
 
@@ -419,6 +433,7 @@ impl IsolatedServer {
             attempts += 1;
             let output = self.run_client(&["start-server"]);
             if output.success() {
+                verify_and_record_usb_backend(self.port, self.config.libusb);
                 return output;
             }
             if attempts < 10 {
@@ -440,6 +455,7 @@ impl IsolatedServer {
         let home_str = self.home_dir.path().to_string_lossy().to_string();
         let socket_str = format!("tcp:localhost:{}", self.port);
         let server_bin_str = self.config.server_bin_path.to_string_lossy().to_string();
+        let libusb_str = if self.config.libusb { "1" } else { "0" };
 
         let envs = [
             ("HOME", home_str.as_str()),
@@ -451,6 +467,7 @@ impl IsolatedServer {
             ("ANDROID_ADB_SERVER_PORT", port_str.as_str()),
             ("ADB_SERVER_SOCKET", socket_str.as_str()),
             ("ADB_SERVER_BIN", server_bin_str.as_str()),
+            ("ADB_LIBUSB", libusb_str),
         ];
 
         run_command_with_timeout(
@@ -638,7 +655,7 @@ pub fn is_process_running(pid: u32) -> bool {
     }
 }
 
-fn set_isolated_env(cmd: &mut Command, home_path: &std::path::Path, port: u16) {
+fn set_isolated_env(cmd: &mut Command, home_path: &std::path::Path, port: u16, libusb: bool) {
     cmd.env("HOME", home_path);
     cmd.env("USERPROFILE", home_path);
     cmd.env("ANDROID_ADB_HOME", home_path);
@@ -648,6 +665,71 @@ fn set_isolated_env(cmd: &mut Command, home_path: &std::path::Path, port: u16) {
     if port != 0 {
         cmd.env("ANDROID_ADB_SERVER_PORT", port.to_string());
         cmd.env("ADB_SERVER_SOCKET", format!("tcp:localhost:{port}"));
+    }
+    cmd.env("ADB_LIBUSB", if libusb { "1" } else { "0" });
+}
+
+/// Queries the running ADB server for `host:host-features` and verifies that the reported
+/// USB backend matches `expected_libusb`. If the server is C++ and reports features,
+/// it records the detected backend in test output and fails if there is a mismatch.
+pub fn verify_and_record_usb_backend(port: u16, expected_libusb: bool) {
+    let service = "host:host-features";
+    let request = format!("{:04x}{}", service.len(), service);
+
+    let Ok(mut stream) = connect_with_retry(port, Duration::from_secs(5)) else {
+        return;
+    };
+    let _ = stream.set_read_timeout(Some(Duration::from_secs(5)));
+    let _ = stream.set_write_timeout(Some(Duration::from_secs(5)));
+
+    if stream.write_all(request.as_bytes()).is_err() || stream.flush().is_err() {
+        return;
+    }
+
+    let mut status_bytes = [0u8; 4];
+    if stream.read_exact(&mut status_bytes).is_err() {
+        return;
+    }
+
+    if &status_bytes != b"OKAY" {
+        // Not a C++ server or service not supported (e.g. current Rust server prototype)
+        return;
+    }
+
+    let mut len_bytes = [0u8; 4];
+    if stream.read_exact(&mut len_bytes).is_err() {
+        return;
+    }
+
+    let Ok(len_str) = std::str::from_utf8(&len_bytes) else {
+        return;
+    };
+    let Ok(payload_len) = usize::from_str_radix(len_str, 16) else {
+        return;
+    };
+
+    let mut payload = vec![0u8; payload_len];
+    if stream.read_exact(&mut payload).is_err() {
+        return;
+    }
+
+    let features_str = String::from_utf8_lossy(&payload);
+    let features: Vec<&str> = features_str.split(',').map(|s| s.trim()).collect();
+    let has_libusb = features.contains(&"libusb");
+
+    let reported_backend = if has_libusb { "libusb" } else { "native" };
+    let expected_backend = if expected_libusb { "libusb" } else { "native" };
+
+    eprintln!(
+        "[harness] USB backend check on port {}: reported={}, expected={}",
+        port, reported_backend, expected_backend
+    );
+
+    if has_libusb != expected_libusb {
+        panic!(
+            "USB backend mismatch on port {}: reported '{}' (libusb={}), expected '{}' (libusb={})",
+            port, reported_backend, has_libusb, expected_backend, expected_libusb
+        );
     }
 }
 
