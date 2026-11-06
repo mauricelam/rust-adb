@@ -95,6 +95,7 @@ name = "adb-transport"
 version = "0.0.0"
 dependencies = [
  "adb-proto",
+ "libc",
  "nusb",
  "tokio",
 ]
