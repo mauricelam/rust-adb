@@ -1,3 +1,5 @@
+//! Terminal and PTY management helpers for interactive shells.
+
 use crate::client::{ClientError, ShellOptions};
 use adb_proto::WindowSize;
 
@@ -148,22 +150,134 @@ pub fn determine_pty_allocation(
     })
 }
 
+/// Trait implemented by input readers that may represent a terminal (TTY).
+pub trait MaybeTty {
+    #[cfg(unix)]
+    fn as_tty_fd(&self) -> Option<std::os::fd::BorrowedFd<'_>>;
+
+    #[cfg(not(unix))]
+    fn as_tty_fd(&self) -> Option<i32> {
+        None
+    }
+}
+
+#[cfg(unix)]
+impl MaybeTty for tokio::fs::File {
+    fn as_tty_fd(&self) -> Option<std::os::fd::BorrowedFd<'_>> {
+        use std::os::fd::{AsFd, AsRawFd};
+        let borrowed = self.as_fd();
+        if unsafe { libc::isatty(borrowed.as_raw_fd()) } != 0 {
+            Some(borrowed)
+        } else {
+            None
+        }
+    }
+}
+
+#[cfg(unix)]
+impl MaybeTty for std::fs::File {
+    fn as_tty_fd(&self) -> Option<std::os::fd::BorrowedFd<'_>> {
+        use std::os::fd::{AsFd, AsRawFd};
+        let borrowed = self.as_fd();
+        if unsafe { libc::isatty(borrowed.as_raw_fd()) } != 0 {
+            Some(borrowed)
+        } else {
+            None
+        }
+    }
+}
+
+#[cfg(unix)]
+impl MaybeTty for tokio::io::Stdin {
+    fn as_tty_fd(&self) -> Option<std::os::fd::BorrowedFd<'_>> {
+        use std::os::fd::BorrowedFd;
+        if unsafe { libc::isatty(libc::STDIN_FILENO) } != 0 {
+            Some(unsafe { BorrowedFd::borrow_raw(libc::STDIN_FILENO) })
+        } else {
+            None
+        }
+    }
+}
+
+#[cfg(unix)]
+impl MaybeTty for std::io::Stdin {
+    fn as_tty_fd(&self) -> Option<std::os::fd::BorrowedFd<'_>> {
+        use std::os::fd::BorrowedFd;
+        if unsafe { libc::isatty(libc::STDIN_FILENO) } != 0 {
+            Some(unsafe { BorrowedFd::borrow_raw(libc::STDIN_FILENO) })
+        } else {
+            None
+        }
+    }
+}
+
+#[cfg(unix)]
+impl<T: MaybeTty + ?Sized> MaybeTty for &T {
+    fn as_tty_fd(&self) -> Option<std::os::fd::BorrowedFd<'_>> {
+        (**self).as_tty_fd()
+    }
+}
+
+#[cfg(unix)]
+impl<T: MaybeTty + ?Sized> MaybeTty for Box<T> {
+    fn as_tty_fd(&self) -> Option<std::os::fd::BorrowedFd<'_>> {
+        (**self).as_tty_fd()
+    }
+}
+
+#[cfg(not(unix))]
+impl<T> MaybeTty for T {}
+
+/// Inspects reader to find underlying TTY file descriptor if available.
+#[cfg(unix)]
+pub fn find_tty_fd<R: 'static>(reader: &R) -> Option<std::os::fd::RawFd> {
+    use std::any::Any;
+    use std::os::fd::AsRawFd;
+
+    let any = reader as &dyn Any;
+
+    if let Some(f) = any.downcast_ref::<tokio::fs::File>() {
+        return f.as_tty_fd().map(|fd| fd.as_raw_fd());
+    }
+
+    if let Some(f) = any.downcast_ref::<std::fs::File>() {
+        return f.as_tty_fd().map(|fd| fd.as_raw_fd());
+    }
+
+    if let Some(s) = any.downcast_ref::<tokio::io::Stdin>() {
+        return s.as_tty_fd().map(|fd| fd.as_raw_fd());
+    }
+
+    if let Some(s) = any.downcast_ref::<std::io::Stdin>() {
+        return s.as_tty_fd().map(|fd| fd.as_raw_fd());
+    }
+
+    None
+}
+
+#[cfg(not(unix))]
+pub fn find_tty_fd<R: 'static>(_reader: &R) -> Option<i32> {
+    None
+}
+
 /// Guard object that sets local terminal to raw mode and restores original attributes on drop.
 #[cfg(unix)]
 pub struct RawTerminalGuard {
-    fd: std::os::fd::RawFd,
+    raw_fd: std::os::fd::RawFd,
     orig_termios: libc::termios,
     active: bool,
 }
 
 #[cfg(unix)]
 impl RawTerminalGuard {
-    pub fn new(fd: std::os::fd::RawFd) -> Option<Self> {
-        if unsafe { libc::isatty(fd) } == 0 {
+    pub fn new(fd: std::os::fd::BorrowedFd<'_>) -> Option<Self> {
+        use std::os::fd::AsRawFd;
+        let raw_fd = fd.as_raw_fd();
+        if unsafe { libc::isatty(raw_fd) } == 0 {
             return None;
         }
         let mut orig_termios = unsafe { std::mem::zeroed() };
-        if unsafe { libc::tcgetattr(fd, &mut orig_termios) } != 0 {
+        if unsafe { libc::tcgetattr(raw_fd, &mut orig_termios) } != 0 {
             return None;
         }
         let mut raw_termios = orig_termios;
@@ -171,15 +285,19 @@ impl RawTerminalGuard {
         raw_termios.c_cc[libc::VTIME] = 0;
         raw_termios.c_cc[libc::VMIN] = 1;
 
-        if unsafe { libc::tcsetattr(fd, libc::TCSAFLUSH, &raw_termios) } != 0 {
+        if unsafe { libc::tcsetattr(raw_fd, libc::TCSAFLUSH, &raw_termios) } != 0 {
             return None;
         }
 
         Some(Self {
-            fd,
+            raw_fd,
             orig_termios,
             active: true,
         })
+    }
+
+    pub fn is_active(&self) -> bool {
+        self.active
     }
 }
 
@@ -188,8 +306,9 @@ impl Drop for RawTerminalGuard {
     fn drop(&mut self) {
         if self.active {
             unsafe {
-                libc::tcsetattr(self.fd, libc::TCSAFLUSH, &self.orig_termios);
+                libc::tcsetattr(self.raw_fd, libc::TCSAFLUSH, &self.orig_termios);
             }
+            self.active = false;
         }
     }
 }
@@ -201,6 +320,10 @@ pub struct RawTerminalGuard;
 impl RawTerminalGuard {
     pub fn new(_fd: i32) -> Option<Self> {
         None
+    }
+
+    pub fn is_active(&self) -> bool {
+        false
     }
 }
 
@@ -222,48 +345,6 @@ pub fn get_window_size(fd: std::os::fd::RawFd) -> Option<WindowSize> {
 
 #[cfg(not(unix))]
 pub fn get_window_size(_fd: i32) -> Option<WindowSize> {
-    None
-}
-
-/// Inspects reader to find underlying TTY file descriptor if available.
-#[cfg(unix)]
-pub fn find_tty_fd<R: 'static>(reader: &R) -> Option<std::os::fd::RawFd> {
-    use std::any::Any;
-    use std::os::fd::AsRawFd;
-
-    let any = reader as &dyn Any;
-
-    if let Some(f) = any.downcast_ref::<tokio::fs::File>() {
-        let fd = f.as_raw_fd();
-        return if unsafe { libc::isatty(fd) } != 0 {
-            Some(fd)
-        } else {
-            None
-        };
-    }
-
-    if let Some(f) = any.downcast_ref::<std::fs::File>() {
-        let fd = f.as_raw_fd();
-        return if unsafe { libc::isatty(fd) } != 0 {
-            Some(fd)
-        } else {
-            None
-        };
-    }
-
-    if any.is::<tokio::io::Stdin>() || any.is::<std::io::Stdin>() {
-        return if unsafe { libc::isatty(libc::STDIN_FILENO) } != 0 {
-            Some(libc::STDIN_FILENO)
-        } else {
-            None
-        };
-    }
-
-    None
-}
-
-#[cfg(not(unix))]
-pub fn find_tty_fd<R: 'static>(_reader: &R) -> Option<i32> {
     None
 }
 

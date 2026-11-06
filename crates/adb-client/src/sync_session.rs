@@ -1,5 +1,7 @@
+//! Client-side smart-socket sync protocol session implementation.
+
 use crate::client::{AdbClient, Outcome};
-use crate::session::{Session, SessionError};
+use crate::session::{AsyncStream, BoxedStream, Session, SessionError};
 use crate::transport::TransportSelector;
 use adb_proto::sync::{
     FileMode, FileType, SyncDentV1, SyncDentV2, SyncId, SyncStatV1, SyncStatV2, SYNC_DATA_MAX,
@@ -382,13 +384,13 @@ impl Stat {
 }
 
 /// An active ADB sync connection session supporting `ls`, `stat`, `lstat`, `stat_with_fallback`, and `pull`.
-pub struct SyncSession {
-    session: Session,
+pub struct SyncSession<S: AsyncStream = BoxedStream> {
+    stream: S,
     features: adb_proto::Features,
     capabilities: SyncCapabilities,
 }
 
-impl SyncSession {
+impl SyncSession<BoxedStream> {
     /// Connects a sync session using default transport selector (`Any`).
     pub async fn connect(client: &AdbClient) -> Outcome<Self, SyncError> {
         Self::connect_with_selector(client, &TransportSelector::Any).await
@@ -417,8 +419,14 @@ impl SyncSession {
         let features = adb_proto::Features::parse(&features_str.replace('\n', ","));
         let capabilities = SyncCapabilities::from_features(&features);
 
-        let session_res = client.session_factory().connect(client.addr()).await;
-        let mut session = match session_res {
+        let session = match Session::open(
+            client.session_factory().as_ref(),
+            client.addr(),
+            selector,
+            "sync:",
+        )
+        .await
+        {
             Ok(s) => s,
             Err(e) => {
                 let err_msg = format!("connect failed: {e}");
@@ -429,37 +437,23 @@ impl SyncSession {
             }
         };
 
-        if let Err(e) = session.select_transport(selector).await {
-            let err_msg = format!("connect failed: {e}");
-            return Outcome {
-                result: Err(SyncError::ConnectFailed(err_msg)),
-                events,
-            };
-        }
-
-        if let Err(e) = session.send_service("sync:").await {
-            let err_msg = format!("connect failed: {e}");
-            return Outcome {
-                result: Err(SyncError::ConnectFailed(err_msg)),
-                events,
-            };
-        }
-
-        if let Err(e) = session.read_status().await {
-            let err_msg = format!("connect failed: {e}");
-            return Outcome {
-                result: Err(SyncError::ConnectFailed(err_msg)),
-                events,
-            };
-        }
-
         Outcome {
             result: Ok(Self {
-                session,
+                stream: session.into_stream(),
                 features,
                 capabilities,
             }),
             events,
+        }
+    }
+}
+
+impl<S: AsyncStream> SyncSession<S> {
+    pub fn new(stream: S, features: adb_proto::Features, capabilities: SyncCapabilities) -> Self {
+        Self {
+            stream,
+            features,
+            capabilities,
         }
     }
 
@@ -527,9 +521,8 @@ impl SyncSession {
         buf.extend_from_slice(&(path_bytes.len() as u32).to_le_bytes());
         buf.extend_from_slice(path_bytes);
 
-        let stream = self.session.stream_mut();
-        stream.write_all(&buf).await?;
-        stream.flush().await?;
+        self.stream.write_all(&buf).await?;
+        self.stream.flush().await?;
         Ok(())
     }
 
@@ -543,12 +536,11 @@ impl SyncSession {
 
         let is_ls_v2 = self.have_ls_v2();
         let mut entries = Vec::new();
-        let stream = self.session.stream_mut();
 
         if is_ls_v2 {
             loop {
                 let mut dent_buf = [0u8; std::mem::size_of::<SyncDentV2>()];
-                stream.read_exact(&mut dent_buf).await?;
+                self.stream.read_exact(&mut dent_buf).await?;
 
                 let dent: SyncDentV2 =
                     unsafe { std::ptr::read_unaligned(dent_buf.as_ptr() as *const SyncDentV2) };
@@ -571,7 +563,7 @@ impl SyncSession {
                 }
 
                 let mut name_buf = vec![0u8; namelen];
-                stream.read_exact(&mut name_buf).await?;
+                self.stream.read_exact(&mut name_buf).await?;
 
                 if name_buf.contains(&b'/') || name_buf.contains(&b'\\') {
                     return Err(SyncError::HostilePath(
@@ -592,7 +584,7 @@ impl SyncSession {
         } else {
             loop {
                 let mut dent_buf = [0u8; std::mem::size_of::<SyncDentV1>()];
-                stream.read_exact(&mut dent_buf).await?;
+                self.stream.read_exact(&mut dent_buf).await?;
 
                 let dent: SyncDentV1 =
                     unsafe { std::ptr::read_unaligned(dent_buf.as_ptr() as *const SyncDentV1) };
@@ -615,7 +607,7 @@ impl SyncSession {
                 }
 
                 let mut name_buf = vec![0u8; namelen];
-                stream.read_exact(&mut name_buf).await?;
+                self.stream.read_exact(&mut name_buf).await?;
 
                 if name_buf.contains(&b'/') || name_buf.contains(&b'\\') {
                     return Err(SyncError::HostilePath(
@@ -679,11 +671,10 @@ impl SyncSession {
 
     async fn finish_stat(&mut self) -> Result<Stat, SyncError> {
         let is_stat_v2 = self.have_stat_v2();
-        let stream = self.session.stream_mut();
 
         if is_stat_v2 {
             let mut buf = [0u8; std::mem::size_of::<SyncStatV2>()];
-            stream.read_exact(&mut buf).await?;
+            self.stream.read_exact(&mut buf).await?;
 
             let st2: SyncStatV2 =
                 unsafe { std::ptr::read_unaligned(buf.as_ptr() as *const SyncStatV2) };
@@ -723,7 +714,7 @@ impl SyncSession {
             })
         } else {
             let mut buf = [0u8; std::mem::size_of::<SyncStatV1>()];
-            stream.read_exact(&mut buf).await?;
+            self.stream.read_exact(&mut buf).await?;
 
             let st1: SyncStatV1 =
                 unsafe { std::ptr::read_unaligned(buf.as_ptr() as *const SyncStatV1) };
@@ -996,14 +987,12 @@ impl SyncSession {
         .map_err(|e| e.to_string())?;
 
         let mut file = file_res?;
-
-        let stream = self.session.stream_mut();
         let mut bytes_copied = 0u64;
 
         let res = async {
             loop {
                 let mut header_buf = [0u8; 8];
-                if stream.read_exact(&mut header_buf).await.is_err() {
+                if self.stream.read_exact(&mut header_buf).await.is_err() {
                     return Err("failed to read sync response header".to_string());
                 }
 
@@ -1023,7 +1012,7 @@ impl SyncSession {
                         ));
                     }
                     let mut fail_buf = vec![0u8; msglen];
-                    let _ = stream.read_exact(&mut fail_buf).await;
+                    let _ = self.stream.read_exact(&mut fail_buf).await;
                     let fail_msg = String::from_utf8_lossy(&fail_buf);
                     return Err(format!(
                         "failed to copy '{rpath}' to '{}': remote {fail_msg}",
@@ -1040,7 +1029,7 @@ impl SyncSession {
                 }
 
                 let mut chunk = vec![0u8; data_len];
-                if stream.read_exact(&mut chunk).await.is_err() {
+                if self.stream.read_exact(&mut chunk).await.is_err() {
                     return Err("failed to read chunk payload".to_string());
                 }
 
@@ -1087,12 +1076,11 @@ impl SyncSession {
         buf.extend_from_slice(&SyncId::RecvV2.to_le_bytes());
         buf.extend_from_slice(&0u32.to_le_bytes());
 
-        let stream = self.session.stream_mut();
-        stream
+        self.stream
             .write_all(&buf)
             .await
             .map_err(|e| format!("failed to send RECV_V2 request: {e}"))?;
-        stream
+        self.stream
             .flush()
             .await
             .map_err(|e| format!("failed to flush RECV_V2 request: {e}"))?;
@@ -1480,16 +1468,15 @@ impl SyncSession {
     }
 
     async fn write_or_fail(&mut self, lpath: &str, rpath: &str, data: &[u8]) -> Result<(), String> {
-        let stream = self.session.stream_mut();
-        if let Err(e) = stream.write_all(data).await {
+        if let Err(e) = self.stream.write_all(data).await {
             if e.kind() == std::io::ErrorKind::ConnectionReset {
                 let mut status_buf = [0u8; 8];
-                if stream.read_exact(&mut status_buf).await.is_ok() {
+                if self.stream.read_exact(&mut status_buf).await.is_ok() {
                     let id = u32::from_le_bytes(status_buf[0..4].try_into().unwrap());
                     let msglen = u32::from_le_bytes(status_buf[4..8].try_into().unwrap()) as usize;
                     if id == SyncId::Fail.to_u32() && msglen <= SYNC_DATA_MAX {
                         let mut fail_buf = vec![0u8; msglen];
-                        if stream.read_exact(&mut fail_buf).await.is_ok() {
+                        if self.stream.read_exact(&mut fail_buf).await.is_ok() {
                             let fail_msg = String::from_utf8_lossy(&fail_buf);
                             return Err(format!(
                                 "failed to copy '{lpath}' to '{rpath}': remote {fail_msg}"
@@ -1500,7 +1487,7 @@ impl SyncSession {
             }
             return Err(format!("failed to copy '{lpath}' to '{rpath}': {e}"));
         }
-        let _ = stream.flush().await;
+        let _ = self.stream.flush().await;
         Ok(())
     }
 
@@ -1516,27 +1503,16 @@ impl SyncSession {
         while !deferred_acks.is_empty() {
             let should_block = mode == AckMode::Drain || deferred_acks.len() >= MAX_DEFERRED_ACKS;
 
-            let stream = self.session.stream_mut();
-
             if !should_block {
-                let mut test_buf = [0u8; 1];
-                match tokio::time::timeout(std::time::Duration::ZERO, stream.peek(&mut test_buf))
-                    .await
-                {
-                    Ok(Ok(0)) | Err(_) => {
-                        return if overall_success {
-                            AckResult::Success
-                        } else {
-                            AckResult::Error
-                        };
-                    }
-                    Ok(Err(_)) => {}
-                    Ok(Ok(_)) => {}
-                }
+                return if overall_success {
+                    AckResult::Success
+                } else {
+                    AckResult::Error
+                };
             }
 
             let mut hdr_buf = [0u8; 8];
-            if stream.read_exact(&mut hdr_buf).await.is_err() {
+            if self.stream.read_exact(&mut hdr_buf).await.is_err() {
                 let err_msg = "failed to read copy response: EOF".to_string();
                 res.errors.push(err_msg.clone());
                 res.success = false;
@@ -1594,7 +1570,7 @@ impl SyncSession {
                     });
                 } else {
                     let mut fail_buf = vec![0u8; msglen];
-                    if stream.read_exact(&mut fail_buf).await.is_err() {
+                    if self.stream.read_exact(&mut fail_buf).await.is_err() {
                         let err_msg = "failed to read copy response: EOF".to_string();
                         res.errors.push(err_msg.clone());
                         res.success = false;

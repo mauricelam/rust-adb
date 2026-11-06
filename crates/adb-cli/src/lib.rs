@@ -395,7 +395,57 @@ fn print_error_prog(err: &ClientError, stderr: &mut Box<dyn Write + Send>) {
     let _ = writeln!(stderr, "adb: {err}");
 }
 
-enum CliCompressionOption {
+/// Helper to report Outcome result, formatting events and errors uniformly.
+pub fn report<T, F>(outcome: Outcome<T>, output: &mut Output, on_success: F) -> i32
+where
+    F: FnOnce(T, &mut Output) -> i32,
+{
+    print_events(&outcome.events, &mut output.stderr);
+    match outcome.result {
+        Ok(val) => on_success(val, output),
+        Err(err) => {
+            print_error(&err, &mut output.stderr);
+            1
+        }
+    }
+}
+
+/// Helper to report Outcome result with `adb: {err}` error formatting on failure.
+pub fn report_prog<T, F>(outcome: Outcome<T>, output: &mut Output, on_success: F) -> i32
+where
+    F: FnOnce(T, &mut Output) -> i32,
+{
+    print_events(&outcome.events, &mut output.stderr);
+    match outcome.result {
+        Ok(val) => on_success(val, output),
+        Err(err) => {
+            print_error_prog(&err, &mut output.stderr);
+            1
+        }
+    }
+}
+
+/// Helper to report forward/reverse outcome with standard adb: error: prefix formatting.
+pub fn report_forward_reverse<T, F>(outcome: Outcome<T>, output: &mut Output, on_success: F) -> i32
+where
+    F: FnOnce(T, &mut Output) -> i32,
+{
+    print_events(&outcome.events, &mut output.stderr);
+    match outcome.result {
+        Ok(val) => on_success(val, output),
+        Err(err) => {
+            if err.kind() == adb_client::ClientErrorKind::Usage {
+                let _ = writeln!(output.stderr, "adb: {err}");
+            } else {
+                let _ = writeln!(output.stderr, "adb: error: {err}");
+            }
+            1
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CliCompressionOption {
     Any,
     Type(adb_client::CompressionType),
 }
@@ -424,6 +474,253 @@ fn parse_compression_type(str: &str, allow_numbers: bool) -> Result<CliCompressi
             adb_client::CompressionType::Zstd,
         )),
         _ => Err(format!("unexpected compression type {str}")),
+    }
+}
+
+/// Shared file transfer flags between push and pull.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TransferArgs {
+    pub copy_attrs: bool,
+    pub sync: bool,
+    pub dry_run: bool,
+    pub quiet: bool,
+    pub compression: CliCompressionOption,
+    pub positional: Vec<String>,
+}
+
+impl TransferArgs {
+    pub fn parse<E>(
+        args: &[&str],
+        env: &E,
+        default_compression: CliCompressionOption,
+    ) -> Result<Self, String>
+    where
+        E: Fn(&str) -> Option<String>,
+    {
+        let mut copy_attrs = false;
+        let mut sync = false;
+        let mut dry_run = false;
+        let mut quiet = false;
+        let mut compression = default_compression;
+        let mut positional = Vec::new();
+
+        if let Some(adb_comp) = env("ADB_COMPRESSION") {
+            if let Ok(c) = parse_compression_type(&adb_comp, true) {
+                compression = c;
+            }
+        }
+
+        let mut i = 0;
+        let mut ignore_flags = false;
+        while i < args.len() {
+            let arg = args[i];
+            if ignore_flags || !arg.starts_with('-') || arg == "-" {
+                positional.push(arg.to_string());
+            } else if arg == "--" {
+                ignore_flags = true;
+            } else if arg == "-p" {
+                // Silently ignore
+            } else if arg == "-a" {
+                copy_attrs = true;
+            } else if arg == "-z" {
+                if i + 1 >= args.len() {
+                    return Err("-z requires an argument".to_string());
+                }
+                i += 1;
+                compression = parse_compression_type(args[i], false)?;
+            } else if arg == "-Z" {
+                compression = CliCompressionOption::Type(adb_client::CompressionType::None);
+            } else if arg == "-n" {
+                dry_run = true;
+            } else if arg == "--sync" {
+                sync = true;
+            } else if arg == "-q" {
+                quiet = true;
+            } else {
+                return Err(format!("unrecognized option '{arg}'"));
+            }
+            i += 1;
+        }
+
+        Ok(TransferArgs {
+            copy_attrs,
+            sync,
+            dry_run,
+            quiet,
+            compression,
+            positional,
+        })
+    }
+}
+
+/// Parsed arguments for `adb push`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PushArgs {
+    pub transfer: TransferArgs,
+    pub sources: Vec<String>,
+    pub destination: String,
+}
+
+/// Parsed arguments for `adb pull`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PullArgs {
+    pub transfer: TransferArgs,
+    pub sources: Vec<String>,
+    pub destination: String,
+}
+
+/// Parsed arguments for `adb shell`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ShellArgs {
+    pub options: ShellOptions,
+    pub command: Vec<String>,
+}
+
+/// Strongly typed CLI command enum.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Command {
+    StartServer,
+    KillServer,
+    Devices { long: bool },
+    Connect(String),
+    Disconnect(Option<String>),
+    TrackDevices(TrackDevicesMode),
+    Forward(Vec<String>),
+    Reverse(Vec<String>),
+    Shell(ShellArgs),
+    ExecIn(Vec<String>),
+    ExecOut(Vec<String>),
+    GetState,
+    GetSerialno,
+    GetDevpath,
+    TransportId,
+    Features,
+    HostFeatures,
+    Ls(String),
+    Push(PushArgs),
+    Pull(PullArgs),
+    Help,
+    Version,
+    Unimplemented(String),
+    Unknown(String),
+}
+
+impl Command {
+    /// Parses CLI subcommand and arguments into a typed `Command`.
+    pub fn parse<E>(cmd_name: &str, cmd_args: &[&str], env: &E) -> Result<Self, String>
+    where
+        E: Fn(&str) -> Option<String>,
+    {
+        match cmd_name {
+            "start-server" => Ok(Command::StartServer),
+            "kill-server" => Ok(Command::KillServer),
+            "devices" => {
+                let long = match cmd_args {
+                    [] => false,
+                    ["-l"] => true,
+                    _ => return Err("adb devices [-l]".to_string()),
+                };
+                Ok(Command::Devices { long })
+            }
+            "connect" => match cmd_args {
+                [target] => Ok(Command::Connect(target.to_string())),
+                _ => Err("usage: adb connect HOST[:PORT]".to_string()),
+            },
+            "disconnect" => match cmd_args {
+                [] => Ok(Command::Disconnect(None)),
+                [target] => Ok(Command::Disconnect(Some(target.to_string()))),
+                _ => Err("usage: adb disconnect [HOST[:PORT]]".to_string()),
+            },
+            "track-devices" => {
+                let mode = match cmd_args {
+                    [] => TrackDevicesMode::Normal,
+                    ["-l"] => TrackDevicesMode::Long,
+                    ["--proto-text"] => TrackDevicesMode::ProtoText,
+                    ["--proto-binary"] => TrackDevicesMode::ProtoBinary,
+                    _ => {
+                        return Err(
+                            "usage: adb track-devices [-l][--proto-text][--proto-binary]"
+                                .to_string(),
+                        )
+                    }
+                };
+                Ok(Command::TrackDevices(mode))
+            }
+            "forward" => Ok(Command::Forward(
+                cmd_args.iter().map(|s| s.to_string()).collect(),
+            )),
+            "reverse" => Ok(Command::Reverse(
+                cmd_args.iter().map(|s| s.to_string()).collect(),
+            )),
+            "shell" => {
+                let (options, command) = parse_shell_args(cmd_args)?;
+                Ok(Command::Shell(ShellArgs { options, command }))
+            }
+            "exec-in" => Ok(Command::ExecIn(
+                cmd_args.iter().map(|s| s.to_string()).collect(),
+            )),
+            "exec-out" => Ok(Command::ExecOut(
+                cmd_args.iter().map(|s| s.to_string()).collect(),
+            )),
+            "get-state" => Ok(Command::GetState),
+            "get-serialno" => Ok(Command::GetSerialno),
+            "get-devpath" => Ok(Command::GetDevpath),
+            "transport-id" => Ok(Command::TransportId),
+            "features" => Ok(Command::Features),
+            "host-features" => Ok(Command::HostFeatures),
+            "ls" => {
+                if cmd_args.len() != 1 {
+                    return Err("ls requires an argument".to_string());
+                }
+                Ok(Command::Ls(cmd_args[0].to_string()))
+            }
+            "push" => {
+                let transfer = TransferArgs::parse(cmd_args, env, CliCompressionOption::Any)?;
+                let mut srcs = transfer.positional.clone();
+                let dst = if srcs.len() > 1 { srcs.pop() } else { None };
+                let destination = match dst {
+                    Some(d) => d,
+                    None => {
+                        return Err("push requires <source> and <destination> arguments".to_string())
+                    }
+                };
+                if srcs.is_empty() {
+                    return Err("push requires <source> and <destination> arguments".to_string());
+                }
+                Ok(Command::Push(PushArgs {
+                    transfer,
+                    sources: srcs,
+                    destination,
+                }))
+            }
+            "pull" => {
+                let transfer = TransferArgs::parse(
+                    cmd_args,
+                    env,
+                    CliCompressionOption::Type(adb_client::CompressionType::None),
+                )?;
+                let mut srcs = transfer.positional.clone();
+                if srcs.is_empty() {
+                    return Err("pull requires an argument".to_string());
+                }
+                let destination = if srcs.len() > 1 {
+                    srcs.pop().unwrap()
+                } else {
+                    ".".to_string()
+                };
+                Ok(Command::Pull(PullArgs {
+                    transfer,
+                    sources: srcs,
+                    destination,
+                }))
+            }
+            "help" | "--help" | "/?" => Ok(Command::Help),
+            "version" | "--version" => Ok(Command::Version),
+            name if is_recognized_unimplemented_command(name) => {
+                Ok(Command::Unimplemented(name.to_string()))
+            }
+            _ => Ok(Command::Unknown(cmd_name.to_string())),
+        }
     }
 }
 
@@ -496,7 +793,20 @@ where
     let cmd_name = remaining[0].as_str();
     let cmd_args: Vec<&str> = remaining[1..].iter().map(|s| s.as_str()).collect();
 
-    let mut builder = AdbClient::builder(global_opts.server_address.clone());
+    let command = match Command::parse(cmd_name, &cmd_args, &env) {
+        Ok(cmd) => cmd,
+        Err(err) => {
+            let _ = writeln!(output.stderr, "adb: {err}");
+            return 1;
+        }
+    };
+
+    let mut builder = AdbClient::builder(global_opts.server_address.clone()).launch_options(
+        adb_client::ServerLaunchOptions {
+            listen_all: global_opts.listen_all,
+            one_device: global_opts.one_device.clone(),
+        },
+    );
     if let Some(server_bin) = env("ADB_SERVER_BIN") {
         if !server_bin.is_empty() {
             builder = builder.launcher(ExternalBinaryLauncher::new(server_bin));
@@ -504,53 +814,92 @@ where
     }
     let client = builder.build();
 
-    match cmd_name {
-        // Cites `start-server` branch in original/client/commandline.cpp:2102
-        "start-server" => {
+    match command {
+        Command::StartServer => {
             let outcome = client
                 .check_server_version_with_options(
                     global_opts.listen_all,
                     global_opts.one_device.as_deref(),
                 )
                 .await;
+            report(outcome, output, |(), _| 0)
+        }
+        Command::KillServer => {
+            let outcome = client.kill_server().await;
+            report(outcome, output, |(), _| 0)
+        }
+        Command::Devices { long } => {
+            let outcome = client.devices(long).await;
+            report(outcome, output, |stdout, out| {
+                let _ = write!(out.stdout, "{stdout}");
+                0
+            })
+        }
+        Command::Connect(target) => {
+            let outcome = client.connect(&target).await;
+            report(outcome, output, |stdout, out| {
+                let _ = writeln!(out.stdout, "{stdout}");
+                0
+            })
+        }
+        Command::Disconnect(target) => {
+            let outcome = client.disconnect(target.as_deref()).await;
+            report(outcome, output, |stdout, out| {
+                let _ = writeln!(out.stdout, "{stdout}");
+                0
+            })
+        }
+        Command::TrackDevices(mode) => {
+            let outcome = client.track_devices(mode).await;
             print_events(&outcome.events, &mut output.stderr);
             match outcome.result {
-                Ok(()) => 0,
+                Ok(mut stream) => {
+                    use tokio_stream::StreamExt;
+                    while let Some(chunk_res) = stream.next().await {
+                        match chunk_res {
+                            Ok(chunk) => {
+                                if output.stdout.write_all(&chunk).is_err()
+                                    || output.stdout.flush().is_err()
+                                {
+                                    return 1;
+                                }
+                            }
+                            Err(err) => {
+                                print_error(&err, &mut output.stderr);
+                                return 1;
+                            }
+                        }
+                    }
+                    0
+                }
                 Err(err) => {
                     print_error(&err, &mut output.stderr);
                     1
                 }
             }
         }
-        "reverse" => {
+        Command::Forward(args) => {
+            let args_ref: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
             let outcome =
-                parse_and_exec_reverse(&client, &global_opts.device_selection.selector, &cmd_args)
+                parse_and_exec_forward(&client, &global_opts.device_selection.selector, &args_ref)
                     .await;
-            print_events(&outcome.events, &mut output.stderr);
-            match outcome.result {
-                Ok(stdout) => {
-                    let _ = write!(output.stdout, "{stdout}");
-                    0
-                }
-                Err(err) => {
-                    if err.kind() == adb_client::ClientErrorKind::Usage {
-                        let _ = writeln!(output.stderr, "adb: {err}");
-                    } else {
-                        let _ = writeln!(output.stderr, "adb: error: {err}");
-                    }
-                    1
-                }
-            }
+            report_forward_reverse(outcome, output, |stdout, out| {
+                let _ = write!(out.stdout, "{stdout}");
+                0
+            })
         }
-        "shell" => {
-            let (shell_opts, command_args) = match parse_shell_args(&cmd_args) {
-                Ok(res) => res,
-                Err(err) => {
-                    let _ = writeln!(output.stderr, "adb: {err}");
-                    return 1;
-                }
-            };
-            let cmd_refs: Vec<&str> = command_args.iter().map(|s| s.as_str()).collect();
+        Command::Reverse(args) => {
+            let args_ref: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
+            let outcome =
+                parse_and_exec_reverse(&client, &global_opts.device_selection.selector, &args_ref)
+                    .await;
+            report_forward_reverse(outcome, output, |stdout, out| {
+                let _ = write!(out.stdout, "{stdout}");
+                0
+            })
+        }
+        Command::Shell(shell_args) => {
+            let cmd_refs: Vec<&str> = shell_args.command.iter().map(|s| s.as_str()).collect();
 
             let handle = tokio::runtime::Handle::current();
             let stdin_reader = output.stdin.take().map(|std_r| {
@@ -625,7 +974,7 @@ where
                 .shell(
                     &global_opts.device_selection.selector,
                     &cmd_refs,
-                    &shell_opts,
+                    &shell_args.options,
                     stdin_reader,
                     Some(stdout_w),
                     Some(stderr_w),
@@ -641,7 +990,7 @@ where
 
             print_events(&outcome.events, &mut output.stderr);
             match outcome.result {
-                Ok(code) => code,
+                Ok(code) => code.as_i32(),
                 Err(err) => {
                     let err_msg = err.to_string();
                     if err_msg.contains("only supports allocating a pty") {
@@ -653,7 +1002,8 @@ where
                 }
             }
         }
-        "exec-in" => {
+        Command::ExecIn(args) => {
+            let args_ref: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
             let handle = tokio::runtime::Handle::current();
             let (async_r, mut async_w) = tokio::io::duplex(8192);
             if let Some(mut std_r) = output.stdin.take() {
@@ -677,19 +1027,13 @@ where
             }
 
             let outcome = client
-                .exec_in(&global_opts.device_selection.selector, &cmd_args, async_r)
+                .exec_in(&global_opts.device_selection.selector, &args_ref, async_r)
                 .await;
 
-            print_events(&outcome.events, &mut output.stderr);
-            match outcome.result {
-                Ok(_) => 0,
-                Err(err) => {
-                    print_error(&err, &mut output.stderr);
-                    1
-                }
-            }
+            report(outcome, output, |(), _| 0)
         }
-        "exec-out" => {
+        Command::ExecOut(args) => {
+            let args_ref: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
             let handle = tokio::runtime::Handle::current();
             let mut stdout_target =
                 std::mem::replace(&mut output.stdout, Box::new(std::io::sink()));
@@ -713,236 +1057,71 @@ where
             });
 
             let outcome = client
-                .exec_out(&global_opts.device_selection.selector, &cmd_args, stdout_w)
+                .exec_out(&global_opts.device_selection.selector, &args_ref, stdout_w)
                 .await;
 
             if let Ok(target) = stdout_thread.join() {
                 output.stdout = target;
             }
 
-            print_events(&outcome.events, &mut output.stderr);
-            match outcome.result {
-                Ok(_) => 0,
-                Err(err) => {
-                    print_error(&err, &mut output.stderr);
-                    1
-                }
-            }
+            report(outcome, output, |(), _| 0)
         }
-        // Cites `get-state`, `get-serialno`, `get-devpath` in original/client/commandline.cpp:2094
-        "get-state" => {
+        Command::GetState => {
             let outcome = client
                 .get_state(&global_opts.device_selection.selector)
                 .await;
-            print_events(&outcome.events, &mut output.stderr);
-            match outcome.result {
-                Ok(stdout) => {
-                    let _ = write!(output.stdout, "{stdout}");
-                    0
-                }
-                Err(err) => {
-                    print_error(&err, &mut output.stderr);
-                    1
-                }
-            }
+            report(outcome, output, |stdout, out| {
+                let _ = write!(out.stdout, "{stdout}");
+                0
+            })
         }
-        "get-serialno" => {
+        Command::GetSerialno => {
             let outcome = client
                 .get_serialno(&global_opts.device_selection.selector)
                 .await;
-            print_events(&outcome.events, &mut output.stderr);
-            match outcome.result {
-                Ok(stdout) => {
-                    let _ = write!(output.stdout, "{stdout}");
-                    0
-                }
-                Err(err) => {
-                    print_error(&err, &mut output.stderr);
-                    1
-                }
-            }
+            report(outcome, output, |stdout, out| {
+                let _ = write!(out.stdout, "{stdout}");
+                0
+            })
         }
-        "get-devpath" => {
+        Command::GetDevpath => {
             let outcome = client
                 .get_devpath(&global_opts.device_selection.selector)
                 .await;
-            print_events(&outcome.events, &mut output.stderr);
-            match outcome.result {
-                Ok(stdout) => {
-                    let _ = write!(output.stdout, "{stdout}");
-                    0
-                }
-                Err(err) => {
-                    print_error(&err, &mut output.stderr);
-                    1
-                }
-            }
+            report(outcome, output, |stdout, out| {
+                let _ = write!(out.stdout, "{stdout}");
+                0
+            })
         }
-        // Cites `transport-id` in original/client/commandline.cpp:1775
-        "transport-id" => {
+        Command::TransportId => {
             let outcome = client
                 .transport_id(&global_opts.device_selection.selector)
                 .await;
-            print_events(&outcome.events, &mut output.stderr);
-            match outcome.result {
-                Ok(stdout) => {
-                    let _ = write!(output.stdout, "{stdout}");
-                    0
-                }
-                Err(err) => {
-                    print_error_prog(&err, &mut output.stderr);
-                    1
-                }
-            }
+            report_prog(outcome, output, |stdout, out| {
+                let _ = write!(out.stdout, "{stdout}");
+                0
+            })
         }
-        // Cites `features` in original/client/commandline.cpp:2173
-        "features" => {
+        Command::Features => {
             let outcome = client
                 .features(
                     &global_opts.device_selection.selector,
                     &adb_proto::FeatureOptions::default(),
                 )
                 .await;
-            print_events(&outcome.events, &mut output.stderr);
-            match outcome.result {
-                Ok(stdout) => {
-                    let _ = write!(output.stdout, "{stdout}");
-                    0
-                }
-                Err(err) => {
-                    print_error_prog(&err, &mut output.stderr);
-                    1
-                }
-            }
+            report_prog(outcome, output, |stdout, out| {
+                let _ = write!(out.stdout, "{stdout}");
+                0
+            })
         }
-        // Cites `host-features` in original/client/commandline.cpp:2183
-        "host-features" => {
+        Command::HostFeatures => {
             let outcome = client.host_features().await;
-            print_events(&outcome.events, &mut output.stderr);
-            match outcome.result {
-                Ok(stdout) => {
-                    let _ = write!(output.stdout, "{stdout}");
-                    0
-                }
-                Err(err) => {
-                    print_error(&err, &mut output.stderr);
-                    1
-                }
-            }
+            report(outcome, output, |stdout, out| {
+                let _ = write!(out.stdout, "{stdout}");
+                0
+            })
         }
-        // Cites `kill-server` branch in original/client/commandline.cpp:1844
-        "kill-server" => {
-            let outcome = client.kill_server().await;
-            print_events(&outcome.events, &mut output.stderr);
-            match outcome.result {
-                Ok(()) => 0,
-                Err(err) => {
-                    print_error(&err, &mut output.stderr);
-                    1
-                }
-            }
-        }
-        // Cites `devices` branch in original/client/commandline.cpp:1758
-        "devices" => {
-            let outcome = parse_and_exec_devices(&client, &cmd_args).await;
-            print_events(&outcome.events, &mut output.stderr);
-            match outcome.result {
-                Ok(stdout) => {
-                    let _ = write!(output.stdout, "{stdout}");
-                    0
-                }
-                Err(err) => {
-                    print_error(&err, &mut output.stderr);
-                    1
-                }
-            }
-        }
-        // Cites `connect` branch in original/client/commandline.cpp:1784
-        "connect" => {
-            let outcome = parse_and_exec_connect(&client, &cmd_args).await;
-            print_events(&outcome.events, &mut output.stderr);
-            match outcome.result {
-                Ok(stdout) => {
-                    let _ = writeln!(output.stdout, "{stdout}");
-                    0
-                }
-                Err(err) => {
-                    print_error(&err, &mut output.stderr);
-                    1
-                }
-            }
-        }
-        // Cites `disconnect` branch in original/client/commandline.cpp:1789
-        "disconnect" => {
-            let outcome = parse_and_exec_disconnect(&client, &cmd_args).await;
-            print_events(&outcome.events, &mut output.stderr);
-            match outcome.result {
-                Ok(stdout) => {
-                    let _ = writeln!(output.stdout, "{stdout}");
-                    0
-                }
-                Err(err) => {
-                    print_error(&err, &mut output.stderr);
-                    1
-                }
-            }
-        }
-        // Cites `track-devices` branch in original/client/commandline.cpp:2142
-        "track-devices" => {
-            let outcome = parse_and_exec_track_devices(&client, &cmd_args).await;
-            print_events(&outcome.events, &mut output.stderr);
-            match outcome.result {
-                Ok(mut stream) => {
-                    use tokio_stream::StreamExt;
-                    while let Some(chunk_res) = stream.next().await {
-                        match chunk_res {
-                            Ok(chunk) => {
-                                if output.stdout.write_all(&chunk).is_err()
-                                    || output.stdout.flush().is_err()
-                                {
-                                    return 1;
-                                }
-                            }
-                            Err(err) => {
-                                print_error(&err, &mut output.stderr);
-                                return 1;
-                            }
-                        }
-                    }
-                    0
-                }
-                Err(err) => {
-                    print_error(&err, &mut output.stderr);
-                    1
-                }
-            }
-        }
-        "forward" => {
-            let outcome =
-                parse_and_exec_forward(&client, &global_opts.device_selection.selector, &cmd_args)
-                    .await;
-            print_events(&outcome.events, &mut output.stderr);
-            match outcome.result {
-                Ok(stdout) => {
-                    let _ = write!(output.stdout, "{stdout}");
-                    0
-                }
-                Err(err) => {
-                    if err.kind() == adb_client::ClientErrorKind::Usage {
-                        let _ = writeln!(output.stderr, "adb: {err}");
-                    } else {
-                        let _ = writeln!(output.stderr, "adb: error: {err}");
-                    }
-                    1
-                }
-            }
-        }
-        // Cites `ls` branch in original/client/commandline.cpp:1994
-        "ls" => {
-            if cmd_args.len() != 1 {
-                let _ = writeln!(output.stderr, "adb: ls requires an argument");
-                return 1;
-            }
+        Command::Ls(path) => {
             let selector = &global_opts.device_selection.selector;
             let outcome = SyncSession::connect_with_selector(&client, selector).await;
             print_events(&outcome.events, &mut output.stderr);
@@ -953,7 +1132,7 @@ where
                     return 1;
                 }
             };
-            match sync.ls(cmd_args[0]).await {
+            match sync.ls(&path).await {
                 Ok(entries) => {
                     for entry in entries {
                         let _ = write!(output.stdout, "{}", entry.format_line());
@@ -966,85 +1145,7 @@ where
                 }
             }
         }
-        // Cites `push` branch in original/client/commandline.cpp:1998 and `do_sync_push` in original/client/file_sync_client.cpp:1448
-        "push" => {
-            let mut _copy_attrs = false;
-            let mut sync_flag = false;
-            let mut dry_run = false;
-            let mut quiet = false;
-            let mut compression = CliCompressionOption::Any;
-            let mut srcs = Vec::new();
-            let mut dst = None;
-
-            if let Some(adb_comp) = env("ADB_COMPRESSION") {
-                if let Ok(c) = parse_compression_type(&adb_comp, true) {
-                    compression = c;
-                }
-            }
-
-            let mut i = 0;
-            let mut ignore_flags = false;
-            while i < cmd_args.len() {
-                let arg = cmd_args[i];
-                if ignore_flags || !arg.starts_with('-') || arg == "-" {
-                    srcs.push(arg);
-                } else if arg == "--" {
-                    ignore_flags = true;
-                } else if arg == "-p" {
-                    // Silently ignore
-                } else if arg == "-a" {
-                    _copy_attrs = true;
-                } else if arg == "-z" {
-                    if i + 1 >= cmd_args.len() {
-                        let _ = writeln!(output.stderr, "adb: -z requires an argument");
-                        return 1;
-                    }
-                    i += 1;
-                    match parse_compression_type(cmd_args[i], false) {
-                        Ok(c) => compression = c,
-                        Err(err) => {
-                            let _ = writeln!(output.stderr, "adb: {err}");
-                            return 1;
-                        }
-                    }
-                } else if arg == "-Z" {
-                    compression = CliCompressionOption::Type(adb_client::CompressionType::None);
-                } else if arg == "-n" {
-                    dry_run = true;
-                } else if arg == "--sync" {
-                    sync_flag = true;
-                } else if arg == "-q" {
-                    quiet = true;
-                } else {
-                    let _ = writeln!(output.stderr, "adb: unrecognized option '{arg}'");
-                    return 1;
-                }
-                i += 1;
-            }
-
-            if srcs.len() > 1 {
-                dst = srcs.pop();
-            }
-
-            let dst_path = match dst {
-                Some(d) => d,
-                None => {
-                    let _ = writeln!(
-                        output.stderr,
-                        "adb: push requires <source> and <destination> arguments"
-                    );
-                    return 1;
-                }
-            };
-
-            if srcs.is_empty() {
-                let _ = writeln!(
-                    output.stderr,
-                    "adb: push requires <source> and <destination> arguments"
-                );
-                return 1;
-            }
-
+        Command::Push(push_args) => {
             let selector = &global_opts.device_selection.selector;
             let outcome = SyncSession::connect_with_selector(&client, selector).await;
             print_events(&outcome.events, &mut output.stderr);
@@ -1056,14 +1157,14 @@ where
                 }
             };
 
-            let effective_compression = match compression {
+            let effective_compression = match push_args.transfer.compression {
                 CliCompressionOption::Any => adb_client::CompressionType::None,
                 CliCompressionOption::Type(c) => c,
             };
 
-            let mode = if dry_run {
+            let mode = if push_args.transfer.dry_run {
                 adb_client::PushMode::DryRun
-            } else if sync_flag {
+            } else if push_args.transfer.sync {
                 adb_client::PushMode::Sync
             } else {
                 adb_client::PushMode::Normal
@@ -1074,13 +1175,17 @@ where
                 compression: effective_compression,
             };
 
+            let src_refs: Vec<&str> = push_args.sources.iter().map(|s| s.as_str()).collect();
             let start_time = std::time::Instant::now();
-            match sync.push(&srcs, dst_path, &push_opts).await {
+            match sync
+                .push(&src_refs, &push_args.destination, &push_opts)
+                .await
+            {
                 Ok(res) => {
                     for warning in &res.warnings {
                         let _ = writeln!(output.stderr, "adb: warning: {warning}");
                     }
-                    if !quiet {
+                    if !push_args.transfer.quiet {
                         let elapsed = start_time.elapsed().as_secs_f64();
                         for outcome in &res.outcomes {
                             let display_name = if let Some(out) = env("ANDROID_PRODUCT_OUT") {
@@ -1138,65 +1243,7 @@ where
                 }
             }
         }
-        // Cites `pull` branch in original/client/commandline.cpp:2012 and `do_sync_pull` in original/client/file_sync_client.cpp:1671
-        "pull" => {
-            let mut copy_attrs = false;
-            let mut quiet = false;
-            let mut compression = CliCompressionOption::Type(adb_client::CompressionType::None);
-            let mut srcs = Vec::new();
-            let mut dst = ".";
-
-            if let Some(adb_comp) = env("ADB_COMPRESSION") {
-                if let Ok(c) = parse_compression_type(&adb_comp, true) {
-                    compression = c;
-                }
-            }
-
-            let mut i = 0;
-            let mut ignore_flags = false;
-            while i < cmd_args.len() {
-                let arg = cmd_args[i];
-                if ignore_flags || !arg.starts_with('-') || arg == "-" {
-                    srcs.push(arg);
-                } else if arg == "--" {
-                    ignore_flags = true;
-                } else if arg == "-p" {
-                    // Silently ignore
-                } else if arg == "-a" {
-                    copy_attrs = true;
-                } else if arg == "-z" {
-                    if i + 1 >= cmd_args.len() {
-                        let _ = writeln!(output.stderr, "adb: -z requires an argument");
-                        return 1;
-                    }
-                    i += 1;
-                    match parse_compression_type(cmd_args[i], false) {
-                        Ok(c) => compression = c,
-                        Err(err) => {
-                            let _ = writeln!(output.stderr, "adb: {err}");
-                            return 1;
-                        }
-                    }
-                } else if arg == "-Z" {
-                    compression = CliCompressionOption::Type(adb_client::CompressionType::None);
-                } else if arg == "-q" {
-                    quiet = true;
-                } else {
-                    let _ = writeln!(output.stderr, "adb: unrecognized option '{arg}'");
-                    return 1;
-                }
-                i += 1;
-            }
-
-            if srcs.is_empty() {
-                let _ = writeln!(output.stderr, "adb: pull requires an argument");
-                return 1;
-            }
-
-            if srcs.len() > 1 {
-                dst = srcs.pop().unwrap();
-            }
-
+        Command::Pull(pull_args) => {
             let selector = &global_opts.device_selection.selector;
             let outcome = SyncSession::connect_with_selector(&client, selector).await;
             print_events(&outcome.events, &mut output.stderr);
@@ -1208,18 +1255,22 @@ where
                 }
             };
 
-            let effective_compression = match compression {
+            let effective_compression = match pull_args.transfer.compression {
                 CliCompressionOption::Any => adb_client::CompressionType::None,
                 CliCompressionOption::Type(c) => c,
             };
 
             let pull_opts = adb_client::PullOptions {
-                copy_attrs,
+                copy_attrs: pull_args.transfer.copy_attrs,
                 compression: effective_compression,
             };
 
+            let src_refs: Vec<&str> = pull_args.sources.iter().map(|s| s.as_str()).collect();
             let start_time = std::time::Instant::now();
-            match sync.pull(&srcs, dst, &pull_opts).await {
+            match sync
+                .pull(&src_refs, &pull_args.destination, &pull_opts)
+                .await
+            {
                 Ok(res) => {
                     for warning in &res.warnings {
                         let _ = writeln!(output.stderr, "adb: warning: {warning}");
@@ -1241,7 +1292,7 @@ where
                         };
                         let _ = writeln!(output.stderr, "adb: error: {formatted_err}");
                     }
-                    if !quiet {
+                    if !pull_args.transfer.quiet {
                         let elapsed = start_time.elapsed().as_secs_f64();
                         for outcome in &res.outcomes {
                             if outcome.success {
@@ -1298,22 +1349,19 @@ where
                 }
             }
         }
-        // Cites `help`, `--help`, `/?` branch in original/client/commandline.cpp:2167:
-        // "adb /?" is a common idiom under Windows.
-        "help" | "--help" | "/?" => {
+        Command::Help => {
             let _ = write!(output.stdout, "{}", get_help_text());
             0
         }
-        // Cites `version`, `--version` branch in original/client/commandline.cpp:2170:
-        "version" | "--version" => {
+        Command::Version => {
             let _ = write!(output.stdout, "{}", version::get_version_string());
             0
         }
-        name if is_recognized_unimplemented_command(name) => {
+        Command::Unimplemented(name) => {
             let _ = writeln!(output.stderr, "adb: {name} requires an argument");
             1
         }
-        _ => {
+        Command::Unknown(cmd_name) => {
             let _ = writeln!(output.stderr, "adb: unknown command {cmd_name}");
             1
         }

@@ -11,8 +11,10 @@ pub use state_machine::{
     DeviceStateMachine, DeviceStateMachineEvent, DeviceStateMachineOutput, OutgoingPacket,
 };
 pub use transport_type::TransportType;
+pub mod diagnose;
 pub mod router;
 pub mod stream;
+pub use diagnose::{usb_no_permissions_long_help_text, usb_no_permissions_short_help_text};
 pub mod tracker;
 
 pub use tracker::{format_devices_framed, format_devices_raw, TrackerFormat};

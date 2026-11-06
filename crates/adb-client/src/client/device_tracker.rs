@@ -3,6 +3,8 @@ use std::pin::Pin;
 use super::error::ClientError;
 use super::events::Outcome;
 use super::AdbClient;
+use crate::session::Session;
+use crate::transport::TransportSelector;
 
 /// Mode selector for `track-devices` service variants.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -43,34 +45,26 @@ impl AdbClient {
             };
         }
 
-        let session_res = self.session_factory.connect(&self.addr).await;
-        let mut session = match session_res {
+        let session = match Session::open(
+            self.session_factory.as_ref(),
+            &self.addr,
+            &TransportSelector::Any,
+            mode.service_name(),
+        )
+        .await
+        {
             Ok(s) => s,
             Err(e) => {
                 return Outcome {
                     result: Err(e.into()),
                     events: outcome.events,
-                }
+                };
             }
         };
 
-        if let Err(e) = session.send_service(mode.service_name()).await {
-            return Outcome {
-                result: Err(e.into()),
-                events: outcome.events,
-            };
-        }
-
-        if let Err(e) = session.read_status().await {
-            return Outcome {
-                result: Err(e.into()),
-                events: outcome.events,
-            };
-        }
-
         let stream = async_stream::try_stream! {
             use crate::session::SessionError;
-            let mut stream = session.into_inner();
+            let mut stream = session.into_stream();
             let mut buf = [0u8; 8192];
             loop {
                 use tokio::io::AsyncReadExt;

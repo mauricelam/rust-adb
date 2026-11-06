@@ -14,16 +14,19 @@ pub use client::{
     check_server_version, check_server_version_with_options, escape_arg, forward_dest_is_featured,
     forward_targets_are_valid, kill_server, start_server, start_server_with_one_device,
     start_server_with_options, AdbClient, AdbClientBuilder, ClientError, ClientErrorKind,
-    ClientEvent, DefaultSessionFactory, ExternalBinaryLauncher, LaunchConfig, LaunchError, Outcome,
-    SelfExecLauncher, ServerLauncher, SessionFactory, ShellOptions, TrackDevicesMode,
-    ADB_SERVER_VERSION,
+    ClientEvent, DefaultSessionFactory, ExitCode, ExternalBinaryLauncher, LaunchConfig,
+    LaunchError, Outcome, SelfExecLauncher, ServerLaunchOptions, ServerLauncher, SessionFactory,
+    ShellOptions, TrackDevicesMode, ADB_SERVER_VERSION,
 };
 pub use device_selection::{DeviceSelection, SelectionError};
 pub use server_address::{
     resolve_server_address, AddressError, ServerAddress, ServerAddressEnv, ServerAddressOptions,
     DEFAULT_SERVER_PORT,
 };
-pub use session::{Session, SessionConfig, SessionError};
+pub use session::{
+    AsyncStream, AwaitingStatus, BoxedStream, Fresh, Ready, Session, SessionConfig, SessionError,
+    TransportSelected,
+};
 pub use shell_interactive::{
     determine_pty_allocation, parse_escape_char_arg, EscapeChar, EscapeResult, EscapeState,
     EscapeStateMachine, PtyDecision, PtyKind, PtyMode, ShellProtocol,

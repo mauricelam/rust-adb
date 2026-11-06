@@ -2,7 +2,7 @@ use super::error::ClientError;
 use super::events::Outcome;
 use super::forward::{forward_dest_is_featured, forward_targets_are_valid};
 use super::AdbClient;
-use crate::session::SessionError;
+use crate::session::{Session, SessionError};
 use crate::transport::TransportSelector;
 
 impl AdbClient {
@@ -19,10 +19,13 @@ impl AdbClient {
         }
 
         let res = async {
-            let mut session = self.session_factory.connect(&self.addr).await?;
-            session.select_transport(selector).await?;
-            session.send_service("reverse:list-forward").await?;
-            session.read_status().await?;
+            let mut session = Session::open(
+                self.session_factory.as_ref(),
+                &self.addr,
+                selector,
+                "reverse:list-forward",
+            )
+            .await?;
             let payload = session.read_string().await?;
             Ok(format!("{payload}\n"))
         }
@@ -92,10 +95,8 @@ impl AdbClient {
         };
 
         let res = async {
-            let mut session = self.session_factory.connect(&self.addr).await?;
-            session.select_transport(selector).await?;
-            session.send_service(&cmd).await?;
-            session.read_status().await?;
+            let mut session =
+                Session::open(self.session_factory.as_ref(), &self.addr, selector, &cmd).await?;
 
             let resolved_port = match session.read_string().await {
                 Ok(port) if !port.is_empty() => format!("{port}\n"),
@@ -136,10 +137,8 @@ impl AdbClient {
 
         let cmd = format!("reverse:killforward:{remote}");
         let res = async {
-            let mut session = self.session_factory.connect(&self.addr).await?;
-            session.select_transport(selector).await?;
-            session.send_service(&cmd).await?;
-            session.read_status().await?;
+            let session =
+                Session::open(self.session_factory.as_ref(), &self.addr, selector, &cmd).await?;
             let _ = session.read_to_close().await;
             Ok(String::new())
         }
@@ -168,10 +167,13 @@ impl AdbClient {
         }
 
         let res = async {
-            let mut session = self.session_factory.connect(&self.addr).await?;
-            session.select_transport(selector).await?;
-            session.send_service("reverse:killforward-all").await?;
-            session.read_status().await?;
+            let session = Session::open(
+                self.session_factory.as_ref(),
+                &self.addr,
+                selector,
+                "reverse:killforward-all",
+            )
+            .await?;
             let _ = session.read_to_close().await;
             Ok(String::new())
         }

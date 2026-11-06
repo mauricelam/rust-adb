@@ -106,9 +106,24 @@ impl UsbDeviceHandle for NusbDeviceHandle {
 
     fn clear_halt<'a>(
         &'a self,
-        _endpoint: u8,
+        endpoint: u8,
     ) -> Pin<Box<dyn Future<Output = Result<(), UsbError>> + Send + 'a>> {
-        Box::pin(async move { Ok(()) })
+        Box::pin(async move {
+            let iface = self.interface.lock().await;
+            use nusb::transfer::{ControlOut, ControlType, Recipient};
+            let control = ControlOut {
+                control_type: ControlType::Standard,
+                recipient: Recipient::Endpoint,
+                request: 0x01, // CLEAR_FEATURE
+                value: 0x00,   // ENDPOINT_HALT
+                index: endpoint as u16,
+                data: &[],
+            };
+            let _ = iface
+                .control_out(control, std::time::Duration::from_millis(1000))
+                .wait();
+            Ok(())
+        })
     }
 
     fn close<'a>(&'a self) -> Pin<Box<dyn Future<Output = Result<(), UsbError>> + Send + 'a>> {

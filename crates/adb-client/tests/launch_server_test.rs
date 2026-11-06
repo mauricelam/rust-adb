@@ -161,10 +161,10 @@ async fn test_1_and_2_start_server_when_none_running_and_second_start_does_nothi
     assert_eq!(events[1].to_string(), "* daemon started successfully");
 
     // Verify host:version answers with expected version
-    let mut session = session_factory.connect(&addr).await.unwrap();
-    session.send_service("host:version").await.unwrap();
-    session.read_status().await.unwrap();
-    let ver_str = session.read_string().await.unwrap();
+    let session = session_factory.connect(&addr).await.unwrap();
+    let awaiting = session.send_service("host:version").await.unwrap();
+    let mut ready = awaiting.read_status().await.unwrap();
+    let ver_str = ready.read_string().await.unwrap();
     let ver = u32::from_str_radix(&ver_str, 16).unwrap();
     assert_eq!(ver, ADB_SERVER_VERSION);
 
@@ -245,10 +245,10 @@ async fn test_4_version_mismatch_kills_fake_server_and_starts_real_one() {
     assert_eq!(events[1].to_string(), "* daemon started successfully");
 
     // Verify the newly started server answers with 41
-    let mut session = session_factory.connect(&addr).await.unwrap();
-    session.send_service("host:version").await.unwrap();
-    session.read_status().await.unwrap();
-    let ver_str = session.read_string().await.unwrap();
+    let session = session_factory.connect(&addr).await.unwrap();
+    let awaiting = session.send_service("host:version").await.unwrap();
+    let mut ready = awaiting.read_status().await.unwrap();
+    let ver_str = ready.read_string().await.unwrap();
     let ver = u32::from_str_radix(&ver_str, 16).unwrap();
     assert_eq!(ver, ADB_SERVER_VERSION);
 }

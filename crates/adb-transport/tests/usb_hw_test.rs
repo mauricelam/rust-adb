@@ -45,3 +45,65 @@ async fn test_nusb_list_devices_real_hardware() {
 
     println!("Total ADB devices recognized: {}", found_adb_count);
 }
+
+/// macOS smoke test verifying IOKit enumeration of ADB devices.
+#[cfg(feature = "usb")]
+#[tokio::test]
+#[ignore]
+async fn test_macos_usb_device_enumeration() {
+    use adb_transport::{find_adb_interface, NusbBackend, UsbBackend};
+
+    let backend = NusbBackend::new();
+    let devices = backend
+        .list_devices()
+        .await
+        .expect("must enumerate USB devices on macOS");
+
+    println!("macOS USB Enumeration: found {} devices", devices.len());
+    let mut adb_found = 0;
+    for dev in devices {
+        if let Some(adb_match) = find_adb_interface(&dev.interfaces) {
+            println!(
+                "macOS ADB device: serial={:?}, path={}, iface={}, in=0x{:02x}, out=0x{:02x}",
+                dev.serial,
+                dev.device_path,
+                adb_match.interface_number,
+                adb_match.bulk_in_address,
+                adb_match.bulk_out_address
+            );
+            adb_found += 1;
+        }
+    }
+    println!("macOS total ADB interfaces: {}", adb_found);
+}
+
+/// Windows smoke test verifying WinUSB enumeration of ADB devices.
+#[cfg(feature = "usb")]
+#[tokio::test]
+#[ignore]
+async fn test_windows_winusb_device_enumeration() {
+    use adb_transport::{find_adb_interface, NusbBackend, UsbBackend};
+
+    let backend = NusbBackend::new();
+    let devices = backend
+        .list_devices()
+        .await
+        .expect("must enumerate USB devices on Windows");
+
+    println!("Windows USB Enumeration: found {} devices", devices.len());
+    let mut adb_found = 0;
+    for dev in devices {
+        if let Some(adb_match) = find_adb_interface(&dev.interfaces) {
+            println!(
+                "Windows ADB device: serial={:?}, path={}, iface={}, in=0x{:02x}, out=0x{:02x}",
+                dev.serial,
+                dev.device_path,
+                adb_match.interface_number,
+                adb_match.bulk_in_address,
+                adb_match.bulk_out_address
+            );
+            adb_found += 1;
+        }
+    }
+    println!("Windows total ADB interfaces: {}", adb_found);
+}

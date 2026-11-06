@@ -1,8 +1,65 @@
 use super::error::ClientError;
 use super::events::Outcome;
 use super::AdbClient;
+use crate::session::Session;
 use crate::shell_interactive::{EscapeChar, PtyKind, PtyMode, ShellProtocol};
 use crate::transport::TransportSelector;
+
+/// Exit status code returned by remote shell process.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct ExitCode(pub i32);
+
+impl ExitCode {
+    pub const SUCCESS: Self = Self(0);
+    pub const BROKEN_PIPE: Self = Self(128 + 13);
+    pub const DEFAULT_FAILURE: Self = Self(255);
+
+    pub fn as_i32(self) -> i32 {
+        self.0
+    }
+
+    pub fn is_success(self) -> bool {
+        self.0 == 0
+    }
+}
+
+impl std::fmt::Display for ExitCode {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.0)
+    }
+}
+
+impl From<i32> for ExitCode {
+    fn from(code: i32) -> Self {
+        Self(code)
+    }
+}
+
+impl From<u8> for ExitCode {
+    fn from(code: u8) -> Self {
+        Self(code as i32)
+    }
+}
+
+impl std::ops::Deref for ExitCode {
+    type Target = i32;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl PartialEq<i32> for ExitCode {
+    fn eq(&self, other: &i32) -> bool {
+        self.0 == *other
+    }
+}
+
+impl PartialEq<ExitCode> for i32 {
+    fn eq(&self, other: &ExitCode) -> bool {
+        *self == other.0
+    }
+}
 
 /// Escapes a command argument for the shell following standard ADB single-quote escaping rules.
 ///
@@ -60,7 +117,7 @@ impl AdbClient {
         stdin: Option<R>,
         stdout: Option<W1>,
         stderr: Option<W2>,
-    ) -> Outcome<i32>
+    ) -> Outcome<ExitCode>
     where
         R: tokio::io::AsyncRead + Unpin + Send + 'static,
         W1: tokio::io::AsyncWrite + Unpin + Send,
@@ -170,7 +227,7 @@ impl AdbClient {
         stdin: Option<R>,
         mut stdout_writer: Option<W1>,
         mut stderr_writer: Option<W2>,
-    ) -> Result<i32, ClientError>
+    ) -> Result<ExitCode, ClientError>
     where
         R: tokio::io::AsyncRead + Unpin + Send + 'static,
         W1: tokio::io::AsyncWrite + Unpin + Send,
@@ -192,18 +249,33 @@ impl AdbClient {
             .as_ref()
             .and_then(|r| crate::shell_interactive::find_tty_fd(r));
 
+        #[cfg(unix)]
+        let _raw_guard = if pty_dec.raw_stdin {
+            stdin_tty_fd.and_then(|fd| {
+                use std::os::fd::BorrowedFd;
+                unsafe {
+                    crate::shell_interactive::RawTerminalGuard::new(BorrowedFd::borrow_raw(fd))
+                }
+            })
+        } else {
+            None
+        };
+        #[cfg(not(unix))]
         let _raw_guard = if pty_dec.raw_stdin {
             stdin_tty_fd.and_then(crate::shell_interactive::RawTerminalGuard::new)
         } else {
             None
         };
 
-        let mut session = self.session_factory.connect(&self.addr).await?;
-        session.select_transport(selector).await?;
-        session.send_service(service_string).await?;
-        session.read_status().await?;
+        let session = Session::open(
+            self.session_factory.as_ref(),
+            &self.addr,
+            selector,
+            service_string,
+        )
+        .await?;
 
-        let stream = session.into_inner();
+        let stream = session.into_stream();
         let (mut read_half, mut write_half) = tokio::io::split(stream);
 
         let mut stdin_reader = stdin;
@@ -214,7 +286,7 @@ impl AdbClient {
 
         if pty_dec.use_shell_protocol() {
             let mut decoder = adb_proto::ShellDecoder::new();
-            let mut exit_code: Option<i32> = None;
+            let mut exit_code: Option<ExitCode> = None;
             let mut escape_sm =
                 crate::shell_interactive::EscapeStateMachine::new(if pty_dec.raw_stdin {
                     options.escape_char
@@ -286,7 +358,7 @@ impl AdbClient {
                                 adb_proto::ShellMessage::Stdout(data) => {
                                     if let Some(ref mut w) = stdout_writer {
                                         if w.write_all(&data).await.is_err() || w.flush().await.is_err() {
-                                            exit_code = Some(128 + 13);
+                                            exit_code = Some(ExitCode::BROKEN_PIPE);
                                             break;
                                         }
                                     }
@@ -294,19 +366,19 @@ impl AdbClient {
                                 adb_proto::ShellMessage::Stderr(data) => {
                                     if let Some(ref mut w) = stderr_writer {
                                         if w.write_all(&data).await.is_err() || w.flush().await.is_err() {
-                                            exit_code = Some(128 + 13);
+                                            exit_code = Some(ExitCode::BROKEN_PIPE);
                                             break;
                                         }
                                     }
                                 }
                                 adb_proto::ShellMessage::Exit(code) => {
-                                    exit_code = Some(code as i32);
+                                    exit_code = Some(ExitCode::from(code));
                                 }
                                 _ => {}
                             }
                         }
 
-                        if exit_code == Some(128 + 13) {
+                        if exit_code == Some(ExitCode::BROKEN_PIPE) {
                             break;
                         }
                     }
@@ -371,7 +443,7 @@ impl AdbClient {
                                         }
                                         #[cfg(unix)]
                                         drop(_raw_guard);
-                                        return Ok(0);
+                                        return Ok(ExitCode::SUCCESS);
                                     }
                                 }
                             }
@@ -388,7 +460,7 @@ impl AdbClient {
                 task.abort();
             }
 
-            Ok(exit_code.unwrap_or(255))
+            Ok(exit_code.unwrap_or(ExitCode::DEFAULT_FAILURE))
         } else {
             loop {
                 tokio::select! {
@@ -427,7 +499,7 @@ impl AdbClient {
                 }
             }
 
-            Ok(0)
+            Ok(ExitCode::SUCCESS)
         }
     }
 
@@ -437,7 +509,7 @@ impl AdbClient {
         selector: &TransportSelector,
         args: &[&str],
         mut stdin: R,
-    ) -> Outcome<i32>
+    ) -> Outcome<()>
     where
         R: tokio::io::AsyncRead + Unpin + Send,
     {
@@ -458,17 +530,15 @@ impl AdbClient {
 
         self.with_server(async move {
             use crate::session::SessionError;
-            let mut session = self.session_factory.connect(&self.addr).await?;
-            session.select_transport(selector).await?;
-            session.send_service(&cmd).await?;
-            session.read_status().await?;
+            let session =
+                Session::open(self.session_factory.as_ref(), &self.addr, selector, &cmd).await?;
 
-            let mut stream = session.into_inner();
+            let mut stream = session.into_stream();
             tokio::io::copy(&mut stdin, &mut stream)
                 .await
                 .map_err(|e| ClientError::Session(SessionError::WriteFailure(e)))?;
 
-            Ok(0)
+            Ok(())
         })
         .await
     }
@@ -479,7 +549,7 @@ impl AdbClient {
         selector: &TransportSelector,
         args: &[&str],
         mut stdout: W,
-    ) -> Outcome<i32>
+    ) -> Outcome<()>
     where
         W: tokio::io::AsyncWrite + Unpin + Send,
     {
@@ -500,17 +570,15 @@ impl AdbClient {
 
         self.with_server(async move {
             use crate::session::SessionError;
-            let mut session = self.session_factory.connect(&self.addr).await?;
-            session.select_transport(selector).await?;
-            session.send_service(&cmd).await?;
-            session.read_status().await?;
+            let session =
+                Session::open(self.session_factory.as_ref(), &self.addr, selector, &cmd).await?;
 
-            let mut stream = session.into_inner();
+            let mut stream = session.into_stream();
             tokio::io::copy(&mut stream, &mut stdout)
                 .await
                 .map_err(|e| ClientError::Session(SessionError::ReadStatusFailed(e)))?;
 
-            Ok(0)
+            Ok(())
         })
         .await
     }

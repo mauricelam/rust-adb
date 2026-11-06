@@ -1,7 +1,7 @@
 use super::error::ClientError;
 use super::events::Outcome;
 use super::AdbClient;
-use crate::session::SessionError;
+use crate::session::{Session, SessionError};
 use crate::transport::TransportSelector;
 
 /// Validates forward/reverse targets.
@@ -41,9 +41,13 @@ impl AdbClient {
     /// Ports `forward --list` handling from `original/client/commandline.cpp`.
     pub async fn forward_list(&self, _selector: &TransportSelector) -> Outcome<String> {
         self.with_server(async {
-            let mut session = self.session_factory.connect(&self.addr).await?;
-            session.send_service("host:list-forward").await?;
-            session.read_status().await?;
+            let mut session = Session::open(
+                self.session_factory.as_ref(),
+                &self.addr,
+                &TransportSelector::Any,
+                "host:list-forward",
+            )
+            .await?;
             let payload = session.read_string().await?;
             Ok(format!("{payload}\n"))
         })
@@ -104,18 +108,18 @@ impl AdbClient {
         };
 
         let res = async {
-            let mut session = self.session_factory.connect(&self.addr).await?;
-            session.select_transport(selector).await?;
-            session.send_service(&cmd).await?;
-            session.read_status().await?;
-            session.read_status().await?;
+            let session = self.session_factory.connect(&self.addr).await?;
+            let (session, _) = session.select_transport(selector).await?;
+            let awaiting = session.send_service(&cmd).await?;
+            let ready = awaiting.read_status().await?;
+            let mut ready2 = ready.read_second_status().await?;
 
-            let resolved_port = match session.read_string().await {
+            let resolved_port = match ready2.read_string().await {
                 Ok(port) if !port.is_empty() => format!("{port}\n"),
                 _ => String::new(),
             };
 
-            let _ = session.read_to_close().await;
+            let _ = ready2.read_to_close().await;
 
             Ok(resolved_port)
         }
@@ -149,12 +153,12 @@ impl AdbClient {
 
         let cmd = format!("host:killforward:{local}");
         let res = async {
-            let mut session = self.session_factory.connect(&self.addr).await?;
-            session.select_transport(selector).await?;
-            session.send_service(&cmd).await?;
-            session.read_status().await?;
-            session.read_status().await?;
-            let _ = session.read_to_close().await;
+            let session = self.session_factory.connect(&self.addr).await?;
+            let (session, _) = session.select_transport(selector).await?;
+            let awaiting = session.send_service(&cmd).await?;
+            let ready = awaiting.read_status().await?;
+            let ready2 = ready.read_second_status().await?;
+            let _ = ready2.read_to_close().await;
             Ok(String::new())
         }
         .await;
@@ -182,12 +186,12 @@ impl AdbClient {
         }
 
         let res = async {
-            let mut session = self.session_factory.connect(&self.addr).await?;
-            session.select_transport(selector).await?;
-            session.send_service("host:killforward-all").await?;
-            session.read_status().await?;
-            session.read_status().await?;
-            let _ = session.read_to_close().await;
+            let session = self.session_factory.connect(&self.addr).await?;
+            let (session, _) = session.select_transport(selector).await?;
+            let awaiting = session.send_service("host:killforward-all").await?;
+            let ready = awaiting.read_status().await?;
+            let ready2 = ready.read_second_status().await?;
+            let _ = ready2.read_to_close().await;
             Ok(String::new())
         }
         .await;
