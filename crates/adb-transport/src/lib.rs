@@ -2,6 +2,7 @@
 
 pub mod emulator;
 pub mod handshake;
+pub mod mdns;
 pub mod tcp;
 pub mod transport;
 pub mod usb;
@@ -17,6 +18,12 @@ pub use emulator::{
     DEFAULT_ADB_LOCAL_TRANSPORT_PORT,
 };
 pub use handshake::{perform_cnxn_handshake, HandshakeResult};
+pub use mdns::{
+    is_valid_mdns_service_name, mdns_parse_instance_name, MdnsDiscoveryRegistry, MdnsInstance,
+    MdnsServiceInfo, ADB_DNS_SERVICES, ADB_FULL_MDNS_SERVICE_TYPE, ADB_FULL_MDNS_TLS_CONNECT_TYPE,
+    ADB_FULL_MDNS_TLS_PAIRING_TYPE, ADB_MDNS_SERVICE_TYPE, ADB_MDNS_TLS_CONNECT_TYPE,
+    ADB_MDNS_TLS_PAIRING_TYPE,
+};
 pub use tcp::TcpTransport;
 pub use transport::{
     calculate_checksum, read_packet_from_stream, write_packet_to_stream, AsyncStreamTransport,

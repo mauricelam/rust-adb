@@ -47,6 +47,86 @@ async fn test_smart_socket_valid_length_request_routed() {
 }
 
 #[tokio::test]
+async fn test_smart_socket_host_mdns_check_and_services() {
+    let registry = Arc::new(DeviceRegistry::new());
+    let server = SmartSocketServer::bind("127.0.0.1:0", Arc::clone(&registry))
+        .await
+        .expect("bind server");
+    let addr = server.local_addr().expect("local addr");
+    let mdns_reg = server.mdns_registry();
+
+    let server_task = tokio::spawn(async move {
+        server.run().await.unwrap();
+    });
+
+    // 1. Test host:mdns:check
+    let mut stream = TcpStream::connect(addr).await.expect("connect");
+    stream
+        .write_all(b"000fhost:mdns:check")
+        .await
+        .expect("write");
+    let mut buf = vec![0u8; 1024];
+    let n = stream.read(&mut buf).await.expect("read response");
+    let (reply, consumed) = parse_reply(&buf[..n]).expect("parse reply");
+    assert_eq!(reply, SmartSocketReply::Okay);
+    let (proto_str, _) = parse_protocol_string(&buf[consumed..n]).expect("parse payload");
+    match proto_str {
+        ProtocolString::Complete(msg) => {
+            assert!(msg.contains("mdns daemon version"));
+        }
+        other => panic!("expected Complete, got: {other:?}"),
+    }
+
+    // 2. Test host:mdns:services (empty)
+    let mut stream2 = TcpStream::connect(addr).await.expect("connect");
+    stream2
+        .write_all(b"0012host:mdns:services")
+        .await
+        .expect("write");
+    let mut buf2 = vec![0u8; 1024];
+    let n2 = stream2.read(&mut buf2).await.expect("read response");
+    let (reply2, consumed2) = parse_reply(&buf2[..n2]).expect("parse reply");
+    assert_eq!(reply2, SmartSocketReply::Okay);
+    let (proto_str2, _) = parse_protocol_string(&buf2[consumed2..n2]).expect("parse payload");
+    match proto_str2 {
+        ProtocolString::Complete(msg) => {
+            assert_eq!(msg, "");
+        }
+        other => panic!("expected Complete, got: {other:?}"),
+    }
+
+    // 3. Register service and test host:mdns:services
+    mdns_reg.register(adb_transport::MdnsServiceInfo {
+        instance_name: "test-device".to_string(),
+        service_name: "_adb-tls-connect._tcp".to_string(),
+        addr: "192.168.1.50".parse().unwrap(),
+        port: 5555,
+    });
+
+    let mut stream3 = TcpStream::connect(addr).await.expect("connect");
+    stream3
+        .write_all(b"0012host:mdns:services")
+        .await
+        .expect("write");
+    let mut buf3 = vec![0u8; 1024];
+    let n3 = stream3.read(&mut buf3).await.expect("read response");
+    let (reply3, consumed3) = parse_reply(&buf3[..n3]).expect("parse reply");
+    assert_eq!(reply3, SmartSocketReply::Okay);
+    let (proto_str3, _) = parse_protocol_string(&buf3[consumed3..n3]).expect("parse payload");
+    match proto_str3 {
+        ProtocolString::Complete(msg) => {
+            assert_eq!(
+                msg,
+                "test-device\t_adb-tls-connect._tcp\t192.168.1.50:5555\n"
+            );
+        }
+        other => panic!("expected Complete, got: {other:?}"),
+    }
+
+    server_task.abort();
+}
+
+#[tokio::test]
 async fn test_smart_socket_target_selection_by_serial() {
     let registry = Arc::new(DeviceRegistry::new());
     let id1 = registry

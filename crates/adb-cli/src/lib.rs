@@ -352,7 +352,6 @@ fn is_recognized_unimplemented_command(name: &str) -> bool {
             | "unroot"
             | "bugreport"
             | "reverse"
-            | "mdns"
             | "install"
             | "install-multiple"
             | "install-multi-package"
@@ -599,6 +598,8 @@ pub enum Command {
     Ls(String),
     Push(PushArgs),
     Pull(PullArgs),
+    MdnsCheck,
+    MdnsServices,
     Help,
     Version,
     Unimplemented(String),
@@ -649,6 +650,14 @@ impl Command {
             "forward" => Ok(Command::Forward(
                 cmd_args.iter().map(|s| s.to_string()).collect(),
             )),
+            "mdns" => match cmd_args {
+                [] => Err("mdns requires an argument".to_string()),
+                ["check"] => Ok(Command::MdnsCheck),
+                ["check", ..] => Err("mdns check doesn't take any arguments".to_string()),
+                ["services"] => Ok(Command::MdnsServices),
+                ["services", ..] => Err("mdns services doesn't take any arguments".to_string()),
+                [other, ..] => Err(format!("unknown mdns command [{other}]")),
+            },
             "reverse" => Ok(Command::Reverse(
                 cmd_args.iter().map(|s| s.to_string()).collect(),
             )),
@@ -832,6 +841,21 @@ where
             let outcome = client.devices(long).await;
             report(outcome, output, |stdout, out| {
                 let _ = write!(out.stdout, "{stdout}");
+                0
+            })
+        }
+        Command::MdnsCheck => {
+            let outcome = client.mdns_check().await;
+            report(outcome, output, |stdout, out| {
+                let _ = writeln!(out.stdout, "{stdout}");
+                0
+            })
+        }
+        Command::MdnsServices => {
+            let _ = writeln!(output.stdout, "List of discovered mdns services");
+            let outcome = client.mdns_services().await;
+            report(outcome, output, |stdout, out| {
+                let _ = writeln!(out.stdout, "{stdout}");
                 0
             })
         }
@@ -1815,5 +1839,46 @@ mod tests {
         assert_eq!(code, 1);
         let stderr_str = String::from_utf8(err_buf.lock().unwrap().clone()).unwrap();
         assert_eq!(stderr_str, "adb: install requires an argument\n");
+
+        // mdns command without args -> error to stderr, return 1
+        let (mut output, _out_buf, err_buf) = Output::memory();
+        let code = run_cli(&["mdns".into()], no_env, &mut output).await;
+        assert_eq!(code, 1);
+        let stderr_str = String::from_utf8(err_buf.lock().unwrap().clone()).unwrap();
+        assert_eq!(stderr_str, "adb: mdns requires an argument\n");
+
+        // mdns check with extra args -> error to stderr, return 1
+        let (mut output, _out_buf, err_buf) = Output::memory();
+        let code = run_cli(
+            &["mdns".into(), "check".into(), "foo".into()],
+            no_env,
+            &mut output,
+        )
+        .await;
+        assert_eq!(code, 1);
+        let stderr_str = String::from_utf8(err_buf.lock().unwrap().clone()).unwrap();
+        assert_eq!(stderr_str, "adb: mdns check doesn't take any arguments\n");
+
+        // mdns services with extra args -> error to stderr, return 1
+        let (mut output, _out_buf, err_buf) = Output::memory();
+        let code = run_cli(
+            &["mdns".into(), "services".into(), "foo".into()],
+            no_env,
+            &mut output,
+        )
+        .await;
+        assert_eq!(code, 1);
+        let stderr_str = String::from_utf8(err_buf.lock().unwrap().clone()).unwrap();
+        assert_eq!(
+            stderr_str,
+            "adb: mdns services doesn't take any arguments\n"
+        );
+
+        // mdns unknown subcommand -> error to stderr, return 1
+        let (mut output, _out_buf, err_buf) = Output::memory();
+        let code = run_cli(&["mdns".into(), "foobar".into()], no_env, &mut output).await;
+        assert_eq!(code, 1);
+        let stderr_str = String::from_utf8(err_buf.lock().unwrap().clone()).unwrap();
+        assert_eq!(stderr_str, "adb: unknown mdns command [foobar]\n");
     }
 }

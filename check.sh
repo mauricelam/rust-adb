@@ -58,9 +58,9 @@ echo "=== Step 3: Clippy check ==="
 cargo clippy --workspace --all-targets -- -D warnings
 
 echo "=== Step 4: Workspace tests ==="
-cargo nextest run --workspace
+if command -v cargo-nextest >/dev/null 2>&1; then cargo nextest run --workspace; else cargo test --workspace; fi
 
 echo "=== Step 5: Compatibility suite ==="
-cargo nextest run -p compat
+if command -v cargo-nextest >/dev/null 2>&1; then cargo nextest run -p compat; else cargo test -p compat; fi
 
 echo "=== All CI checks passed successfully! ==="

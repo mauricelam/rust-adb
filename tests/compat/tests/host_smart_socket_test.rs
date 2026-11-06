@@ -144,6 +144,36 @@ fn test_host_transport_any_no_device() {
     assert_eq!(raw, b"FAIL001ano devices/emulators found");
 }
 
+/// Covers host:mdns:check
+#[test]
+fn test_host_mdns_check() {
+    let server = TestServer::start();
+
+    let resp = server
+        .send_smart_socket_request("host:mdns:check")
+        .expect("Failed to send smart socket request host:mdns:check");
+
+    assert_eq!(resp.status, SmartSocketStatus::Okay);
+    assert!(resp.is_okay());
+    assert_eq!(resp.status_bytes, *b"OKAY");
+    let payload = resp.payload_str().expect("valid utf-8 payload");
+    assert!(payload.contains("mdns daemon version") || payload.contains("discovery"));
+}
+
+/// Covers host:mdns:services
+#[test]
+fn test_host_mdns_services() {
+    let server = TestServer::start();
+
+    let resp = server
+        .send_smart_socket_request("host:mdns:services")
+        .expect("Failed to send smart socket request host:mdns:services");
+
+    assert_eq!(resp.status, SmartSocketStatus::Okay);
+    assert!(resp.is_okay());
+    assert_eq!(resp.status_bytes, *b"OKAY");
+}
+
 /// Covers SERVICES.TXT section:
 /// <host-prefix>:get-state
 ///     Returns the state of a given device as a string.

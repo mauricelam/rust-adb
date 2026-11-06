@@ -292,3 +292,23 @@ async fn test_query_mock_device() {
     assert_eq!(norm(&devpath_out), norm(&ref_devpath.stdout));
     assert_eq!(devpath_out, "unknown\n");
 }
+
+#[tokio::test]
+async fn test_client_mdns_check_and_services() {
+    let server = TestServer::start();
+    let addr = ServerAddress {
+        host: Some("127.0.0.1".into()),
+        port: server.port,
+    };
+    let client = AdbClient::builder(addr)
+        .session_factory(DefaultSessionFactory::new())
+        .launcher(DummyLauncher)
+        .build();
+
+    let check_res = client.mdns_check().await.result.expect("mdns_check");
+    assert!(check_res.contains("mdns daemon version") || check_res.contains("discovery"));
+
+    let services_res = client.mdns_services().await.result.expect("mdns_services");
+    // Initially empty
+    assert_eq!(services_res, "");
+}

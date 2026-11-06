@@ -6,7 +6,7 @@ use tokio::sync::watch;
 
 use adb_proto::MAX_PAYLOAD;
 
-use adb_transport::DEFAULT_ADB_LOCAL_TRANSPORT_PORT;
+use adb_transport::{MdnsDiscoveryRegistry, DEFAULT_ADB_LOCAL_TRANSPORT_PORT};
 
 use crate::registry::{DeviceEntry, DeviceRegistry, TransportId};
 use crate::tracker::{format_devices_raw, TrackerFormat};
@@ -206,6 +206,7 @@ pub struct SmartSocketServer {
     listener: TcpListener,
     registry: Arc<DeviceRegistry>,
     listener_manager: Arc<ListenerManager>,
+    mdns_registry: Arc<MdnsDiscoveryRegistry>,
     shutdown_tx: watch::Sender<bool>,
     shutdown_rx: watch::Receiver<bool>,
 }
@@ -213,6 +214,15 @@ pub struct SmartSocketServer {
 impl SmartSocketServer {
     /// Binds to the specified socket address or string.
     pub async fn bind(addr: &str, registry: Arc<DeviceRegistry>) -> Result<Self, ServerError> {
+        Self::bind_with_mdns(addr, registry, Arc::new(MdnsDiscoveryRegistry::new())).await
+    }
+
+    /// Binds to the specified socket address or string with a custom mDNS discovery registry.
+    pub async fn bind_with_mdns(
+        addr: &str,
+        registry: Arc<DeviceRegistry>,
+        mdns_registry: Arc<MdnsDiscoveryRegistry>,
+    ) -> Result<Self, ServerError> {
         let listener = match TcpListener::bind(addr).await {
             Ok(l) => l,
             Err(e) => {
@@ -229,6 +239,7 @@ impl SmartSocketServer {
             listener,
             registry,
             listener_manager: Arc::new(ListenerManager::new()),
+            mdns_registry,
             shutdown_tx,
             shutdown_rx,
         })
@@ -249,6 +260,11 @@ impl SmartSocketServer {
         Ok(self.listener.local_addr()?)
     }
 
+    /// Returns the mDNS discovery registry associated with this server.
+    pub fn mdns_registry(&self) -> Arc<MdnsDiscoveryRegistry> {
+        Arc::clone(&self.mdns_registry)
+    }
+
     /// Returns a shutdown sender that can trigger server termination.
     pub fn shutdown_handle(&self) -> ShutdownSignal {
         ShutdownSignal::new(self.shutdown_tx.clone())
@@ -258,6 +274,7 @@ impl SmartSocketServer {
     pub async fn run(self) -> Result<(), ServerError> {
         let registry = self.registry;
         let listener_manager = self.listener_manager;
+        let mdns_registry = self.mdns_registry;
         let shutdown_tx = self.shutdown_tx;
         let mut shutdown_rx = self.shutdown_rx;
 
@@ -273,9 +290,10 @@ impl SmartSocketServer {
                         Ok((stream, _addr)) => {
                             let reg = Arc::clone(&registry);
                             let lm = Arc::clone(&listener_manager);
+                            let mdns_reg = Arc::clone(&mdns_registry);
                             let s_sig = ShutdownSignal::new(shutdown_tx.clone());
                             tokio::spawn(async move {
-                                let _ = handle_client(stream, reg, lm, s_sig).await;
+                                let _ = handle_client(stream, reg, lm, mdns_reg, s_sig).await;
                             });
                         }
                         Err(err) => {
@@ -313,6 +331,7 @@ async fn handle_client(
     stream: TcpStream,
     registry: Arc<DeviceRegistry>,
     listener_manager: Arc<ListenerManager>,
+    mdns_registry: Arc<MdnsDiscoveryRegistry>,
     shutdown_signal: ShutdownSignal,
 ) -> Result<(), std::io::Error> {
     let mut session = ClientSession::new(stream);
@@ -402,6 +421,7 @@ async fn handle_client(
                     &service,
                     &registry,
                     &listener_manager,
+                    &mdns_registry,
                     &shutdown_signal,
                 )
                 .await?;
@@ -424,6 +444,7 @@ async fn handle_host_service(
     service: &str,
     registry: &Arc<DeviceRegistry>,
     listener_manager: &Arc<ListenerManager>,
+    mdns_registry: &Arc<MdnsDiscoveryRegistry>,
     shutdown_signal: &ShutdownSignal,
 ) -> Result<SessionFlow, std::io::Error> {
     if service == "version" {
@@ -465,6 +486,30 @@ async fn handle_host_service(
         session.stream.flush().await?;
         shutdown_signal.trigger();
         return Ok(SessionFlow::Close);
+    }
+
+    // mDNS service query handling (matching handle_mdns_request in original/adb.cpp)
+    if let Some(mdns_cmd) = service.strip_prefix("mdns:") {
+        if mdns_cmd == "check" {
+            let is_enabled = std::env::var("ADB_MDNS")
+                .map(|val| val != "0")
+                .unwrap_or(true);
+            let check_msg = if is_enabled {
+                "mdns daemon version [adb discovery 0.0.0]"
+            } else {
+                "ERROR: mdns discovery disabled"
+            };
+            let resp = encode_okay_with_payload(check_msg);
+            session.stream.write_all(&resp).await?;
+            session.stream.flush().await?;
+            return Ok(SessionFlow::Close);
+        } else if mdns_cmd == "services" {
+            let services_list = mdns_registry.format_discovered_services();
+            let resp = encode_okay_with_payload(&services_list);
+            session.stream.write_all(&resp).await?;
+            session.stream.flush().await?;
+            return Ok(SessionFlow::Close);
+        }
     }
 
     if service == "devices" || service == "devices-l" {

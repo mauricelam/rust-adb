@@ -271,3 +271,57 @@ fn test_odd_args_empty_serial_devices() {
 fn test_odd_args_newline_devices() {
     check_no_device(&["devices", "newline\narg"], "odd_args_newline_devices");
 }
+
+#[test]
+fn test_mdns_check_and_services_cli() {
+    let mut server = IsolatedServer::new();
+    let _ = server.start_server();
+
+    // 1. mdns check
+    let check_out = server.run_client(&["mdns", "check"]);
+    assert!(
+        check_out.success(),
+        "mdns check failed: stderr={}",
+        check_out.stderr
+    );
+    assert!(
+        check_out.stdout.contains("mdns daemon version") || check_out.stdout.contains("discovery")
+    );
+
+    // 2. mdns services
+    let services_out = server.run_client(&["mdns", "services"]);
+    assert!(
+        services_out.success(),
+        "mdns services failed: stderr={}",
+        services_out.stderr
+    );
+    assert!(services_out
+        .stdout
+        .starts_with("List of discovered mdns services"));
+
+    // 3. mdns without argument
+    let no_arg_out = server.run_client(&["mdns"]);
+    assert_eq!(no_arg_out.exit_code, Some(1));
+    assert!(no_arg_out.stderr.contains("mdns requires an argument"));
+
+    // 4. mdns check with extra argument
+    let check_extra_out = server.run_client(&["mdns", "check", "extra"]);
+    assert_eq!(check_extra_out.exit_code, Some(1));
+    assert!(check_extra_out
+        .stderr
+        .contains("mdns check doesn't take any arguments"));
+
+    // 5. mdns services with extra argument
+    let services_extra_out = server.run_client(&["mdns", "services", "extra"]);
+    assert_eq!(services_extra_out.exit_code, Some(1));
+    assert!(services_extra_out
+        .stderr
+        .contains("mdns services doesn't take any arguments"));
+
+    // 6. unknown mdns subcommand
+    let unknown_out = server.run_client(&["mdns", "unknown_subcmd"]);
+    assert_eq!(unknown_out.exit_code, Some(1));
+    assert!(unknown_out
+        .stderr
+        .contains("unknown mdns command [unknown_subcmd]"));
+}
