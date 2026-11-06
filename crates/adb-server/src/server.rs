@@ -18,15 +18,9 @@ pub use adb_proto::ADB_SERVER_VERSION;
 /// Default ADB server port.
 pub const DEFAULT_SERVER_PORT: u16 = 5037;
 
-/// Target transport selection criteria parsed from host service prefixes.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum TransportTarget {
-    Any,
-    Usb,
-    Local,
-    Serial(String),
-    TransportId(TransportId),
-}
+pub use adb_proto::TransportSelector;
+/// Target transport selection criteria parsed from host service prefixes (alias for `TransportSelector`).
+pub type TransportTarget = TransportSelector;
 
 /// Indicates whether a client connection should continue processing further requests or close.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -63,7 +57,7 @@ impl ShutdownSignal {
 pub enum SmartSocketRequest {
     /// Host request, e.g. `host:version`, `host:transport:XYZ`, `host-serial:XYZ:shell:ls`.
     Host {
-        target: TransportTarget,
+        target: TransportSelector,
         service: String,
     },
     /// Direct device service request on an established/selected transport, e.g. `123456789012` or `shell:ls`.
@@ -102,13 +96,13 @@ pub fn parse_smart_socket_request(request: &str) -> SmartSocketRequest {
     if let Some(rest) = request.strip_prefix("host-serial:") {
         if let Some((serial, cmd)) = parse_host_serial_service(rest) {
             SmartSocketRequest::Host {
-                target: TransportTarget::Serial(serial),
+                target: TransportSelector::Serial(serial),
                 service: cmd,
             }
         } else {
             // Fallback if parsing fails
             SmartSocketRequest::Host {
-                target: TransportTarget::Any,
+                target: TransportSelector::Any,
                 service: rest.to_string(),
             }
         }
@@ -118,8 +112,8 @@ pub fn parse_smart_socket_request(request: &str) -> SmartSocketRequest {
             let cmd = &rest[colon_pos + 1..];
             if let Ok(id) = id_str.parse::<u64>() {
                 let target = match TransportId::from_u64(id) {
-                    Some(tid) => TransportTarget::TransportId(tid),
-                    None => TransportTarget::Any,
+                    Some(tid) => TransportSelector::Id(tid),
+                    None => TransportSelector::Any,
                 };
                 SmartSocketRequest::Host {
                     target,
@@ -127,29 +121,29 @@ pub fn parse_smart_socket_request(request: &str) -> SmartSocketRequest {
                 }
             } else {
                 SmartSocketRequest::Host {
-                    target: TransportTarget::Any,
+                    target: TransportSelector::Any,
                     service: cmd.to_string(),
                 }
             }
         } else {
             SmartSocketRequest::Host {
-                target: TransportTarget::Any,
+                target: TransportSelector::Any,
                 service: rest.to_string(),
             }
         }
     } else if let Some(cmd) = request.strip_prefix("host-usb:") {
         SmartSocketRequest::Host {
-            target: TransportTarget::Usb,
+            target: TransportSelector::Usb,
             service: cmd.to_string(),
         }
     } else if let Some(cmd) = request.strip_prefix("host-local:") {
         SmartSocketRequest::Host {
-            target: TransportTarget::Local,
+            target: TransportSelector::Local,
             service: cmd.to_string(),
         }
     } else if let Some(cmd) = request.strip_prefix("host:") {
         SmartSocketRequest::Host {
-            target: TransportTarget::Any,
+            target: TransportSelector::Any,
             service: cmd.to_string(),
         }
     } else {
@@ -567,8 +561,8 @@ async fn handle_host_service(
         } else if let Some(id_str) = service.strip_prefix("transport-id:") {
             if let Ok(id) = id_str.parse::<u64>() {
                 let target = match TransportId::from_u64(id) {
-                    Some(tid) => TransportTarget::TransportId(tid),
-                    None => TransportTarget::Any,
+                    Some(tid) => TransportSelector::Id(tid),
+                    None => TransportSelector::Any,
                 };
                 (TransportQueryMode::Legacy, target)
             } else {
@@ -580,9 +574,9 @@ async fn handle_host_service(
                 return Ok(SessionFlow::Close);
             }
         } else if service == "transport-usb" {
-            (TransportQueryMode::Legacy, TransportTarget::Usb)
+            (TransportQueryMode::Legacy, TransportSelector::Usb)
         } else if service == "transport-local" {
-            (TransportQueryMode::Legacy, TransportTarget::Local)
+            (TransportQueryMode::Legacy, TransportSelector::Local)
         } else {
             (TransportQueryMode::Legacy, target.clone())
         };
@@ -608,7 +602,7 @@ async fn handle_host_service(
 
     if service == "get-serialno" {
         let effective_target = if let Some(id) = session.selected_device {
-            TransportTarget::TransportId(id)
+            TransportSelector::Id(id)
         } else {
             target.clone()
         };
@@ -633,7 +627,7 @@ async fn handle_host_service(
 
     if service == "get-devpath" {
         let effective_target = if let Some(id) = session.selected_device {
-            TransportTarget::TransportId(id)
+            TransportSelector::Id(id)
         } else {
             target.clone()
         };
@@ -654,7 +648,7 @@ async fn handle_host_service(
 
     if service == "get-state" {
         let effective_target = if let Some(id) = session.selected_device {
-            TransportTarget::TransportId(id)
+            TransportSelector::Id(id)
         } else {
             target.clone()
         };
@@ -674,7 +668,7 @@ async fn handle_host_service(
 
     if service == "features" {
         let effective_target = if let Some(id) = session.selected_device {
-            TransportTarget::TransportId(id)
+            TransportSelector::Id(id)
         } else {
             target.clone()
         };
@@ -718,7 +712,7 @@ async fn handle_host_service(
     // forward: or killforward:
     if service.starts_with("forward:") || service.starts_with("killforward:") {
         let effective_target = if let Some(id) = session.selected_device {
-            TransportTarget::TransportId(id)
+            TransportSelector::Id(id)
         } else {
             target.clone()
         };
@@ -823,7 +817,7 @@ async fn handle_host_service(
         || service.starts_with("dev-raw:")
     {
         let effective_target = if let Some(id) = session.selected_device {
-            TransportTarget::TransportId(id)
+            TransportSelector::Id(id)
         } else {
             target.clone()
         };
@@ -851,15 +845,15 @@ async fn handle_host_service(
 /// Ports `acquire_one_transport` from `original/transport.cpp`.
 pub fn acquire_one_transport(
     registry: &DeviceRegistry,
-    target: &TransportTarget,
+    target: &TransportSelector,
     accept_any_state: bool,
 ) -> Result<Arc<DeviceEntry>, String> {
     let mut default_error = match target {
-        TransportTarget::TransportId(id) => format!("no device with transport id '{id}'"),
-        TransportTarget::Serial(ref s) => format!("device '{s}' not found"),
-        TransportTarget::Local => "no emulators found".to_string(),
-        TransportTarget::Any => "no devices/emulators found".to_string(),
-        TransportTarget::Usb => "no devices found".to_string(),
+        TransportSelector::Id(id) => format!("no device with transport id '{id}'"),
+        TransportSelector::Serial(ref s) => format!("device '{s}' not found"),
+        TransportSelector::Local => "no emulators found".to_string(),
+        TransportSelector::Any => "no devices/emulators found".to_string(),
+        TransportSelector::Usb => "no devices found".to_string(),
     };
 
     let all_devices = registry.list_devices();
@@ -872,13 +866,13 @@ pub fn acquire_one_transport(
         }
 
         match target {
-            TransportTarget::TransportId(id) => {
+            TransportSelector::Id(id) => {
                 if t.transport_id == *id {
                     result = Some(t);
                     break;
                 }
             }
-            TransportTarget::Serial(ref s) => {
+            TransportSelector::Serial(ref s) => {
                 if t.matches_target(s) {
                     if result.is_some() {
                         return Err(format!("more than one device with serial {s}"));
@@ -886,7 +880,7 @@ pub fn acquire_one_transport(
                     result = Some(t);
                 }
             }
-            TransportTarget::Usb => {
+            TransportSelector::Usb => {
                 if t.transport_type == TransportType::Usb {
                     if result.is_some() {
                         return Err("more than one device".to_string());
@@ -894,7 +888,7 @@ pub fn acquire_one_transport(
                     result = Some(t);
                 }
             }
-            TransportTarget::Local => {
+            TransportSelector::Local => {
                 if t.transport_type == TransportType::Local {
                     if result.is_some() {
                         return Err("more than one emulator".to_string());
@@ -902,7 +896,7 @@ pub fn acquire_one_transport(
                     result = Some(t);
                 }
             }
-            TransportTarget::Any => {
+            TransportSelector::Any => {
                 if result.is_some() {
                     return Err("more than one device/emulator".to_string());
                 }

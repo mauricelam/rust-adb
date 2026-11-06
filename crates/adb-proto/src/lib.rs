@@ -5,9 +5,13 @@ pub mod banner;
 pub mod header;
 pub mod limits;
 pub mod message;
+pub mod service;
 pub mod shell;
 pub mod smart_socket;
+pub mod socket_spec;
+pub mod state;
 pub mod sync;
+pub mod transport_selector;
 pub mod types;
 
 pub use auth::{
@@ -24,6 +28,7 @@ pub use limits::{
     MAX_PAYLOAD_V1,
 };
 pub use message::{Message, MessageDecodeError};
+pub use service::{HostService, Service, TrackDevicesMode};
 pub use shell::{
     ShellDecodeError, ShellDecoder, ShellEncodeError, ShellPacket, ShellPacketId, WindowSize,
 };
@@ -31,11 +36,14 @@ pub use smart_socket::{
     encode_request, parse_protocol_string, parse_reply, ProtocolString, SmartSocketError,
     SmartSocketReply,
 };
+pub use socket_spec::{ParseSocketSpecError, SocketSpec};
+pub use state::{ConnectionState, ParseConnectionStateError};
 pub use sync::{
     SyncDecodeError, SyncDecoder, SyncDecoderMode, SyncEncodeError, SyncMessage, ID_DATA,
     ID_DENT_V1, ID_DONE, ID_FAIL, ID_LIST_V1, ID_LSTAT_V1, ID_OKAY, ID_QUIT, ID_RECV_V1,
     ID_SEND_V1, SYNC_DATA_MAX, SYNC_PATH_MAX,
 };
+pub use transport_selector::{format_host_command, TransportSelector};
 pub use types::{
     AdbPort, ConsolePort, IdError, LocalId, MaxPayload, ProtocolVersion, RemoteId, ServerVersion,
     TransportId, ADB_SERVER_VERSION, SERVER_VERSION,

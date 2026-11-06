@@ -6,6 +6,7 @@ use std::fmt;
 use std::str::FromStr;
 
 pub use crate::limits::*;
+use crate::state::ConnectionState;
 use crate::types::{MaxPayload, ProtocolVersion};
 
 /// Negotiates protocol version as the minimum of the host and remote versions.
@@ -288,6 +289,11 @@ impl Banner {
             entries,
             ends_with_semicolon,
         }
+    }
+
+    /// Returns the parsed [`ConnectionState`] represented by this banner's system_type string.
+    pub fn system_type(&self) -> ConnectionState {
+        ConnectionState::from_service_type(&self.system_type)
     }
 
     pub fn product(&self) -> Option<&str> {
