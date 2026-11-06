@@ -40,6 +40,9 @@ static WIN_CONN_REFUSED_RE: LazyLock<Regex> = LazyLock::new(|| {
         .unwrap()
 });
 
+static BARE_FAILED_CONNECT_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"(?m)^failed to connect to (<serial>|\S+)$").unwrap());
+
 // Match standalone allocated port line like "37697\n"
 static STANDALONE_PORT_RE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"(?m)^[1-9]\d{3,5}$").unwrap());
@@ -145,6 +148,9 @@ pub fn normalize_os_differences(input: &str) -> String {
         .replace_all(&s, "${1}Connection refused")
         .to_string();
     let s = WIN_CONN_REFUSED_RE
+        .replace_all(&s, "failed to connect to '${1}': Connection refused")
+        .to_string();
+    let s = BARE_FAILED_CONNECT_RE
         .replace_all(&s, "failed to connect to '${1}': Connection refused")
         .to_string();
     let s = s
