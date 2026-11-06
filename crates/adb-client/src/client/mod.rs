@@ -892,4 +892,40 @@ impl AdbClient {
         })
         .await
     }
+
+    /// Checks if mDNS discovery is available (`host:mdns:check`).
+    ///
+    /// Ports `adb mdns check` from `original/client/commandline.cpp`.
+    pub async fn mdns_check(&self) -> Outcome<String> {
+        self.with_server(async {
+            let mut session = Session::open(
+                self.session_factory.as_ref(),
+                &self.addr,
+                &TransportSelector::Any,
+                "host:mdns:check",
+            )
+            .await?;
+            let payload = session.read_string().await?;
+            Ok(payload)
+        })
+        .await
+    }
+
+    /// Lists all discovered mDNS services (`host:mdns:services`).
+    ///
+    /// Ports `adb mdns services` from `original/client/commandline.cpp`.
+    pub async fn mdns_services(&self) -> Outcome<String> {
+        self.with_server(async {
+            let mut session = Session::open(
+                self.session_factory.as_ref(),
+                &self.addr,
+                &TransportSelector::Any,
+                "host:mdns:services",
+            )
+            .await?;
+            let payload = session.read_string().await?;
+            Ok(payload)
+        })
+        .await
+    }
 }
