@@ -1,7 +1,7 @@
 use std::sync::Arc;
 use tokio::sync::mpsc;
 
-use adb_proto::{Command, RemoteId};
+use adb_proto::{AckBytes, Command, RemoteId};
 use adb_server::{OpenDecision, OpenRequest, PacketRouter, StreamMessage, StreamRegistry};
 use adb_transport::{Packet, Transport, TransportError};
 
@@ -340,7 +340,7 @@ async fn test_okay_packet_lifecycle() {
     });
 
     // OKAY: arg0 = remote_id (peer), arg1 = local_id, optional payload for delayed acks
-    let ack_bytes: i32 = 4096;
+    let ack_bytes = AckBytes(4096);
     in_tx
         .send(Packet::new(
             Command::Okay,
@@ -358,7 +358,7 @@ async fn test_okay_packet_lifecycle() {
             ack_bytes: got_ack,
         } => {
             assert_eq!(remote_id.get(), 333);
-            assert_eq!(got_ack, Some(4096));
+            assert_eq!(got_ack, Some(AckBytes(4096)));
         }
         other => panic!("unexpected message: {other:?}"),
     }

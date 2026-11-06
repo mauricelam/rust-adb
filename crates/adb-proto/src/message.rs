@@ -7,7 +7,7 @@ use std::fmt;
 
 use crate::auth::{AuthMessage, AuthType, PublicKeyLine, TOKEN_SIZE};
 use crate::header::{ChecksumMode, Command, Header};
-use crate::types::{LocalId, RemoteId};
+use crate::types::{AckBytes, LocalId, RemoteId};
 
 /// Errors that can occur when decoding a [`Message`] from a [`Header`] and payload.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -67,7 +67,7 @@ pub enum Message {
         /// Remote stream ID.
         remote_id: RemoteId,
         /// Optional delayed acknowledgment bytes in payload.
-        ack_bytes: Option<i32>,
+        ack_bytes: Option<AckBytes>,
     },
     /// Stream data payload message (`A_WRTE`).
     Wrte {
@@ -157,7 +157,7 @@ impl Message {
                 let local_id =
                     LocalId::from_u32(header.arg1()).ok_or(MessageDecodeError::InvalidStreamId)?;
                 let ack_bytes = if payload.len() == 4 {
-                    Some(i32::from_le_bytes(payload.try_into().unwrap()))
+                    Some(AckBytes::from_le_bytes(payload.try_into().unwrap()))
                 } else {
                     None
                 };

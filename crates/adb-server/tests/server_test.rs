@@ -5,7 +5,9 @@ use tokio::net::TcpStream;
 use adb_proto::smart_socket::{
     parse_protocol_string, parse_reply, ProtocolString, SmartSocketReply,
 };
-use adb_server::{ConnectionState, DeviceRegistry, SmartSocketServer, TransportType};
+use adb_server::{
+    ConnectionState, DeviceProperties, DeviceRegistry, SmartSocketServer, TransportType,
+};
 
 #[tokio::test]
 async fn test_smart_socket_valid_length_request_routed() {
@@ -132,12 +134,12 @@ async fn test_smart_socket_target_selection_by_serial() {
     let id1 = registry
         .register("123456", TransportType::Usb)
         .expect("register usb");
-    registry.update_state(id1, ConnectionState::Device);
+    registry.update_state(id1, ConnectionState::Device).unwrap();
 
     let id2 = registry
         .register("789012", TransportType::Local)
         .expect("register local");
-    registry.update_state(id2, ConnectionState::Device);
+    registry.update_state(id2, ConnectionState::Device).unwrap();
 
     let server = SmartSocketServer::bind("127.0.0.1:0", Arc::clone(&registry))
         .await
@@ -172,12 +174,12 @@ async fn test_smart_socket_target_ambiguous_error() {
     let id1 = registry
         .register("dev1", TransportType::Usb)
         .expect("register dev1");
-    registry.update_state(id1, ConnectionState::Device);
+    registry.update_state(id1, ConnectionState::Device).unwrap();
 
     let id2 = registry
         .register("dev2", TransportType::Local)
         .expect("register dev2");
-    registry.update_state(id2, ConnectionState::Device);
+    registry.update_state(id2, ConnectionState::Device).unwrap();
 
     let server = SmartSocketServer::bind("127.0.0.1:0", Arc::clone(&registry))
         .await
@@ -565,18 +567,23 @@ async fn test_smart_socket_host_devices_multiple() {
     let id1 = registry
         .register("serial-usb-1", TransportType::Usb)
         .expect("register usb");
-    registry.update_state(id1, ConnectionState::Device);
-    registry.set_device_properties(
-        id1,
-        Some("mock_product".to_string()),
-        Some("mock_model".to_string()),
-        Some("mock_device".to_string()),
-    );
+    registry.update_state(id1, ConnectionState::Device).unwrap();
+    registry
+        .set_device_properties(
+            id1,
+            DeviceProperties {
+                product: Some("mock_product".to_string()),
+                model: Some("mock_model".to_string()),
+                device: Some("mock_device".to_string()),
+                devpath: None,
+            },
+        )
+        .unwrap();
 
     let id2 = registry
         .register("127.0.0.1:5555", TransportType::Local)
         .expect("register tcp");
-    registry.update_state(id2, ConnectionState::Device);
+    registry.update_state(id2, ConnectionState::Device).unwrap();
 
     let server = SmartSocketServer::bind("127.0.0.1:0", Arc::clone(&registry))
         .await

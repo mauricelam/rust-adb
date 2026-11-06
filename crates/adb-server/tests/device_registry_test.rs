@@ -2,7 +2,10 @@ use std::sync::Arc;
 use std::thread;
 
 use adb_proto::TransportId;
-use adb_server::{ConnectionState, DeviceRegistry, RegistrationError, TransportType};
+use adb_server::{
+    ConnectionState, DeviceProperties, DeviceRegistry, RegistrationError, RegistryError,
+    TransportType,
+};
 
 #[test]
 fn test_registry_register_and_lookup() {
@@ -107,31 +110,40 @@ fn test_registry_update_state_and_properties() {
     );
 
     // Update state
-    let ok = registry.update_state(id, ConnectionState::Authorizing);
-    assert!(ok);
+    let res = registry.update_state(id, ConnectionState::Authorizing);
+    assert!(res.is_ok());
     assert_eq!(
         registry.get_by_id(id).unwrap().state,
         ConnectionState::Authorizing
     );
 
     // Update properties
-    let ok_prop = registry.set_device_properties(
+    let res_prop = registry.set_device_properties(
         id,
-        Some("walleye".to_string()),
-        Some("Pixel 2".to_string()),
-        Some("walleye".to_string()),
+        DeviceProperties {
+            product: Some("walleye".to_string()),
+            model: Some("Pixel 2".to_string()),
+            device: Some("walleye".to_string()),
+            devpath: None,
+        },
     );
-    assert!(ok_prop);
+    assert!(res_prop.is_ok());
 
     let dev = registry.get_by_id(id).unwrap();
     assert_eq!(dev.product.as_deref(), Some("walleye"));
     assert_eq!(dev.model.as_deref(), Some("Pixel 2"));
     assert_eq!(dev.device.as_deref(), Some("walleye"));
 
-    // Updating non-existent id returns false
+    // Updating non-existent id returns NotFound
     let tid999 = TransportId::from_u64(999).unwrap();
-    assert!(!registry.update_state(tid999, ConnectionState::Device));
-    assert!(!registry.set_device_properties(tid999, None, None, None));
+    assert_eq!(
+        registry.update_state(tid999, ConnectionState::Device),
+        Err(RegistryError::NotFound)
+    );
+    assert_eq!(
+        registry.set_device_properties(tid999, DeviceProperties::default()),
+        Err(RegistryError::NotFound)
+    );
 }
 
 #[test]
@@ -147,7 +159,7 @@ fn test_registry_concurrent_access() {
                 .register(&serial, TransportType::Usb)
                 .expect("worker registration should succeed");
 
-            reg.update_state(id, ConnectionState::Device);
+            let _ = reg.update_state(id, ConnectionState::Device);
             let dev = reg.get_by_id(id).expect("should find device");
             assert_eq!(dev.state, ConnectionState::Device);
         });

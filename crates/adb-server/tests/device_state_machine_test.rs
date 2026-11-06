@@ -38,7 +38,7 @@ fn test_state_machine_auth_success() {
 
     // Device accepts signature and responds with CNXN
     let output_cnxn = sm.handle_event(DeviceStateMachineEvent::Cnxn {
-        service_type: "device".to_string(),
+        state: ConnectionState::Device,
     });
 
     assert_eq!(sm.state(), ConnectionState::Device);
@@ -72,7 +72,7 @@ fn test_state_machine_auth_failure_to_unauthorized_and_subsequent_approval() {
 
     // User subsequently taps "Allow" on the device screen -> CNXN
     let output_cnxn = sm.handle_event(DeviceStateMachineEvent::Cnxn {
-        service_type: "device".to_string(),
+        state: ConnectionState::Device,
     });
     assert_eq!(sm.state(), ConnectionState::Device);
     assert!(sm.is_online());
@@ -87,7 +87,7 @@ fn test_state_machine_disconnection() {
 
     // Start offline, move to device
     sm.handle_event(DeviceStateMachineEvent::Cnxn {
-        service_type: "device".to_string(),
+        state: ConnectionState::Device,
     });
     assert_eq!(sm.state(), ConnectionState::Device);
 
@@ -103,27 +103,21 @@ fn test_state_machine_recovery_and_sideload_service_types() {
     let auth = HostAuth::new(vec![key], "test_pubkey user@host".to_string());
     let mut sm = DeviceStateMachine::new(auth);
 
-    sm.handle_event(DeviceStateMachineEvent::Cnxn {
-        service_type: "recovery".to_string(),
-    });
+    sm.handle_event(DeviceStateMachineEvent::cnxn_from_service_type("recovery"));
     assert_eq!(sm.state(), ConnectionState::Recovery);
     assert!(sm.is_online());
 
-    sm.handle_event(DeviceStateMachineEvent::Cnxn {
-        service_type: "sideload".to_string(),
-    });
+    sm.handle_event(DeviceStateMachineEvent::cnxn_from_service_type("sideload"));
     assert_eq!(sm.state(), ConnectionState::Sideload);
     assert!(sm.is_online());
 
-    sm.handle_event(DeviceStateMachineEvent::Cnxn {
-        service_type: "bootloader".to_string(),
-    });
+    sm.handle_event(DeviceStateMachineEvent::cnxn_from_service_type(
+        "bootloader",
+    ));
     assert_eq!(sm.state(), ConnectionState::Bootloader);
     assert!(sm.is_online());
 
-    sm.handle_event(DeviceStateMachineEvent::Cnxn {
-        service_type: "rescue".to_string(),
-    });
+    sm.handle_event(DeviceStateMachineEvent::cnxn_from_service_type("rescue"));
     assert_eq!(sm.state(), ConnectionState::Rescue);
     assert!(sm.is_online());
 }

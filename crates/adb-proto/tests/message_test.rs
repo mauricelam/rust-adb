@@ -1,6 +1,6 @@
 use adb_proto::{
-    AuthMessage, AuthType, ChecksumMode, LocalId, Message, MessageDecodeError, PublicKeyLine,
-    RemoteId, TOKEN_SIZE,
+    AckBytes, AuthMessage, AuthType, ChecksumMode, LocalId, Message, MessageDecodeError,
+    PublicKeyLine, RemoteId, TOKEN_SIZE,
 };
 
 #[test]
@@ -59,7 +59,7 @@ fn test_okay_round_trip() {
     let msg = Message::Okay {
         local_id: LocalId::from_u32(100).unwrap(),
         remote_id: RemoteId::from_u32(200).unwrap(),
-        ack_bytes: Some(1024),
+        ack_bytes: Some(AckBytes(1024)),
     };
     let (header, payload) = msg.encode(ChecksumMode::Compute);
     let decoded = Message::decode(&header, &payload).expect("decode okay");
@@ -71,7 +71,7 @@ fn test_okay_round_trip() {
     {
         assert_eq!(local_id.get(), 200);
         assert_eq!(remote_id.get(), 100);
-        assert_eq!(ack_bytes, Some(1024));
+        assert_eq!(ack_bytes, Some(AckBytes(1024)));
     } else {
         panic!("expected Okay variant");
     }
