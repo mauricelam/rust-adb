@@ -1,86 +1,6 @@
 use std::collections::VecDeque;
 use std::fmt;
 
-/// `ID_LSTAT_V1` constant (`MKID('S', 'T', 'A', 'T')`).
-///
-/// Ports `ID_LSTAT_V1` from `original/file_sync_protocol.h`.
-pub const ID_LSTAT_V1: u32 = u32::from_le_bytes(*b"STAT");
-
-/// `ID_STAT_V2` constant (`MKID('S', 'T', 'A', '2')`).
-///
-/// Ports `ID_STAT_V2` from `original/file_sync_protocol.h`.
-pub const ID_STAT_V2: u32 = u32::from_le_bytes(*b"STA2");
-
-/// `ID_LSTAT_V2` constant (`MKID('L', 'S', 'T', '2')`).
-///
-/// Ports `ID_LSTAT_V2` from `original/file_sync_protocol.h`.
-pub const ID_LSTAT_V2: u32 = u32::from_le_bytes(*b"LST2");
-
-/// `ID_LIST_V1` constant (`MKID('L', 'I', 'S', 'T')`).
-///
-/// Ports `ID_LIST_V1` from `original/file_sync_protocol.h`.
-pub const ID_LIST_V1: u32 = u32::from_le_bytes(*b"LIST");
-
-/// `ID_LIST_V2` constant (`MKID('L', 'I', 'S', '2')`).
-///
-/// Ports `ID_LIST_V2` from `original/file_sync_protocol.h`.
-pub const ID_LIST_V2: u32 = u32::from_le_bytes(*b"LIS2");
-
-/// `ID_DENT_V1` constant (`MKID('D', 'E', 'N', 'T')`).
-///
-/// Ports `ID_DENT_V1` from `original/file_sync_protocol.h`.
-pub const ID_DENT_V1: u32 = u32::from_le_bytes(*b"DENT");
-
-/// `ID_DENT_V2` constant (`MKID('D', 'N', 'T', '2')`).
-///
-/// Ports `ID_DENT_V2` from `original/file_sync_protocol.h`.
-pub const ID_DENT_V2: u32 = u32::from_le_bytes(*b"DNT2");
-
-/// `ID_SEND_V1` constant (`MKID('S', 'E', 'N', 'D')`).
-///
-/// Ports `ID_SEND_V1` from `original/file_sync_protocol.h`.
-pub const ID_SEND_V1: u32 = u32::from_le_bytes(*b"SEND");
-
-/// `ID_SEND_V2` constant (`MKID('S', 'N', 'D', '2')`).
-///
-/// Ports `ID_SEND_V2` from `original/file_sync_protocol.h`.
-pub const ID_SEND_V2: u32 = u32::from_le_bytes(*b"SND2");
-
-/// `ID_RECV_V1` constant (`MKID('R', 'E', 'C', 'V')`).
-///
-/// Ports `ID_RECV_V1` from `original/file_sync_protocol.h`.
-pub const ID_RECV_V1: u32 = u32::from_le_bytes(*b"RECV");
-
-/// `ID_RECV_V2` constant (`MKID('R', 'C', 'V', '2')`).
-///
-/// Ports `ID_RECV_V2` from `original/file_sync_protocol.h`.
-pub const ID_RECV_V2: u32 = u32::from_le_bytes(*b"RCV2");
-
-/// `ID_DONE` constant (`MKID('D', 'O', 'N', 'E')`).
-///
-/// Ports `ID_DONE` from `original/file_sync_protocol.h`.
-pub const ID_DONE: u32 = u32::from_le_bytes(*b"DONE");
-
-/// `ID_DATA` constant (`MKID('D', 'A', 'T', 'A')`).
-///
-/// Ports `ID_DATA` from `original/file_sync_protocol.h`.
-pub const ID_DATA: u32 = u32::from_le_bytes(*b"DATA");
-
-/// `ID_OKAY` constant (`MKID('O', 'K', 'A', 'Y')`).
-///
-/// Ports `ID_OKAY` from `original/file_sync_protocol.h`.
-pub const ID_OKAY: u32 = u32::from_le_bytes(*b"OKAY");
-
-/// `ID_FAIL` constant (`MKID('F', 'A', 'I', 'L')`).
-///
-/// Ports `ID_FAIL` from `original/file_sync_protocol.h`.
-pub const ID_FAIL: u32 = u32::from_le_bytes(*b"FAIL");
-
-/// `ID_QUIT` constant (`MKID('Q', 'U', 'I', 'T')`).
-///
-/// Ports `ID_QUIT` from `original/file_sync_protocol.h`.
-pub const ID_QUIT: u32 = u32::from_le_bytes(*b"QUIT");
-
 /// Maximum size of a sync data chunk in bytes (64 KiB).
 ///
 /// Ports `SYNC_DATA_MAX` from `original/file_sync_protocol.h`.
@@ -90,6 +10,333 @@ pub const SYNC_DATA_MAX: usize = 64 * 1024;
 ///
 /// Ports path length check in `original/daemon/file_sync_service.cpp`.
 pub const SYNC_PATH_MAX: usize = 1024;
+
+/// Maximum filename length for directory entries (255 bytes).
+pub const SYNC_NAME_MAX: usize = 255;
+
+/// Typed identifier enum for sync wire protocol message headers.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[repr(u32)]
+pub enum SyncId {
+    LstatV1 = u32::from_le_bytes(*b"STAT"),
+    StatV2 = u32::from_le_bytes(*b"STA2"),
+    LstatV2 = u32::from_le_bytes(*b"LST2"),
+    ListV1 = u32::from_le_bytes(*b"LIST"),
+    ListV2 = u32::from_le_bytes(*b"LIS2"),
+    DentV1 = u32::from_le_bytes(*b"DENT"),
+    DentV2 = u32::from_le_bytes(*b"DNT2"),
+    SendV1 = u32::from_le_bytes(*b"SEND"),
+    SendV2 = u32::from_le_bytes(*b"SND2"),
+    RecvV1 = u32::from_le_bytes(*b"RECV"),
+    RecvV2 = u32::from_le_bytes(*b"RCV2"),
+    Done = u32::from_le_bytes(*b"DONE"),
+    Data = u32::from_le_bytes(*b"DATA"),
+    Okay = u32::from_le_bytes(*b"OKAY"),
+    Fail = u32::from_le_bytes(*b"FAIL"),
+    Quit = u32::from_le_bytes(*b"QUIT"),
+}
+
+impl SyncId {
+    /// Returns the raw u32 wire value in host endianness.
+    pub const fn to_u32(self) -> u32 {
+        self as u32
+    }
+
+    /// Returns the 4-byte little-endian wire representation.
+    pub const fn to_le_bytes(self) -> [u8; 4] {
+        (self as u32).to_le_bytes()
+    }
+}
+
+impl TryFrom<u32> for SyncId {
+    type Error = u32;
+
+    fn try_from(val: u32) -> Result<Self, Self::Error> {
+        match &val.to_le_bytes() {
+            b"STAT" => Ok(SyncId::LstatV1),
+            b"STA2" => Ok(SyncId::StatV2),
+            b"LST2" => Ok(SyncId::LstatV2),
+            b"LIST" => Ok(SyncId::ListV1),
+            b"LIS2" => Ok(SyncId::ListV2),
+            b"DENT" => Ok(SyncId::DentV1),
+            b"DNT2" => Ok(SyncId::DentV2),
+            b"SEND" => Ok(SyncId::SendV1),
+            b"SND2" => Ok(SyncId::SendV2),
+            b"RECV" => Ok(SyncId::RecvV1),
+            b"RCV2" => Ok(SyncId::RecvV2),
+            b"DONE" => Ok(SyncId::Done),
+            b"DATA" => Ok(SyncId::Data),
+            b"OKAY" => Ok(SyncId::Okay),
+            b"FAIL" => Ok(SyncId::Fail),
+            b"QUIT" => Ok(SyncId::Quit),
+            _ => Err(val),
+        }
+    }
+}
+
+pub const ID_LSTAT_V1: u32 = SyncId::LstatV1.to_u32();
+pub const ID_STAT_V2: u32 = SyncId::StatV2.to_u32();
+pub const ID_LSTAT_V2: u32 = SyncId::LstatV2.to_u32();
+pub const ID_LIST_V1: u32 = SyncId::ListV1.to_u32();
+pub const ID_LIST_V2: u32 = SyncId::ListV2.to_u32();
+pub const ID_DENT_V1: u32 = SyncId::DentV1.to_u32();
+pub const ID_DENT_V2: u32 = SyncId::DentV2.to_u32();
+pub const ID_SEND_V1: u32 = SyncId::SendV1.to_u32();
+pub const ID_SEND_V2: u32 = SyncId::SendV2.to_u32();
+pub const ID_RECV_V1: u32 = SyncId::RecvV1.to_u32();
+pub const ID_RECV_V2: u32 = SyncId::RecvV2.to_u32();
+pub const ID_DONE: u32 = SyncId::Done.to_u32();
+pub const ID_DATA: u32 = SyncId::Data.to_u32();
+pub const ID_OKAY: u32 = SyncId::Okay.to_u32();
+pub const ID_FAIL: u32 = SyncId::Fail.to_u32();
+pub const ID_QUIT: u32 = SyncId::Quit.to_u32();
+
+/// Bounded remote path string/bytes up to [`SYNC_PATH_MAX`] bytes.
+/// Preserves arbitrary non-UTF-8 bytes as supported by Android and C++ ADB.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct RemotePath(Vec<u8>);
+
+impl RemotePath {
+    /// Creates a new `RemotePath`, verifying length does not exceed [`SYNC_PATH_MAX`].
+    pub fn new(bytes: impl Into<Vec<u8>>) -> Result<Self, SyncEncodeError> {
+        let b = bytes.into();
+        if b.len() > SYNC_PATH_MAX {
+            return Err(SyncEncodeError::PayloadTooLarge {
+                length: b.len(),
+                max: SYNC_PATH_MAX,
+            });
+        }
+        Ok(Self(b))
+    }
+
+    /// Returns byte slice representation.
+    pub fn as_bytes(&self) -> &[u8] {
+        &self.0
+    }
+
+    /// Consumes into inner byte vector.
+    pub fn into_bytes(self) -> Vec<u8> {
+        self.0
+    }
+
+    /// Returns lossy UTF-8 string representation.
+    pub fn to_string_lossy(&self) -> std::borrow::Cow<'_, str> {
+        String::from_utf8_lossy(&self.0)
+    }
+}
+
+impl std::ops::Deref for RemotePath {
+    type Target = [u8];
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl AsRef<[u8]> for RemotePath {
+    fn as_ref(&self) -> &[u8] {
+        &self.0
+    }
+}
+
+impl TryFrom<&str> for RemotePath {
+    type Error = SyncEncodeError;
+
+    fn try_from(s: &str) -> Result<Self, Self::Error> {
+        Self::new(s.as_bytes())
+    }
+}
+
+impl TryFrom<String> for RemotePath {
+    type Error = SyncEncodeError;
+
+    fn try_from(s: String) -> Result<Self, Self::Error> {
+        Self::new(s.into_bytes())
+    }
+}
+
+/// Bounded data chunk up to [`SYNC_DATA_MAX`] bytes.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DataChunk(Vec<u8>);
+
+impl DataChunk {
+    /// Creates a new `DataChunk`, verifying length does not exceed [`SYNC_DATA_MAX`].
+    pub fn new(bytes: impl Into<Vec<u8>>) -> Result<Self, SyncEncodeError> {
+        let b = bytes.into();
+        if b.len() > SYNC_DATA_MAX {
+            return Err(SyncEncodeError::PayloadTooLarge {
+                length: b.len(),
+                max: SYNC_DATA_MAX,
+            });
+        }
+        Ok(Self(b))
+    }
+
+    /// Returns byte slice of the chunk.
+    pub fn as_bytes(&self) -> &[u8] {
+        &self.0
+    }
+
+    /// Consumes into inner byte vector.
+    pub fn into_bytes(self) -> Vec<u8> {
+        self.0
+    }
+}
+
+impl std::ops::Deref for DataChunk {
+    type Target = [u8];
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl AsRef<[u8]> for DataChunk {
+    fn as_ref(&self) -> &[u8] {
+        &self.0
+    }
+}
+
+/// Classification of file types represented in POSIX modes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FileType {
+    Regular,
+    Directory,
+    Symlink,
+    CharacterDevice,
+    BlockDevice,
+    Fifo,
+    Socket,
+    Other(u32),
+}
+
+/// Strongly typed POSIX file mode newtype.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct FileMode(pub u32);
+
+impl FileMode {
+    pub const S_IFMT: u32 = 0o170000;
+    pub const S_IFDIR: u32 = 0o040000;
+    pub const S_IFCHR: u32 = 0o020000;
+    pub const S_IFBLK: u32 = 0o060000;
+    pub const S_IFREG: u32 = 0o100000;
+    pub const S_IFLNK: u32 = 0o120000;
+    pub const S_IFIFO: u32 = 0o010000;
+    pub const S_IFSOCK: u32 = 0o140000;
+
+    /// Creates a new `FileMode`.
+    pub const fn new(mode: u32) -> Self {
+        Self(mode)
+    }
+
+    /// Returns the raw mode bits.
+    pub const fn mode(self) -> u32 {
+        self.0
+    }
+
+    /// Returns the categorized file type.
+    pub fn file_type(self) -> FileType {
+        match self.0 & Self::S_IFMT {
+            Self::S_IFREG => FileType::Regular,
+            Self::S_IFDIR => FileType::Directory,
+            Self::S_IFLNK => FileType::Symlink,
+            Self::S_IFCHR => FileType::CharacterDevice,
+            Self::S_IFBLK => FileType::BlockDevice,
+            Self::S_IFIFO => FileType::Fifo,
+            Self::S_IFSOCK => FileType::Socket,
+            other => FileType::Other(other),
+        }
+    }
+
+    pub fn is_dir(self) -> bool {
+        self.file_type() == FileType::Directory
+    }
+
+    pub fn is_file(self) -> bool {
+        self.file_type() == FileType::Regular
+    }
+
+    pub fn is_symlink(self) -> bool {
+        self.file_type() == FileType::Symlink
+    }
+}
+
+/// Strongly typed Unix timestamp (seconds).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Default)]
+pub struct UnixTime(pub u64);
+
+impl UnixTime {
+    pub const fn from_secs(secs: u64) -> Self {
+        Self(secs)
+    }
+
+    pub const fn as_secs(self) -> u64 {
+        self.0
+    }
+
+    pub const fn as_u32(self) -> u32 {
+        self.0 as u32
+    }
+
+    pub const fn as_i64(self) -> i64 {
+        self.0 as i64
+    }
+}
+
+/// Send transfer flags for Sync v2.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct SendFlags(pub u32);
+
+impl SendFlags {
+    pub const NONE: Self = Self(0);
+    pub const BROTLI: Self = Self(1 << 0);
+    pub const LZ4: Self = Self(1 << 1);
+    pub const ZSTD: Self = Self(1 << 2);
+    pub const DRY_RUN: Self = Self(1 << 3);
+
+    pub const fn empty() -> Self {
+        Self(0)
+    }
+
+    pub const fn from_bits_retain(bits: u32) -> Self {
+        Self(bits)
+    }
+
+    pub const fn bits(&self) -> u32 {
+        self.0
+    }
+
+    pub fn contains(&self, other: Self) -> bool {
+        (self.0 & other.0) == other.0
+    }
+}
+
+/// Recv transfer flags for Sync v2.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct RecvFlags(pub u32);
+
+impl RecvFlags {
+    pub const NONE: Self = Self(0);
+    pub const BROTLI: Self = Self(1 << 0);
+    pub const LZ4: Self = Self(1 << 1);
+    pub const ZSTD: Self = Self(1 << 2);
+
+    pub const fn empty() -> Self {
+        Self(0)
+    }
+
+    pub const fn from_bits_retain(bits: u32) -> Self {
+        Self(bits)
+    }
+
+    pub const fn bits(&self) -> u32 {
+        self.0
+    }
+
+    pub fn contains(&self, other: Self) -> bool {
+        (self.0 & other.0) == other.0
+    }
+}
 
 /// Wire structure for `sync_stat_v1` (16 bytes packed).
 #[repr(C, packed)]
@@ -166,7 +413,7 @@ pub struct SyncRecvV2 {
     pub flags: u32,
 }
 
-/// Errors that can occur when encoding Sync v1 messages.
+/// Errors that can occur when encoding Sync messages.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SyncEncodeError {
     /// Payload exceeds maximum allowed length.
@@ -185,7 +432,7 @@ impl fmt::Display for SyncEncodeError {
 
 impl std::error::Error for SyncEncodeError {}
 
-/// Errors that can occur when decoding Sync v1 messages.
+/// Errors that can occur when decoding Sync messages.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SyncDecodeError {
     /// Unknown or unhandled sync ID code.
@@ -194,9 +441,7 @@ pub enum SyncDecodeError {
     OversizedLength { length: usize, max: usize },
     /// Remote end returned a `FAIL` message.
     FailMessage(String),
-    /// String field is not valid UTF-8.
-    InvalidUtf8(std::string::FromUtf8Error),
-    /// Payload structure is invalid (e.g. missing comma or bad mode in `SEND` spec).
+    /// Payload structure is invalid.
     InvalidPayload(String),
 }
 
@@ -212,7 +457,6 @@ impl fmt::Display for SyncDecodeError {
                 write!(f, "sync length exceeds max: {length} (max: {max})")
             }
             SyncDecodeError::FailMessage(msg) => write!(f, "sync fail message: {msg}"),
-            SyncDecodeError::InvalidUtf8(e) => write!(f, "invalid utf-8 in sync message: {e}"),
             SyncDecodeError::InvalidPayload(msg) => write!(f, "invalid sync payload: {msg}"),
         }
     }
@@ -220,142 +464,123 @@ impl fmt::Display for SyncDecodeError {
 
 impl std::error::Error for SyncDecodeError {}
 
-impl From<std::string::FromUtf8Error> for SyncDecodeError {
-    fn from(err: std::string::FromUtf8Error) -> Self {
-        SyncDecodeError::InvalidUtf8(err)
-    }
-}
-
-/// Operating mode for [`SyncDecoder`].
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum SyncDecoderMode {
-    /// Decode `STAT` as server response (`sync_stat_v1`, 16 bytes).
-    #[default]
-    Response,
-    /// Decode `STAT` as client request (`SyncRequest`, 8 bytes + path).
-    Request,
-}
-
-/// Represents a Sync v1 protocol message.
-///
-/// Ports layouts from `original/file_sync_protocol.h` (`SyncRequest`, `sync_stat_v1`, `sync_dent_v1`, `sync_data`, `sync_status`).
+/// Strongly typed client-to-server Sync requests.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum SyncMessage {
-    /// List directory contents request (`ID_LIST_V1`).
-    List { path: String },
-    /// Directory entry response (`ID_DENT_V1`).
-    Dent {
-        mode: u32,
-        size: u32,
-        mtime: u32,
-        name: String,
-    },
-    /// File stat request (`ID_LSTAT_V1`).
-    Stat { path: String },
-    /// File stat response (`sync_stat_v1`, `ID_LSTAT_V1`).
-    StatReply { mode: u32, size: u32, mtime: u32 },
-    /// Send file request (`ID_SEND_V1`), with path and mode separated by comma.
-    Send { path: String, mode: u32 },
-    /// Receive file request (`ID_RECV_V1`).
-    Recv { path: String },
-    /// File transfer data chunk (`ID_DATA`).
-    Data { data: Vec<u8> },
-    /// Transfer completion marker (`ID_DONE`), carrying `mtime` on SEND.
-    Done { mtime: u32 },
-    /// Operation succeeded response (`ID_OKAY`).
-    Okay,
-    /// Operation failed response (`ID_FAIL`).
-    Fail { message: String },
-    /// Exit sync mode request (`ID_QUIT`).
+pub enum SyncRequest {
+    List(RemotePath),
+    Stat(RemotePath),
+    Send { path: RemotePath, mode: FileMode },
+    Recv(RemotePath),
+    Data(DataChunk),
+    Done { mtime: UnixTime },
     Quit,
 }
 
-impl SyncMessage {
-    /// Encodes the message into a byte vector matching `file_sync_protocol.h` wire layouts.
-    pub fn encode_to_vec(&self) -> Vec<u8> {
+impl SyncRequest {
+    /// Encodes request into bytes. Infallible because bounded types guarantee size limits.
+    pub fn encode(&self) -> Vec<u8> {
         match self {
-            SyncMessage::List { path } => encode_req(ID_LIST_V1, path.as_bytes()),
-            SyncMessage::Dent {
+            SyncRequest::List(path) => encode_id_payload(SyncId::ListV1, path.as_bytes()),
+            SyncRequest::Stat(path) => encode_id_payload(SyncId::LstatV1, path.as_bytes()),
+            SyncRequest::Send { path, mode } => {
+                let spec = format!("{},{}", path.to_string_lossy(), mode.mode());
+                encode_id_payload(SyncId::SendV1, spec.as_bytes())
+            }
+            SyncRequest::Recv(path) => encode_id_payload(SyncId::RecvV1, path.as_bytes()),
+            SyncRequest::Data(chunk) => encode_id_payload(SyncId::Data, chunk.as_bytes()),
+            SyncRequest::Done { mtime } => {
+                let mut buf = Vec::with_capacity(8);
+                buf.extend_from_slice(&SyncId::Done.to_le_bytes());
+                buf.extend_from_slice(&mtime.as_u32().to_le_bytes());
+                buf
+            }
+            SyncRequest::Quit => {
+                let mut buf = Vec::with_capacity(8);
+                buf.extend_from_slice(&SyncId::Quit.to_le_bytes());
+                buf.extend_from_slice(&0u32.to_le_bytes());
+                buf
+            }
+        }
+    }
+}
+
+/// Strongly typed server-to-client Sync responses.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SyncResponse {
+    Dent {
+        mode: FileMode,
+        size: u32,
+        mtime: UnixTime,
+        name: Vec<u8>,
+    },
+    StatReply {
+        mode: FileMode,
+        size: u32,
+        mtime: UnixTime,
+    },
+    Data(DataChunk),
+    Done {
+        mtime: UnixTime,
+    },
+    Okay,
+    Fail {
+        message: String,
+    },
+}
+
+impl SyncResponse {
+    /// Encodes response into bytes. Infallible because bounded types guarantee size limits.
+    pub fn encode(&self) -> Vec<u8> {
+        match self {
+            SyncResponse::Dent {
                 mode,
                 size,
                 mtime,
                 name,
             } => {
-                let name_bytes = name.as_bytes();
-                let mut buf = Vec::with_capacity(20 + name_bytes.len());
-                buf.extend_from_slice(&ID_DENT_V1.to_le_bytes());
-                buf.extend_from_slice(&mode.to_le_bytes());
+                let mut buf = Vec::with_capacity(20 + name.len());
+                buf.extend_from_slice(&SyncId::DentV1.to_le_bytes());
+                buf.extend_from_slice(&mode.mode().to_le_bytes());
                 buf.extend_from_slice(&size.to_le_bytes());
-                buf.extend_from_slice(&mtime.to_le_bytes());
-                buf.extend_from_slice(&(name_bytes.len() as u32).to_le_bytes());
-                buf.extend_from_slice(name_bytes);
+                buf.extend_from_slice(&mtime.as_u32().to_le_bytes());
+                buf.extend_from_slice(&(name.len() as u32).to_le_bytes());
+                buf.extend_from_slice(name);
                 buf
             }
-            SyncMessage::Stat { path } => encode_req(ID_LSTAT_V1, path.as_bytes()),
-            SyncMessage::StatReply { mode, size, mtime } => {
+            SyncResponse::StatReply { mode, size, mtime } => {
                 let mut buf = Vec::with_capacity(16);
-                buf.extend_from_slice(&ID_LSTAT_V1.to_le_bytes());
-                buf.extend_from_slice(&mode.to_le_bytes());
+                buf.extend_from_slice(&SyncId::LstatV1.to_le_bytes());
+                buf.extend_from_slice(&mode.mode().to_le_bytes());
                 buf.extend_from_slice(&size.to_le_bytes());
-                buf.extend_from_slice(&mtime.to_le_bytes());
+                buf.extend_from_slice(&mtime.as_u32().to_le_bytes());
                 buf
             }
-            SyncMessage::Send { path, mode } => {
-                let spec = format!("{path},{mode}");
-                encode_req(ID_SEND_V1, spec.as_bytes())
-            }
-            SyncMessage::Recv { path } => encode_req(ID_RECV_V1, path.as_bytes()),
-            SyncMessage::Data { data } => {
-                let mut buf = Vec::with_capacity(8 + data.len());
-                buf.extend_from_slice(&ID_DATA.to_le_bytes());
-                buf.extend_from_slice(&(data.len() as u32).to_le_bytes());
-                buf.extend_from_slice(data);
-                buf
-            }
-            SyncMessage::Done { mtime } => {
+            SyncResponse::Data(chunk) => encode_id_payload(SyncId::Data, chunk.as_bytes()),
+            SyncResponse::Done { mtime } => {
                 let mut buf = Vec::with_capacity(8);
-                buf.extend_from_slice(&ID_DONE.to_le_bytes());
-                buf.extend_from_slice(&mtime.to_le_bytes());
+                buf.extend_from_slice(&SyncId::Done.to_le_bytes());
+                buf.extend_from_slice(&mtime.as_u32().to_le_bytes());
                 buf
             }
-            SyncMessage::Okay => {
+            SyncResponse::Okay => {
                 let mut buf = Vec::with_capacity(8);
-                buf.extend_from_slice(&ID_OKAY.to_le_bytes());
+                buf.extend_from_slice(&SyncId::Okay.to_le_bytes());
                 buf.extend_from_slice(&0u32.to_le_bytes());
                 buf
             }
-            SyncMessage::Fail { message } => {
-                let msg_bytes = message.as_bytes();
-                let mut buf = Vec::with_capacity(8 + msg_bytes.len());
-                buf.extend_from_slice(&ID_FAIL.to_le_bytes());
-                buf.extend_from_slice(&(msg_bytes.len() as u32).to_le_bytes());
-                buf.extend_from_slice(msg_bytes);
-                buf
-            }
-            SyncMessage::Quit => {
-                let mut buf = Vec::with_capacity(8);
-                buf.extend_from_slice(&ID_QUIT.to_le_bytes());
-                buf.extend_from_slice(&0u32.to_le_bytes());
+            SyncResponse::Fail { message } => {
+                let b = message.as_bytes();
+                let mut buf = Vec::with_capacity(8 + b.len());
+                buf.extend_from_slice(&SyncId::Fail.to_le_bytes());
+                buf.extend_from_slice(&(b.len() as u32).to_le_bytes());
+                buf.extend_from_slice(b);
                 buf
             }
         }
-    }
-
-    /// Encodes the message to a byte vector, verifying payload limits.
-    pub fn encode_to_vec_checked(&self) -> Result<Vec<u8>, SyncEncodeError> {
-        if let SyncMessage::Data { data } = self {
-            if data.len() > SYNC_DATA_MAX {
-                return Err(SyncEncodeError::PayloadTooLarge {
-                    length: data.len(),
-                    max: SYNC_DATA_MAX,
-                });
-            }
-        }
-        Ok(self.encode_to_vec())
     }
 }
 
-fn encode_req(id: u32, payload: &[u8]) -> Vec<u8> {
+fn encode_id_payload(id: SyncId, payload: &[u8]) -> Vec<u8> {
     let mut buf = Vec::with_capacity(8 + payload.len());
     buf.extend_from_slice(&id.to_le_bytes());
     buf.extend_from_slice(&(payload.len() as u32).to_le_bytes());
@@ -363,84 +588,242 @@ fn encode_req(id: u32, payload: &[u8]) -> Vec<u8> {
     buf
 }
 
-/// Incremental decoder for Sync v1 messages streaming over a socket.
-#[derive(Debug)]
-pub struct SyncDecoder {
+/// Incremental decoder for sync request messages.
+#[derive(Debug, Default)]
+pub struct SyncRequestDecoder {
     buffer: VecDeque<u8>,
-    mode: SyncDecoderMode,
 }
 
-impl SyncDecoder {
-    /// Constructs a new [`SyncDecoder`] with the specified [`SyncDecoderMode`].
-    pub fn new(mode: SyncDecoderMode) -> Self {
+impl SyncRequestDecoder {
+    pub fn new() -> Self {
         Self {
             buffer: VecDeque::new(),
-            mode,
         }
     }
 
-    /// Sets the operating mode of the decoder.
-    pub fn set_mode(&mut self, mode: SyncDecoderMode) {
-        self.mode = mode;
-    }
-
-    /// Returns the current operating mode.
-    pub fn mode(&self) -> SyncDecoderMode {
-        self.mode
-    }
-
-    /// Feeds incoming byte data into the decoder buffer.
     pub fn feed(&mut self, chunk: &[u8]) {
         self.buffer.extend(chunk);
     }
 
-    /// Clears the decoder buffer.
     pub fn clear(&mut self) {
         self.buffer.clear();
     }
 
-    /// Attempts to parse the next complete [`SyncMessage`].
-    ///
-    /// Returns `Ok(Some(msg))` on successful decoding.
-    /// Returns `Ok(None)` if more bytes are required.
-    /// Returns `Err(SyncDecodeError)` on unknown packet IDs, oversized payloads, invalid UTF-8, or `FAIL` messages.
-    pub fn pop_message(&mut self) -> Result<Option<SyncMessage>, SyncDecodeError> {
+    pub fn pop_request(&mut self) -> Result<Option<SyncRequest>, SyncDecodeError> {
         if self.buffer.len() < 8 {
             return Ok(None);
         }
 
-        let mut id_bytes = [0u8; 4];
-        let mut param_bytes = [0u8; 4];
-
+        let mut id_b = [0u8; 4];
+        let mut param_b = [0u8; 4];
         for (i, b) in self.buffer.iter().take(4).enumerate() {
-            id_bytes[i] = *b;
+            id_b[i] = *b;
         }
         for (i, b) in self.buffer.iter().skip(4).take(4).enumerate() {
-            param_bytes[i] = *b;
+            param_b[i] = *b;
         }
 
-        let id = u32::from_le_bytes(id_bytes);
-        let param = u32::from_le_bytes(param_bytes);
+        let raw_id = u32::from_le_bytes(id_b);
+        let param = u32::from_le_bytes(param_b);
+
+        let id = match SyncId::try_from(raw_id) {
+            Ok(id) => id,
+            Err(unknown) => {
+                self.buffer.drain(..4);
+                return Err(SyncDecodeError::UnknownId(unknown));
+            }
+        };
 
         match id {
-            ID_LIST_V1 => {
-                let path_len = param as usize;
-                if path_len > SYNC_PATH_MAX {
+            SyncId::ListV1 => {
+                let len = param as usize;
+                if len > SYNC_PATH_MAX {
                     self.buffer.drain(..8);
                     return Err(SyncDecodeError::OversizedLength {
-                        length: path_len,
+                        length: len,
                         max: SYNC_PATH_MAX,
                     });
                 }
-                if self.buffer.len() < 8 + path_len {
+                if self.buffer.len() < 8 + len {
                     return Ok(None);
                 }
                 self.buffer.drain(..8);
-                let payload = self.pop_bytes(path_len);
-                let path = String::from_utf8(payload)?;
-                Ok(Some(SyncMessage::List { path }))
+                let p = self.pop_bytes(len);
+                let path = RemotePath::new(p).map_err(|e| match e {
+                    SyncEncodeError::PayloadTooLarge { length, max } => {
+                        SyncDecodeError::OversizedLength { length, max }
+                    }
+                })?;
+                Ok(Some(SyncRequest::List(path)))
             }
-            ID_DENT_V1 => {
+            SyncId::LstatV1 => {
+                let len = param as usize;
+                if len > SYNC_PATH_MAX {
+                    self.buffer.drain(..8);
+                    return Err(SyncDecodeError::OversizedLength {
+                        length: len,
+                        max: SYNC_PATH_MAX,
+                    });
+                }
+                if self.buffer.len() < 8 + len {
+                    return Ok(None);
+                }
+                self.buffer.drain(..8);
+                let p = self.pop_bytes(len);
+                let path = RemotePath::new(p).map_err(|e| match e {
+                    SyncEncodeError::PayloadTooLarge { length, max } => {
+                        SyncDecodeError::OversizedLength { length, max }
+                    }
+                })?;
+                Ok(Some(SyncRequest::Stat(path)))
+            }
+            SyncId::SendV1 => {
+                let len = param as usize;
+                if len > SYNC_PATH_MAX {
+                    self.buffer.drain(..8);
+                    return Err(SyncDecodeError::OversizedLength {
+                        length: len,
+                        max: SYNC_PATH_MAX,
+                    });
+                }
+                if self.buffer.len() < 8 + len {
+                    return Ok(None);
+                }
+                self.buffer.drain(..8);
+                let payload = self.pop_bytes(len);
+                let comma_idx = payload.iter().rposition(|&b| b == b',').ok_or_else(|| {
+                    SyncDecodeError::InvalidPayload("missing comma in SEND spec".to_string())
+                })?;
+                let path_bytes = &payload[..comma_idx];
+                let mode_str = std::str::from_utf8(&payload[comma_idx + 1..])
+                    .map_err(|e| SyncDecodeError::InvalidPayload(e.to_string()))?;
+                let mode_val = parse_mode(mode_str)?;
+                let path = RemotePath::new(path_bytes).map_err(|e| match e {
+                    SyncEncodeError::PayloadTooLarge { length, max } => {
+                        SyncDecodeError::OversizedLength { length, max }
+                    }
+                })?;
+                Ok(Some(SyncRequest::Send {
+                    path,
+                    mode: FileMode::new(mode_val),
+                }))
+            }
+            SyncId::RecvV1 => {
+                let len = param as usize;
+                if len > SYNC_PATH_MAX {
+                    self.buffer.drain(..8);
+                    return Err(SyncDecodeError::OversizedLength {
+                        length: len,
+                        max: SYNC_PATH_MAX,
+                    });
+                }
+                if self.buffer.len() < 8 + len {
+                    return Ok(None);
+                }
+                self.buffer.drain(..8);
+                let p = self.pop_bytes(len);
+                let path = RemotePath::new(p).map_err(|e| match e {
+                    SyncEncodeError::PayloadTooLarge { length, max } => {
+                        SyncDecodeError::OversizedLength { length, max }
+                    }
+                })?;
+                Ok(Some(SyncRequest::Recv(path)))
+            }
+            SyncId::Data => {
+                let len = param as usize;
+                if len > SYNC_DATA_MAX {
+                    self.buffer.drain(..8);
+                    return Err(SyncDecodeError::OversizedLength {
+                        length: len,
+                        max: SYNC_DATA_MAX,
+                    });
+                }
+                if self.buffer.len() < 8 + len {
+                    return Ok(None);
+                }
+                self.buffer.drain(..8);
+                let d = self.pop_bytes(len);
+                let chunk = DataChunk::new(d).map_err(|e| match e {
+                    SyncEncodeError::PayloadTooLarge { length, max } => {
+                        SyncDecodeError::OversizedLength { length, max }
+                    }
+                })?;
+                Ok(Some(SyncRequest::Data(chunk)))
+            }
+            SyncId::Done => {
+                self.buffer.drain(..8);
+                Ok(Some(SyncRequest::Done {
+                    mtime: UnixTime::from_secs(param as u64),
+                }))
+            }
+            SyncId::Quit => {
+                self.buffer.drain(..8);
+                Ok(Some(SyncRequest::Quit))
+            }
+            _ => {
+                self.buffer.drain(..4);
+                Err(SyncDecodeError::UnknownId(raw_id))
+            }
+        }
+    }
+
+    fn pop_bytes(&mut self, len: usize) -> Vec<u8> {
+        let mut vec = vec![0u8; len];
+        for b in vec.iter_mut() {
+            *b = self.buffer.pop_front().unwrap();
+        }
+        vec
+    }
+}
+
+/// Incremental decoder for sync response messages.
+#[derive(Debug, Default)]
+pub struct SyncResponseDecoder {
+    buffer: VecDeque<u8>,
+}
+
+impl SyncResponseDecoder {
+    pub fn new() -> Self {
+        Self {
+            buffer: VecDeque::new(),
+        }
+    }
+
+    pub fn feed(&mut self, chunk: &[u8]) {
+        self.buffer.extend(chunk);
+    }
+
+    pub fn clear(&mut self) {
+        self.buffer.clear();
+    }
+
+    pub fn pop_response(&mut self) -> Result<Option<SyncResponse>, SyncDecodeError> {
+        if self.buffer.len() < 8 {
+            return Ok(None);
+        }
+
+        let mut id_b = [0u8; 4];
+        let mut param_b = [0u8; 4];
+        for (i, b) in self.buffer.iter().take(4).enumerate() {
+            id_b[i] = *b;
+        }
+        for (i, b) in self.buffer.iter().skip(4).take(4).enumerate() {
+            param_b[i] = *b;
+        }
+
+        let raw_id = u32::from_le_bytes(id_b);
+        let param = u32::from_le_bytes(param_b);
+
+        let id = match SyncId::try_from(raw_id) {
+            Ok(id) => id,
+            Err(unknown) => {
+                self.buffer.drain(..4);
+                return Err(SyncDecodeError::UnknownId(unknown));
+            }
+        };
+
+        match id {
+            SyncId::DentV1 => {
                 if self.buffer.len() < 20 {
                     return Ok(None);
                 }
@@ -480,104 +863,41 @@ impl SyncDecoder {
                 let mtime = u32::from_le_bytes(mtime_b);
 
                 self.buffer.drain(..20);
-                let name_bytes = self.pop_bytes(namelen);
-                let name = String::from_utf8(name_bytes)?;
+                let name = self.pop_bytes(namelen);
 
-                Ok(Some(SyncMessage::Dent {
-                    mode,
+                Ok(Some(SyncResponse::Dent {
+                    mode: FileMode::new(mode),
                     size,
-                    mtime,
+                    mtime: UnixTime::from_secs(mtime as u64),
                     name,
                 }))
             }
-            ID_LSTAT_V1 => match self.mode {
-                SyncDecoderMode::Request => {
-                    let path_len = param as usize;
-                    if path_len > SYNC_PATH_MAX {
-                        self.buffer.drain(..8);
-                        return Err(SyncDecodeError::OversizedLength {
-                            length: path_len,
-                            max: SYNC_PATH_MAX,
-                        });
-                    }
-                    if self.buffer.len() < 8 + path_len {
-                        return Ok(None);
-                    }
-                    self.buffer.drain(..8);
-                    let payload = self.pop_bytes(path_len);
-                    let path = String::from_utf8(payload)?;
-                    Ok(Some(SyncMessage::Stat { path }))
-                }
-                SyncDecoderMode::Response => {
-                    if self.buffer.len() < 16 {
-                        return Ok(None);
-                    }
-                    let mut mode_b = [0u8; 4];
-                    let mut size_b = [0u8; 4];
-                    let mut mtime_b = [0u8; 4];
-
-                    for (i, b) in self.buffer.iter().skip(4).take(4).enumerate() {
-                        mode_b[i] = *b;
-                    }
-                    for (i, b) in self.buffer.iter().skip(8).take(4).enumerate() {
-                        size_b[i] = *b;
-                    }
-                    for (i, b) in self.buffer.iter().skip(12).take(4).enumerate() {
-                        mtime_b[i] = *b;
-                    }
-
-                    self.buffer.drain(..16);
-                    Ok(Some(SyncMessage::StatReply {
-                        mode: u32::from_le_bytes(mode_b),
-                        size: u32::from_le_bytes(size_b),
-                        mtime: u32::from_le_bytes(mtime_b),
-                    }))
-                }
-            },
-            ID_SEND_V1 => {
-                let spec_len = param as usize;
-                if spec_len > SYNC_PATH_MAX {
-                    self.buffer.drain(..8);
-                    return Err(SyncDecodeError::OversizedLength {
-                        length: spec_len,
-                        max: SYNC_PATH_MAX,
-                    });
-                }
-                if self.buffer.len() < 8 + spec_len {
+            SyncId::LstatV1 => {
+                if self.buffer.len() < 16 {
                     return Ok(None);
                 }
-                self.buffer.drain(..8);
-                let payload = self.pop_bytes(spec_len);
-                let spec = String::from_utf8(payload)?;
+                let mut mode_b = [0u8; 4];
+                let mut size_b = [0u8; 4];
+                let mut mtime_b = [0u8; 4];
 
-                let (path, mode_str) = spec.rsplit_once(',').ok_or_else(|| {
-                    SyncDecodeError::InvalidPayload("missing comma in SEND spec".to_string())
-                })?;
+                for (i, b) in self.buffer.iter().skip(4).take(4).enumerate() {
+                    mode_b[i] = *b;
+                }
+                for (i, b) in self.buffer.iter().skip(8).take(4).enumerate() {
+                    size_b[i] = *b;
+                }
+                for (i, b) in self.buffer.iter().skip(12).take(4).enumerate() {
+                    mtime_b[i] = *b;
+                }
 
-                let mode = parse_mode(mode_str)?;
-                Ok(Some(SyncMessage::Send {
-                    path: path.to_string(),
-                    mode,
+                self.buffer.drain(..16);
+                Ok(Some(SyncResponse::StatReply {
+                    mode: FileMode::new(u32::from_le_bytes(mode_b)),
+                    size: u32::from_le_bytes(size_b),
+                    mtime: UnixTime::from_secs(u32::from_le_bytes(mtime_b) as u64),
                 }))
             }
-            ID_RECV_V1 => {
-                let path_len = param as usize;
-                if path_len > SYNC_PATH_MAX {
-                    self.buffer.drain(..8);
-                    return Err(SyncDecodeError::OversizedLength {
-                        length: path_len,
-                        max: SYNC_PATH_MAX,
-                    });
-                }
-                if self.buffer.len() < 8 + path_len {
-                    return Ok(None);
-                }
-                self.buffer.drain(..8);
-                let payload = self.pop_bytes(path_len);
-                let path = String::from_utf8(payload)?;
-                Ok(Some(SyncMessage::Recv { path }))
-            }
-            ID_DATA => {
+            SyncId::Data => {
                 let size = param as usize;
                 if size > SYNC_DATA_MAX {
                     self.buffer.drain(..8);
@@ -591,17 +911,24 @@ impl SyncDecoder {
                 }
                 self.buffer.drain(..8);
                 let data = self.pop_bytes(size);
-                Ok(Some(SyncMessage::Data { data }))
+                let chunk = DataChunk::new(data).map_err(|e| match e {
+                    SyncEncodeError::PayloadTooLarge { length, max } => {
+                        SyncDecodeError::OversizedLength { length, max }
+                    }
+                })?;
+                Ok(Some(SyncResponse::Data(chunk)))
             }
-            ID_DONE => {
+            SyncId::Done => {
                 self.buffer.drain(..8);
-                Ok(Some(SyncMessage::Done { mtime: param }))
+                Ok(Some(SyncResponse::Done {
+                    mtime: UnixTime::from_secs(param as u64),
+                }))
             }
-            ID_OKAY => {
+            SyncId::Okay => {
                 self.buffer.drain(..8);
-                Ok(Some(SyncMessage::Okay))
+                Ok(Some(SyncResponse::Okay))
             }
-            ID_FAIL => {
+            SyncId::Fail => {
                 let msglen = param as usize;
                 if msglen > SYNC_DATA_MAX {
                     self.buffer.drain(..8);
@@ -615,16 +942,12 @@ impl SyncDecoder {
                 }
                 self.buffer.drain(..8);
                 let payload = self.pop_bytes(msglen);
-                let message = String::from_utf8(payload)?;
+                let message = String::from_utf8_lossy(&payload).into_owned();
                 Err(SyncDecodeError::FailMessage(message))
             }
-            ID_QUIT => {
-                self.buffer.drain(..8);
-                Ok(Some(SyncMessage::Quit))
-            }
-            unknown => {
+            _ => {
                 self.buffer.drain(..4);
-                Err(SyncDecodeError::UnknownId(unknown))
+                Err(SyncDecodeError::UnknownId(raw_id))
             }
         }
     }

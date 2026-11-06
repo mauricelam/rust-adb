@@ -20,8 +20,6 @@ pub enum ShellPacketId {
     CloseStdin = 4,
     /// Window size change event (`kIdWindowSizeChange = 5`).
     WindowSizeChange = 5,
-    /// Invalid or unknown shell packet (`kIdInvalid = 255`).
-    Invalid = 255,
 }
 
 impl TryFrom<u8> for ShellPacketId {
@@ -35,7 +33,6 @@ impl TryFrom<u8> for ShellPacketId {
             3 => Ok(ShellPacketId::Exit),
             4 => Ok(ShellPacketId::CloseStdin),
             5 => Ok(ShellPacketId::WindowSizeChange),
-            255 => Ok(ShellPacketId::Invalid),
             val => Err(val),
         }
     }
@@ -88,7 +85,7 @@ impl std::error::Error for ShellDecodeError {}
 /// Terminal window dimensions used in [`ShellPacketId::WindowSizeChange`].
 ///
 /// Ports `winsize` struct usage from `original/daemon/shell_service.cpp` and `original/client/commandline.cpp`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct WindowSize {
     pub rows: u16,
     pub cols: u16,
@@ -96,9 +93,175 @@ pub struct WindowSize {
     pub y_pixels: u16,
 }
 
-/// Represents a Shell v2 packet with a 1-byte packet ID, a 4-byte LE length header, and payload data.
-///
-/// Ports packet framing from `original/shell_protocol.h` and `original/shell_service_protocol.cpp`.
+impl WindowSize {
+    /// Constructs a new `WindowSize`.
+    pub const fn new(rows: u16, cols: u16, x_pixels: u16, y_pixels: u16) -> Self {
+        Self {
+            rows,
+            cols,
+            x_pixels,
+            y_pixels,
+        }
+    }
+
+    /// Encodes window size as ASCII text (`rowsxcols,xpixelsxypixels\0`).
+    pub fn encode_to_bytes(&self) -> Vec<u8> {
+        format!(
+            "{}x{},{}x{}\0",
+            self.rows, self.cols, self.x_pixels, self.y_pixels
+        )
+        .into_bytes()
+    }
+
+    /// Parses a window size change payload formatted as ASCII text (`rowsxcols,xpixelsxypixels`).
+    ///
+    /// Ports parsing from `original/daemon/shell_service.cpp`:
+    /// `sscanf(input_->data(), "%dx%d,%dx%d", &rows, &cols, &x_pixels, &y_pixels)`
+    pub fn parse(bytes: &[u8]) -> Result<Self, ShellDecodeError> {
+        let s = match std::str::from_utf8(bytes) {
+            Ok(s) => s.trim_end_matches('\0'),
+            Err(_) => {
+                return Err(ShellDecodeError::InvalidPayload(
+                    "window size payload is not UTF-8 text".to_string(),
+                ))
+            }
+        };
+
+        // Lenient sscanf-like parsing: find first comma, split each by 'x'
+        let (first, second) = s.split_once(',').ok_or_else(|| {
+            ShellDecodeError::InvalidPayload(format!("invalid window size string format: '{s}'"))
+        })?;
+
+        let (rows_str, cols_str) = first.split_once('x').ok_or_else(|| {
+            ShellDecodeError::InvalidPayload(format!("invalid window size dimension format: '{s}'"))
+        })?;
+
+        let (x_pix_str, y_pix_str) = second.split_once('x').ok_or_else(|| {
+            ShellDecodeError::InvalidPayload(format!("invalid window size dimension format: '{s}'"))
+        })?;
+
+        let rows = parse_int_prefix(rows_str).map_err(|e| {
+            ShellDecodeError::InvalidPayload(format!("failed to parse rows '{rows_str}': {e}"))
+        })?;
+        let cols = parse_int_prefix(cols_str).map_err(|e| {
+            ShellDecodeError::InvalidPayload(format!("failed to parse cols '{cols_str}': {e}"))
+        })?;
+        let x_pixels = parse_int_prefix(x_pix_str).map_err(|e| {
+            ShellDecodeError::InvalidPayload(format!("failed to parse x_pixels '{x_pix_str}': {e}"))
+        })?;
+        let y_pixels = parse_int_prefix(y_pix_str).map_err(|e| {
+            ShellDecodeError::InvalidPayload(format!("failed to parse y_pixels '{y_pix_str}': {e}"))
+        })?;
+
+        Ok(Self {
+            rows,
+            cols,
+            x_pixels,
+            y_pixels,
+        })
+    }
+}
+
+fn parse_int_prefix(s: &str) -> Result<u16, std::num::ParseIntError> {
+    // Like sscanf %d, parse leading digits
+    let trimmed = s.trim_start();
+    let end = trimmed
+        .char_indices()
+        .find(|(_, c)| !c.is_ascii_digit())
+        .map(|(idx, _)| idx)
+        .unwrap_or(trimmed.len());
+    trimmed[..end].parse::<u16>()
+}
+
+/// Strongly typed Shell v2 message representation.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ShellMessage {
+    /// Subprocess standard input data (`kIdStdin = 0`).
+    Stdin(Vec<u8>),
+    /// Subprocess standard output data (`kIdStdout = 1`).
+    Stdout(Vec<u8>),
+    /// Subprocess standard error data (`kIdStderr = 2`).
+    Stderr(Vec<u8>),
+    /// Subprocess exit status code (`kIdExit = 3`).
+    Exit(u8),
+    /// Close subprocess standard input (`kIdCloseStdin = 4`).
+    CloseStdin,
+    /// Window size change event (`kIdWindowSizeChange = 5`).
+    WindowSize(WindowSize),
+}
+
+impl ShellMessage {
+    /// Header size in bytes: 1 byte ID + 4 bytes LE uint32 length.
+    pub const HEADER_SIZE: usize = 5;
+
+    /// Returns the packet ID byte for this message.
+    pub fn id(&self) -> ShellPacketId {
+        match self {
+            ShellMessage::Stdin(_) => ShellPacketId::Stdin,
+            ShellMessage::Stdout(_) => ShellPacketId::Stdout,
+            ShellMessage::Stderr(_) => ShellPacketId::Stderr,
+            ShellMessage::Exit(_) => ShellPacketId::Exit,
+            ShellMessage::CloseStdin => ShellPacketId::CloseStdin,
+            ShellMessage::WindowSize(_) => ShellPacketId::WindowSizeChange,
+        }
+    }
+
+    /// Encodes this message into a Shell v2 packet byte vector.
+    pub fn encode(&self) -> Result<Vec<u8>, ShellEncodeError> {
+        let (id, payload) = match self {
+            ShellMessage::Stdin(d) => (ShellPacketId::Stdin as u8, d.as_slice()),
+            ShellMessage::Stdout(d) => (ShellPacketId::Stdout as u8, d.as_slice()),
+            ShellMessage::Stderr(d) => (ShellPacketId::Stderr as u8, d.as_slice()),
+            ShellMessage::Exit(code) => (ShellPacketId::Exit as u8, std::slice::from_ref(code)),
+            ShellMessage::CloseStdin => (ShellPacketId::CloseStdin as u8, &[][..]),
+            ShellMessage::WindowSize(ws) => {
+                let bytes = ws.encode_to_bytes();
+                let mut buf = Vec::with_capacity(Self::HEADER_SIZE + bytes.len());
+                buf.push(ShellPacketId::WindowSizeChange as u8);
+                buf.extend_from_slice(&(bytes.len() as u32).to_le_bytes());
+                buf.extend_from_slice(&bytes);
+                return Ok(buf);
+            }
+        };
+
+        if payload.len() > MAX_PAYLOAD {
+            return Err(ShellEncodeError::PayloadTooLarge {
+                length: payload.len(),
+                max: MAX_PAYLOAD,
+            });
+        }
+
+        let mut buf = Vec::with_capacity(Self::HEADER_SIZE + payload.len());
+        buf.push(id);
+        buf.extend_from_slice(&(payload.len() as u32).to_le_bytes());
+        buf.extend_from_slice(payload);
+        Ok(buf)
+    }
+
+    /// Parses a raw [`ShellPacket`] into a typed [`ShellMessage`].
+    pub fn from_packet(packet: ShellPacket) -> Result<Self, ShellDecodeError> {
+        match packet.id {
+            ShellPacketId::Stdin => Ok(ShellMessage::Stdin(packet.data)),
+            ShellPacketId::Stdout => Ok(ShellMessage::Stdout(packet.data)),
+            ShellPacketId::Stderr => Ok(ShellMessage::Stderr(packet.data)),
+            ShellPacketId::Exit => {
+                if packet.data.is_empty() {
+                    return Err(ShellDecodeError::InvalidPayload(
+                        "empty exit code payload".to_string(),
+                    ));
+                }
+                Ok(ShellMessage::Exit(packet.data[0]))
+            }
+            ShellPacketId::CloseStdin => Ok(ShellMessage::CloseStdin),
+            ShellPacketId::WindowSizeChange => {
+                let ws = WindowSize::parse(&packet.data)?;
+                Ok(ShellMessage::WindowSize(ws))
+            }
+        }
+    }
+}
+
+/// Represents a raw Shell v2 packet with a 1-byte packet ID and payload bytes.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ShellPacket {
     pub id: ShellPacketId,
@@ -115,8 +278,6 @@ impl ShellPacket {
     }
 
     /// Constructs a [`ShellPacketId::Exit`] packet with a 1-byte exit code payload.
-    ///
-    /// Ports exit code packet creation from `original/shell_service_protocol_test.cpp`.
     pub fn exit_code(code: u8) -> Self {
         Self {
             id: ShellPacketId::Exit,
@@ -140,22 +301,15 @@ impl ShellPacket {
         Ok(self.data[0])
     }
 
-    /// Constructs a [`ShellPacketId::WindowSizeChange`] packet formatted as human-readable ASCII (`rowsxcols,xpixelsxypixels\0`).
-    ///
-    /// Ports formatting from `original/client/commandline.cpp`:
-    /// `snprintf(shell->data(), shell->data_capacity(), "%dx%d,%dx%d", ws_row, ws_col, ws_xpixel, ws_ypixel)`
+    /// Constructs a [`ShellPacketId::WindowSizeChange`] packet.
     pub fn window_size_change(ws: WindowSize) -> Self {
-        let text = format!("{}x{},{}x{}\0", ws.rows, ws.cols, ws.x_pixels, ws.y_pixels);
         Self {
             id: ShellPacketId::WindowSizeChange,
-            data: text.into_bytes(),
+            data: ws.encode_to_bytes(),
         }
     }
 
-    /// Parses a window size change payload formatted as ASCII text (`rowsxcols,xpixelsxypixels`).
-    ///
-    /// Ports parsing from `original/daemon/shell_service.cpp`:
-    /// `sscanf(input_->data(), "%dx%d,%dx%d", &rows, &cols, &x_pixels, &y_pixels)`
+    /// Parses window dimensions from a window size change packet.
     pub fn parse_window_size(&self) -> Result<WindowSize, ShellDecodeError> {
         if self.id != ShellPacketId::WindowSizeChange {
             return Err(ShellDecodeError::InvalidPayload(format!(
@@ -163,57 +317,7 @@ impl ShellPacket {
                 self.id
             )));
         }
-
-        let s = match std::str::from_utf8(&self.data) {
-            Ok(s) => s.trim_end_matches('\0'),
-            Err(_) => {
-                return Err(ShellDecodeError::InvalidPayload(
-                    "window size payload is not UTF-8 text".to_string(),
-                ))
-            }
-        };
-
-        // Parse "rowsxcols,xpixelsxypixels"
-        let parts: Vec<&str> = s.split(',').collect();
-        if parts.len() != 2 {
-            return Err(ShellDecodeError::InvalidPayload(format!(
-                "invalid window size string format: '{s}'"
-            )));
-        }
-
-        let dim: Vec<&str> = parts[0].split('x').collect();
-        let pix: Vec<&str> = parts[1].split('x').collect();
-
-        if dim.len() != 2 || pix.len() != 2 {
-            return Err(ShellDecodeError::InvalidPayload(format!(
-                "invalid window size dimension format: '{s}'"
-            )));
-        }
-
-        let rows_str = dim[0];
-        let cols_str = dim[1];
-        let x_pix_str = pix[0];
-        let y_pix_str = pix[1];
-
-        let rows = rows_str.parse::<u16>().map_err(|e| {
-            ShellDecodeError::InvalidPayload(format!("failed to parse rows '{rows_str}': {e}"))
-        })?;
-        let cols = cols_str.parse::<u16>().map_err(|e| {
-            ShellDecodeError::InvalidPayload(format!("failed to parse cols '{cols_str}': {e}"))
-        })?;
-        let x_pixels = x_pix_str.parse::<u16>().map_err(|e| {
-            ShellDecodeError::InvalidPayload(format!("failed to parse x_pixels '{x_pix_str}': {e}"))
-        })?;
-        let y_pixels = y_pix_str.parse::<u16>().map_err(|e| {
-            ShellDecodeError::InvalidPayload(format!("failed to parse y_pixels '{y_pix_str}': {e}"))
-        })?;
-
-        Ok(WindowSize {
-            rows,
-            cols,
-            x_pixels,
-            y_pixels,
-        })
+        WindowSize::parse(&self.data)
     }
 
     /// Encodes packet to a `Vec<u8>`, returning [`ShellEncodeError::PayloadTooLarge`] if `data.len() > MAX_PAYLOAD`.
@@ -232,10 +336,7 @@ impl ShellPacket {
     }
 }
 
-/// Incremental decoder for streaming Shell v2 packets.
-///
-/// Accepts arbitrary chunk boundaries via [`feed`](Self::feed) and yields complete packets via [`pop_packet`](Self::pop_packet).
-/// Ports stream decoding logic from `original/shell_service_protocol.cpp`.
+/// Incremental decoder for streaming Shell v2 packets and messages.
 #[derive(Debug, Default)]
 pub struct ShellDecoder {
     buffer: Vec<u8>,
@@ -266,11 +367,6 @@ impl ShellDecoder {
     }
 
     /// Attempts to extract the next complete [`ShellPacket`] from buffered data.
-    ///
-    /// Returns `Ok(Some(packet))` if a full packet was parsed.
-    /// Returns `Ok(None)` if more input bytes are needed.
-    /// Returns `Err(ShellDecodeError)` if the packet header is invalid or payload size exceeds [`MAX_PAYLOAD`].
-    /// Sticky: once an error occurs, subsequent calls return the same error until [`clear`](Self::clear) is called.
     pub fn pop_packet(&mut self) -> Result<Option<ShellPacket>, ShellDecodeError> {
         if let Some(ref err) = self.error {
             return Err(err.clone());
@@ -307,7 +403,6 @@ impl ShellDecoder {
             return Ok(None);
         }
 
-        // Complete packet is buffered! Copy payload using a contiguous slice copy.
         let payload_start = self.read_pos + ShellPacket::HEADER_SIZE;
         let payload_end = payload_start + payload_len;
         let data = self.buffer[payload_start..payload_end].to_vec();
@@ -323,6 +418,14 @@ impl ShellDecoder {
             id: packet_id,
             data,
         }))
+    }
+
+    /// Attempts to extract the next complete typed [`ShellMessage`].
+    pub fn pop_message(&mut self) -> Result<Option<ShellMessage>, ShellDecodeError> {
+        match self.pop_packet()? {
+            Some(pkt) => ShellMessage::from_packet(pkt).map(Some),
+            None => Ok(None),
+        }
     }
 
     /// Clears the decoder buffer and any recorded sticky error.

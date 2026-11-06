@@ -3,7 +3,7 @@
 use crate::server_address::ServerAddress;
 use crate::transport::TransportSelector;
 use adb_proto::smart_socket::{
-    parse_protocol_string, parse_reply, ProtocolString, SmartSocketError, SmartSocketReply,
+    parse_protocol_string, parse_reply, Decoded, ReplyError, SmartSocketReply,
 };
 use adb_proto::TransportId;
 use adb_proto::MAX_PAYLOAD;
@@ -344,15 +344,21 @@ impl<S: AsyncStream> Session<S, AwaitingStatus> {
     async fn read_status_internal(&mut self) -> Result<(), SessionError> {
         loop {
             match parse_reply(&self.read_buf) {
-                Ok((SmartSocketReply::Okay, consumed)) => {
+                Ok(Decoded::Complete {
+                    value: SmartSocketReply::Okay,
+                    consumed,
+                }) => {
                     self.read_buf.drain(..consumed);
                     return Ok(());
                 }
-                Ok((SmartSocketReply::Fail(reason), consumed)) => {
+                Ok(Decoded::Complete {
+                    value: SmartSocketReply::Fail(reason),
+                    consumed,
+                }) => {
                     self.read_buf.drain(..consumed);
                     return Err(SessionError::Fail(reason));
                 }
-                Ok((SmartSocketReply::Incomplete, _)) => {
+                Ok(Decoded::Incomplete) => {
                     let mut byte = [0u8; 1];
                     if let Err(err) = self.stream.read_exact(&mut byte).await {
                         if self.read_buf.is_empty() {
@@ -367,25 +373,24 @@ impl<S: AsyncStream> Session<S, AwaitingStatus> {
                     }
                     self.read_buf.push(byte[0]);
                 }
-                Err(SmartSocketError::InvalidStatus(status)) => {
+                Err(ReplyError::InvalidStatus(status)) => {
                     self.read_buf.clear();
                     return Err(SessionError::InvalidStatus(status));
                 }
-                Err(SmartSocketError::InvalidHexLength(_)) => {
+                Err(ReplyError::InvalidHexLength(_)) => {
                     self.read_buf.clear();
                     return Err(SessionError::ReadStatusLengthFailed(std::io::Error::new(
                         std::io::ErrorKind::InvalidData,
                         "invalid hex length",
                     )));
                 }
-                Err(SmartSocketError::InvalidUtf8(err)) => {
+                Err(ReplyError::InvalidUtf8(err)) => {
                     self.read_buf.clear();
                     return Err(SessionError::ReadStatusMessageFailed(std::io::Error::new(
                         std::io::ErrorKind::InvalidData,
                         err,
                     )));
                 }
-                Err(SmartSocketError::RequestTooLong(_)) => unreachable!(),
             }
         }
     }
@@ -405,11 +410,14 @@ impl<S: AsyncStream> Session<S, Ready> {
     async fn read_string_internal(&mut self) -> Result<String, SessionError> {
         loop {
             match parse_protocol_string(&self.read_buf) {
-                Ok((ProtocolString::Complete(payload), consumed)) => {
+                Ok(Decoded::Complete {
+                    value: payload,
+                    consumed,
+                }) => {
                     self.read_buf.drain(..consumed);
                     return Ok(payload);
                 }
-                Ok((ProtocolString::Incomplete, _)) => {
+                Ok(Decoded::Incomplete) => {
                     let mut byte = [0u8; 1];
                     if let Err(err) = self.stream.read_exact(&mut byte).await {
                         if self.read_buf.len() < 4 {
@@ -420,21 +428,24 @@ impl<S: AsyncStream> Session<S, Ready> {
                     }
                     self.read_buf.push(byte[0]);
                 }
-                Err(SmartSocketError::InvalidHexLength(_)) => {
+                Err(ReplyError::InvalidHexLength(_)) => {
                     self.read_buf.clear();
                     return Err(SessionError::ReadStatusLengthFailed(std::io::Error::new(
                         std::io::ErrorKind::InvalidData,
                         "invalid hex length",
                     )));
                 }
-                Err(SmartSocketError::InvalidUtf8(err)) => {
+                Err(ReplyError::InvalidUtf8(err)) => {
                     self.read_buf.clear();
                     return Err(SessionError::ReadStatusMessageFailed(std::io::Error::new(
                         std::io::ErrorKind::InvalidData,
                         err,
                     )));
                 }
-                Err(_) => unreachable!(),
+                Err(ReplyError::InvalidStatus(status)) => {
+                    self.read_buf.clear();
+                    return Err(SessionError::InvalidStatus(status));
+                }
             }
         }
     }

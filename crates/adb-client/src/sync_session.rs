@@ -4,9 +4,8 @@ use crate::client::{AdbClient, Outcome};
 use crate::session::{AsyncStream, BoxedStream, Session, SessionError};
 use crate::transport::TransportSelector;
 use adb_proto::sync::{
-    ID_DATA, ID_DENT_V1, ID_DENT_V2, ID_DONE, ID_FAIL, ID_LIST_V1, ID_LIST_V2, ID_LSTAT_V1,
-    ID_LSTAT_V2, ID_OKAY, ID_QUIT, ID_RECV_V1, ID_RECV_V2, ID_SEND_V1, ID_SEND_V2, ID_STAT_V2,
-    SYNC_DATA_MAX,
+    FileMode, FileType, SyncDentV1, SyncDentV2, SyncId, SyncStatV1, SyncStatV2, SYNC_DATA_MAX,
+    SYNC_NAME_MAX, SYNC_PATH_MAX,
 };
 use std::collections::VecDeque;
 use std::fmt;
@@ -367,16 +366,20 @@ pub struct Stat {
 }
 
 impl Stat {
+    pub fn file_mode(&self) -> FileMode {
+        FileMode::new(self.mode)
+    }
+
     pub fn is_dir(&self) -> bool {
-        (self.mode & 0o170000) == 0o040000
+        self.file_mode().is_dir()
     }
 
     pub fn is_file(&self) -> bool {
-        (self.mode & 0o170000) == 0o100000
+        self.file_mode().is_file()
     }
 
     pub fn is_symlink(&self) -> bool {
-        (self.mode & 0o170000) == 0o120000
+        self.file_mode().is_symlink()
     }
 }
 
@@ -506,8 +509,8 @@ impl<S: AsyncStream> SyncSession<S> {
         self.capabilities.fixed_push_mkdir
     }
 
-    async fn send_request(&mut self, id: u32, path: &str) -> Result<(), SyncError> {
-        if path.len() > 1024 {
+    async fn send_request(&mut self, id: SyncId, path: &str) -> Result<(), SyncError> {
+        if path.len() > SYNC_PATH_MAX {
             let message = format!("SendRequest failed: path too long: {}", path.len());
             return Err(SyncError::PathTooLong { message, errno: 36 });
         }
@@ -526,8 +529,8 @@ impl<S: AsyncStream> SyncSession<S> {
     /// Lists entries in directory `path` (`adb ls`).
     pub async fn ls(&mut self, path: &str) -> Result<Vec<DirEntry>, SyncError> {
         let req_id = match self.capabilities.list {
-            ListVersion::V2 => ID_LIST_V2,
-            ListVersion::V1 => ID_LIST_V1,
+            ListVersion::V2 => SyncId::ListV2,
+            ListVersion::V1 => SyncId::ListV1,
         };
         self.send_request(req_id, path).await?;
 
@@ -536,25 +539,26 @@ impl<S: AsyncStream> SyncSession<S> {
 
         if is_ls_v2 {
             loop {
-                let mut dent_buf = [0u8; 76];
+                let mut dent_buf = [0u8; std::mem::size_of::<SyncDentV2>()];
                 self.stream.read_exact(&mut dent_buf).await?;
 
-                let id = u32::from_le_bytes(dent_buf[0..4].try_into().unwrap());
-                if id == ID_DONE {
+                let dent: SyncDentV2 =
+                    unsafe { std::ptr::read_unaligned(dent_buf.as_ptr() as *const SyncDentV2) };
+                let sync_id = SyncId::try_from(dent.id).map_err(|id| {
+                    SyncError::ProtocolFault(format!("unexpected response ID 0x{id:08x}"))
+                })?;
+                if sync_id == SyncId::Done {
                     break;
                 }
-                if id != ID_DENT_V2 {
+                if sync_id != SyncId::DentV2 {
+                    let raw_id = dent.id;
                     return Err(SyncError::ProtocolFault(format!(
-                        "unexpected response ID 0x{id:08x}"
+                        "unexpected response ID 0x{raw_id:08x}"
                     )));
                 }
 
-                let mode = u32::from_le_bytes(dent_buf[24..28].try_into().unwrap());
-                let size = u64::from_le_bytes(dent_buf[40..48].try_into().unwrap());
-                let mtime = i64::from_le_bytes(dent_buf[56..64].try_into().unwrap()) as u64;
-                let namelen = u32::from_le_bytes(dent_buf[72..76].try_into().unwrap()) as usize;
-
-                if namelen > 255 {
+                let namelen = dent.namelen as usize;
+                if namelen > SYNC_NAME_MAX {
                     return Err(SyncError::ProtocolFault("filename too long".to_string()));
                 }
 
@@ -571,33 +575,34 @@ impl<S: AsyncStream> SyncSession<S> {
                     .map_err(|e| SyncError::ProtocolFault(e.to_string()))?;
 
                 entries.push(DirEntry {
-                    mode,
-                    size,
-                    mtime,
+                    mode: dent.mode,
+                    size: dent.size,
+                    mtime: dent.mtime as u64,
                     name,
                 });
             }
         } else {
             loop {
-                let mut dent_buf = [0u8; 20];
+                let mut dent_buf = [0u8; std::mem::size_of::<SyncDentV1>()];
                 self.stream.read_exact(&mut dent_buf).await?;
 
-                let id = u32::from_le_bytes(dent_buf[0..4].try_into().unwrap());
-                if id == ID_DONE {
+                let dent: SyncDentV1 =
+                    unsafe { std::ptr::read_unaligned(dent_buf.as_ptr() as *const SyncDentV1) };
+                let sync_id = SyncId::try_from(dent.id).map_err(|id| {
+                    SyncError::ProtocolFault(format!("unexpected response ID 0x{id:08x}"))
+                })?;
+                if sync_id == SyncId::Done {
                     break;
                 }
-                if id != ID_DENT_V1 {
+                if sync_id != SyncId::DentV1 {
+                    let raw_id = dent.id;
                     return Err(SyncError::ProtocolFault(format!(
-                        "unexpected response ID 0x{id:08x}"
+                        "unexpected response ID 0x{raw_id:08x}"
                     )));
                 }
 
-                let mode = u32::from_le_bytes(dent_buf[4..8].try_into().unwrap());
-                let size = u32::from_le_bytes(dent_buf[8..12].try_into().unwrap()) as u64;
-                let mtime = u32::from_le_bytes(dent_buf[12..16].try_into().unwrap()) as u64;
-                let namelen = u32::from_le_bytes(dent_buf[16..20].try_into().unwrap()) as usize;
-
-                if namelen > 255 {
+                let namelen = dent.namelen as usize;
+                if namelen > SYNC_NAME_MAX {
                     return Err(SyncError::ProtocolFault("filename too long".to_string()));
                 }
 
@@ -614,9 +619,9 @@ impl<S: AsyncStream> SyncSession<S> {
                     .map_err(|e| SyncError::ProtocolFault(e.to_string()))?;
 
                 entries.push(DirEntry {
-                    mode,
-                    size,
-                    mtime,
+                    mode: dent.mode,
+                    size: dent.size as u64,
+                    mtime: dent.mtime as u64,
                     name,
                 });
             }
@@ -624,21 +629,20 @@ impl<S: AsyncStream> SyncSession<S> {
 
         Ok(entries)
     }
-
     /// Queries file stat using `stat_v2` request.
     pub async fn stat(&mut self, path: &str) -> Result<Stat, SyncError> {
         if self.capabilities.stat != StatVersion::V2 {
             return Err(SyncError::NotSupported("stat_v2 not supported".to_string()));
         }
-        self.send_request(ID_STAT_V2, path).await?;
+        self.send_request(SyncId::StatV2, path).await?;
         self.finish_stat().await
     }
 
     /// Queries file lstat using `lstat_v2` (or `lstat_v1` when `stat_v2` is absent).
     pub async fn lstat(&mut self, path: &str) -> Result<Stat, SyncError> {
         match self.capabilities.stat {
-            StatVersion::V2 => self.send_request(ID_LSTAT_V2, path).await?,
-            StatVersion::V1 => self.send_request(ID_LSTAT_V1, path).await?,
+            StatVersion::V2 => self.send_request(SyncId::LstatV2, path).await?,
+            StatVersion::V1 => self.send_request(SyncId::LstatV1, path).await?,
         }
         self.finish_stat().await
     }
@@ -652,11 +656,11 @@ impl<S: AsyncStream> SyncSession<S> {
                 if st.is_symlink() {
                     st.size = 0;
                     let dir_path = format!("{path}/");
-                    st.mode &= !0o170000;
+                    st.mode &= !FileMode::S_IFMT;
                     if let Ok(_tmp_st) = self.lstat(&dir_path).await {
-                        st.mode |= 0o040000;
+                        st.mode |= FileMode::S_IFDIR;
                     } else {
-                        st.mode |= 0o100000;
+                        st.mode |= FileMode::S_IFREG;
                     }
                 }
                 Ok(st)
@@ -669,68 +673,62 @@ impl<S: AsyncStream> SyncSession<S> {
         let is_stat_v2 = self.have_stat_v2();
 
         if is_stat_v2 {
-            let mut buf = [0u8; 72];
+            let mut buf = [0u8; std::mem::size_of::<SyncStatV2>()];
             self.stream.read_exact(&mut buf).await?;
 
-            let id = u32::from_le_bytes(buf[0..4].try_into().unwrap());
-            if id != ID_LSTAT_V2 && id != ID_STAT_V2 {
+            let st2: SyncStatV2 =
+                unsafe { std::ptr::read_unaligned(buf.as_ptr() as *const SyncStatV2) };
+            let st2_id = st2.id;
+            let sync_id = SyncId::try_from(st2_id).map_err(|id| {
+                SyncError::ProtocolFault(format!("stat response has wrong message id: 0x{id:08x}"))
+            })?;
+            if sync_id != SyncId::LstatV2 && sync_id != SyncId::StatV2 {
                 return Err(SyncError::ProtocolFault(format!(
-                    "stat response has wrong message id: 0x{id:08x}"
+                    "stat response has wrong message id: 0x{st2_id:08x}"
                 )));
             }
 
-            let error = u32::from_le_bytes(buf[4..8].try_into().unwrap());
-            if error != 0 {
-                let host_errno = errno_from_wire(error);
+            if st2.error != 0 {
+                let host_errno = errno_from_wire(st2.error);
                 let message = errno_to_string(host_errno);
                 return Err(SyncError::Errno {
-                    wire: error,
+                    wire: st2.error,
                     errno: host_errno,
                     message,
                 });
             }
 
-            let dev = u64::from_le_bytes(buf[8..16].try_into().unwrap());
-            let ino = u64::from_le_bytes(buf[16..24].try_into().unwrap());
-            let mode = u32::from_le_bytes(buf[24..28].try_into().unwrap());
-            let nlink = u32::from_le_bytes(buf[28..32].try_into().unwrap());
-            let uid = u32::from_le_bytes(buf[32..36].try_into().unwrap());
-            let gid = u32::from_le_bytes(buf[36..40].try_into().unwrap());
-            let size = u64::from_le_bytes(buf[40..48].try_into().unwrap());
-            let atime = i64::from_le_bytes(buf[48..56].try_into().unwrap());
-            let mtime = i64::from_le_bytes(buf[56..64].try_into().unwrap());
-            let ctime = i64::from_le_bytes(buf[64..72].try_into().unwrap());
-
             Ok(Stat {
-                id,
+                id: st2_id,
                 error: 0,
-                dev,
-                ino,
-                mode,
-                nlink,
-                uid,
-                gid,
-                size,
-                atime,
-                mtime,
-                ctime,
+                dev: st2.dev,
+                ino: st2.ino,
+                mode: st2.mode,
+                nlink: st2.nlink,
+                uid: st2.uid,
+                gid: st2.gid,
+                size: st2.size,
+                atime: st2.atime,
+                mtime: st2.mtime,
+                ctime: st2.ctime,
             })
         } else {
-            let mut buf = [0u8; 16];
+            let mut buf = [0u8; std::mem::size_of::<SyncStatV1>()];
             self.stream.read_exact(&mut buf).await?;
 
-            let id = u32::from_le_bytes(buf[0..4].try_into().unwrap());
-            if id != ID_LSTAT_V1 {
+            let st1: SyncStatV1 =
+                unsafe { std::ptr::read_unaligned(buf.as_ptr() as *const SyncStatV1) };
+            let st1_id = st1.id;
+            let sync_id = SyncId::try_from(st1_id).map_err(|id| {
+                SyncError::ProtocolFault(format!("stat response has wrong message id: 0x{id:08x}"))
+            })?;
+            if sync_id != SyncId::LstatV1 {
                 return Err(SyncError::ProtocolFault(format!(
-                    "stat response has wrong message id: 0x{id:08x}"
+                    "stat response has wrong message id: 0x{st1_id:08x}"
                 )));
             }
 
-            let mode = u32::from_le_bytes(buf[4..8].try_into().unwrap());
-            let size = u32::from_le_bytes(buf[8..12].try_into().unwrap());
-            let mtime = u32::from_le_bytes(buf[12..16].try_into().unwrap());
-
-            if mode == 0 && size == 0 && mtime == 0 {
+            if st1.mode == 0 && st1.size == 0 && st1.mtime == 0 {
                 let host_errno = errno_from_wire(2);
                 let message = errno_to_string(host_errno);
                 return Err(SyncError::Errno {
@@ -741,18 +739,18 @@ impl<S: AsyncStream> SyncSession<S> {
             }
 
             Ok(Stat {
-                id,
+                id: st1_id,
                 error: 0,
                 dev: 0,
                 ino: 0,
-                mode,
+                mode: st1.mode,
                 nlink: 1,
                 uid: 0,
                 gid: 0,
-                size: size as u64,
-                atime: mtime as i64,
-                mtime: mtime as i64,
-                ctime: mtime as i64,
+                size: st1.size as u64,
+                atime: st1.mtime as i64,
+                mtime: st1.mtime as i64,
+                ctime: st1.mtime as i64,
             })
         }
     }
@@ -884,9 +882,11 @@ impl<S: AsyncStream> SyncSession<S> {
             };
 
             let mode = src_st.mode;
-            let file_type = mode & 0o170000;
-            let is_pullable =
-                file_type == 0o100000 || file_type == 0o060000 || file_type == 0o020000;
+            let file_type = src_st.file_mode().file_type();
+            let is_pullable = matches!(
+                file_type,
+                FileType::Regular | FileType::BlockDevice | FileType::CharacterDevice
+            );
             if !is_pullable {
                 res.warnings.push(format!(
                     "skipping special file '{src_path}' (mode = 0o{mode:o})"
@@ -963,7 +963,7 @@ impl<S: AsyncStream> SyncSession<S> {
         match self.capabilities.send_recv {
             SendRecvVersion::V2 { .. } => self.send_recv_v2_req(rpath).await?,
             SendRecvVersion::V1 => {
-                self.send_request(ID_RECV_V1, rpath)
+                self.send_request(SyncId::RecvV1, rpath)
                     .await
                     .map_err(|e| e.to_string())?;
             }
@@ -999,11 +999,11 @@ impl<S: AsyncStream> SyncSession<S> {
                 let id = u32::from_le_bytes(header_buf[0..4].try_into().unwrap());
                 let size = u32::from_le_bytes(header_buf[4..8].try_into().unwrap());
 
-                if id == ID_DONE {
+                if id == SyncId::Done.to_u32() {
                     break;
                 }
 
-                if id != ID_DATA {
+                if id != SyncId::Data.to_u32() {
                     let msglen = size as usize;
                     if msglen > SYNC_DATA_MAX {
                         return Err(format!(
@@ -1064,16 +1064,16 @@ impl<S: AsyncStream> SyncSession<S> {
     }
 
     async fn send_recv_v2_req(&mut self, path: &str) -> Result<(), String> {
-        if path.len() > 1024 {
+        if path.len() > SYNC_PATH_MAX {
             return Err(format!("SendRequest failed: path too long: {}", path.len()));
         }
 
         let path_bytes = path.as_bytes();
         let mut buf = Vec::with_capacity(8 + path_bytes.len() + 8);
-        buf.extend_from_slice(&ID_RECV_V2.to_le_bytes());
+        buf.extend_from_slice(&SyncId::RecvV2.to_le_bytes());
         buf.extend_from_slice(&(path_bytes.len() as u32).to_le_bytes());
         buf.extend_from_slice(path_bytes);
-        buf.extend_from_slice(&ID_RECV_V2.to_le_bytes());
+        buf.extend_from_slice(&SyncId::RecvV2.to_le_bytes());
         buf.extend_from_slice(&0u32.to_le_bytes());
 
         self.stream
@@ -1362,7 +1362,7 @@ impl<S: AsyncStream> SyncSession<S> {
         data: &[u8],
     ) -> Result<(), String> {
         let path_and_mode = format!("{rpath},{mode}");
-        if path_and_mode.len() > 1024 {
+        if path_and_mode.len() > SYNC_PATH_MAX {
             return Err(format!(
                 "SendRequest failed: path too long: {}",
                 path_and_mode.len()
@@ -1370,15 +1370,15 @@ impl<S: AsyncStream> SyncSession<S> {
         }
 
         let mut buf = Vec::with_capacity(8 + path_and_mode.len() + 8 + data.len() + 8);
-        buf.extend_from_slice(&ID_SEND_V1.to_le_bytes());
+        buf.extend_from_slice(&SyncId::SendV1.to_le_bytes());
         buf.extend_from_slice(&(path_and_mode.len() as u32).to_le_bytes());
         buf.extend_from_slice(path_and_mode.as_bytes());
 
-        buf.extend_from_slice(&ID_DATA.to_le_bytes());
+        buf.extend_from_slice(&SyncId::Data.to_le_bytes());
         buf.extend_from_slice(&(data.len() as u32).to_le_bytes());
         buf.extend_from_slice(data);
 
-        buf.extend_from_slice(&ID_DONE.to_le_bytes());
+        buf.extend_from_slice(&SyncId::Done.to_le_bytes());
         buf.extend_from_slice(&mtime.to_le_bytes());
 
         self.write_or_fail(lpath, rpath, &buf).await
@@ -1393,32 +1393,32 @@ impl<S: AsyncStream> SyncSession<S> {
         mut file: std::fs::File,
     ) -> Result<(), String> {
         if self.have_sendrecv_v2() {
-            if rpath.len() > 1024 {
+            if rpath.len() > SYNC_PATH_MAX {
                 return Err(format!(
                     "SendRequest failed: path too long: {}",
                     rpath.len()
                 ));
             }
             let mut hdr_buf = Vec::with_capacity(8 + rpath.len() + 12);
-            hdr_buf.extend_from_slice(&ID_SEND_V2.to_le_bytes());
+            hdr_buf.extend_from_slice(&SyncId::SendV2.to_le_bytes());
             hdr_buf.extend_from_slice(&(rpath.len() as u32).to_le_bytes());
             hdr_buf.extend_from_slice(rpath.as_bytes());
 
-            hdr_buf.extend_from_slice(&ID_SEND_V2.to_le_bytes());
+            hdr_buf.extend_from_slice(&SyncId::SendV2.to_le_bytes());
             hdr_buf.extend_from_slice(&mode.to_le_bytes());
             hdr_buf.extend_from_slice(&0u32.to_le_bytes()); // flags = 0
 
             self.write_or_fail(lpath, rpath, &hdr_buf).await?;
         } else {
             let path_and_mode = format!("{rpath},{mode}");
-            if path_and_mode.len() > 1024 {
+            if path_and_mode.len() > SYNC_PATH_MAX {
                 return Err(format!(
                     "SendRequest failed: path too long: {}",
                     path_and_mode.len()
                 ));
             }
             let mut hdr_buf = Vec::with_capacity(8 + path_and_mode.len());
-            hdr_buf.extend_from_slice(&ID_SEND_V1.to_le_bytes());
+            hdr_buf.extend_from_slice(&SyncId::SendV1.to_le_bytes());
             hdr_buf.extend_from_slice(&(path_and_mode.len() as u32).to_le_bytes());
             hdr_buf.extend_from_slice(path_and_mode.as_bytes());
 
@@ -1453,7 +1453,7 @@ impl<S: AsyncStream> SyncSession<S> {
             }
 
             let mut data_hdr = Vec::with_capacity(8 + chunk.len());
-            data_hdr.extend_from_slice(&ID_DATA.to_le_bytes());
+            data_hdr.extend_from_slice(&SyncId::Data.to_le_bytes());
             data_hdr.extend_from_slice(&(chunk.len() as u32).to_le_bytes());
             data_hdr.extend_from_slice(&chunk);
 
@@ -1461,7 +1461,7 @@ impl<S: AsyncStream> SyncSession<S> {
         }
 
         let mut done_hdr = [0u8; 8];
-        done_hdr[0..4].copy_from_slice(&ID_DONE.to_le_bytes());
+        done_hdr[0..4].copy_from_slice(&SyncId::Done.to_le_bytes());
         done_hdr[4..8].copy_from_slice(&mtime.to_le_bytes());
 
         self.write_or_fail(lpath, rpath, &done_hdr).await
@@ -1474,7 +1474,7 @@ impl<S: AsyncStream> SyncSession<S> {
                 if self.stream.read_exact(&mut status_buf).await.is_ok() {
                     let id = u32::from_le_bytes(status_buf[0..4].try_into().unwrap());
                     let msglen = u32::from_le_bytes(status_buf[4..8].try_into().unwrap()) as usize;
-                    if id == ID_FAIL && msglen <= SYNC_DATA_MAX {
+                    if id == SyncId::Fail.to_u32() && msglen <= SYNC_DATA_MAX {
                         let mut fail_buf = vec![0u8; msglen];
                         if self.stream.read_exact(&mut fail_buf).await.is_ok() {
                             let fail_msg = String::from_utf8_lossy(&fail_buf);
@@ -1531,7 +1531,7 @@ impl<S: AsyncStream> SyncSession<S> {
             let id = u32::from_le_bytes(hdr_buf[0..4].try_into().unwrap());
             let msglen = u32::from_le_bytes(hdr_buf[4..8].try_into().unwrap()) as usize;
 
-            if id == ID_OKAY {
+            if id == SyncId::Okay.to_u32() {
                 let (from, to, bytes) = deferred_acks.pop_front().unwrap();
                 if msglen != 0 {
                     let err_msg = format!("received ID_OKAY with msg_len ({msglen} != 0)");
@@ -1554,7 +1554,7 @@ impl<S: AsyncStream> SyncSession<S> {
                         error: None,
                     });
                 }
-            } else if id == ID_FAIL {
+            } else if id == SyncId::Fail.to_u32() {
                 if msglen > SYNC_DATA_MAX {
                     let (from, to, bytes) = deferred_acks.pop_front().unwrap();
                     let err_msg = format!("too-long message length from daemon: msglen = {msglen}");
@@ -1625,7 +1625,7 @@ impl<S: AsyncStream> SyncSession<S> {
 
     /// Sends `QUIT` request to close sync session gracefully.
     pub async fn quit(&mut self) -> Result<(), SyncError> {
-        self.send_request(ID_QUIT, "").await
+        self.send_request(SyncId::Quit, "").await
     }
 }
 

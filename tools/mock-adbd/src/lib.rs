@@ -20,12 +20,12 @@ fn mock_log(msg: &str) {
     }
 }
 
-pub const ID_STAT_V2: u32 = u32::from_le_bytes(*b"STA2");
-pub const ID_LSTAT_V2: u32 = u32::from_le_bytes(*b"LST2");
-pub const ID_LIST_V2: u32 = u32::from_le_bytes(*b"LIS2");
-pub const ID_DENT_V2: u32 = u32::from_le_bytes(*b"DNT2");
-pub const ID_SEND_V2: u32 = u32::from_le_bytes(*b"SND2");
-pub const ID_RECV_V2: u32 = u32::from_le_bytes(*b"RCV2");
+pub use adb_proto::sync::ID_DENT_V2;
+pub use adb_proto::sync::ID_LIST_V2;
+pub use adb_proto::sync::ID_LSTAT_V2;
+pub use adb_proto::sync::ID_RECV_V2;
+pub use adb_proto::sync::ID_SEND_V2;
+pub use adb_proto::sync::ID_STAT_V2;
 
 #[derive(Debug, Clone)]
 pub struct MockAdbdOptions {
