@@ -373,6 +373,8 @@ pub struct MockUsbDeviceHandle {
     pub recorded_transfers: Mutex<Vec<RecordedTransfer>>,
     pub should_fail_read: Mutex<Option<UsbError>>,
     pub should_fail_write: Mutex<Option<UsbError>>,
+    pub should_fail_clear_halt: Mutex<Option<UsbError>>,
+    pub clear_halt_call_count: Mutex<usize>,
     pub halted_endpoints: Mutex<Vec<u8>>,
     pub closed: Mutex<bool>,
 }
@@ -447,6 +449,11 @@ impl UsbDeviceHandle for MockUsbDeviceHandle {
         endpoint: u8,
     ) -> Pin<Box<dyn Future<Output = Result<(), UsbError>> + Send + 'a>> {
         Box::pin(async move {
+            let mut count = self.clear_halt_call_count.lock().await;
+            *count += 1;
+            if let Some(err) = self.should_fail_clear_halt.lock().await.clone() {
+                return Err(err);
+            }
             let mut halted = self.halted_endpoints.lock().await;
             halted.retain(|&ep| ep != endpoint);
             Ok(())
