@@ -1,11 +1,10 @@
-use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::Arc;
 use tokio::sync::{mpsc, oneshot};
 
-use adb_proto::{Command, LocalId, RemoteId};
+use adb_proto::{AckBytes, Command, LocalId, RemoteId};
 use adb_transport::{Packet, Transport, TransportError};
 
-use crate::stream::StreamRegistry;
+use crate::stream::{StreamRegistry, StreamState, StreamWriteRequest};
 
 /// Handle passed with incoming data for acknowledging receipt via A_OKAY.
 #[derive(Clone, Debug)]
@@ -42,7 +41,7 @@ pub enum StreamMessage {
     /// Stream connection confirmation or flow control update via an `A_OKAY` packet.
     Ready {
         remote_id: RemoteId,
-        ack_bytes: Option<i32>,
+        ack_bytes: Option<AckBytes>,
     },
     /// Stream closure via an `A_CLSE` packet or transport termination.
     Close,
@@ -84,12 +83,6 @@ pub enum RouterError {
     ProtocolViolation(String),
 }
 
-struct StreamWriteRequest {
-    local_id: LocalId,
-    payload: Vec<u8>,
-    response_tx: oneshot::Sender<Result<(), RouterError>>,
-}
-
 enum RouterCommand {
     Write(StreamWriteRequest),
     AckInbound(LocalId, oneshot::Sender<Result<(), RouterError>>),
@@ -126,19 +119,6 @@ impl StreamWriter {
             .await
             .map_err(|_| RouterError::Stream("router response channel dropped".to_string()))?
     }
-
-    /// Sends an A_OKAY acknowledgment back to the remote peer for inbound data received on this stream.
-    pub async fn send_okay(&self) -> Result<(), RouterError> {
-        let (resp_tx, resp_rx) = oneshot::channel();
-        self.cmd_tx
-            .send(RouterCommand::AckInbound(self.local_id, resp_tx))
-            .await
-            .map_err(|_| RouterError::Stream("router command channel closed".to_string()))?;
-
-        resp_rx
-            .await
-            .map_err(|_| RouterError::Stream("router response channel dropped".to_string()))?
-    }
 }
 
 /// Main async packet dispatch loop routing `OPEN`, `WRTE`, `OKAY`, and `CLSE` packets.
@@ -149,9 +129,6 @@ pub struct PacketRouter<T: Transport> {
     skip_checksum: bool,
     cmd_tx: mpsc::Sender<RouterCommand>,
     cmd_rx: mpsc::Receiver<RouterCommand>,
-    outgoing_in_flight: HashMap<LocalId, oneshot::Sender<Result<(), RouterError>>>,
-    outgoing_queued: HashMap<LocalId, VecDeque<StreamWriteRequest>>,
-    inbound_in_flight: HashSet<LocalId>,
 }
 
 impl<T: Transport> PacketRouter<T> {
@@ -165,9 +142,6 @@ impl<T: Transport> PacketRouter<T> {
             skip_checksum: true,
             cmd_tx,
             cmd_rx,
-            outgoing_in_flight: HashMap::new(),
-            outgoing_queued: HashMap::new(),
-            inbound_in_flight: HashSet::new(),
         }
     }
 
@@ -188,11 +162,19 @@ impl<T: Transport> PacketRouter<T> {
             .registry
             .get(local_id)
             .ok_or_else(|| RouterError::Stream(format!("stream {local_id} not found")))?;
-        let remote_id = entry
-            .remote_id()
-            .ok_or_else(|| RouterError::Stream("remote_id not yet established".to_string()))?;
 
-        self.inbound_in_flight.remove(&local_id);
+        let remote_id = entry.with_state_mut(|state| match state {
+            StreamState::Open {
+                remote_id, inbound, ..
+            } => {
+                inbound.awaiting_ack = false;
+                Ok(*remote_id)
+            }
+            StreamState::Opening { .. } => Err(RouterError::Stream(
+                "remote_id not yet established".to_string(),
+            )),
+            StreamState::Closing => Err(RouterError::Stream(format!("stream {local_id} closed"))),
+        })?;
 
         let okay_packet = Packet::new(
             Command::Okay,
@@ -235,20 +217,11 @@ impl<T: Transport> PacketRouter<T> {
     pub async fn run(mut self) -> Result<(), RouterError> {
         let result = self.run_loop().await;
 
-        // Cleanup: close all active streams in registry on exit
+        // Cleanup: close all active streams in registry on exit and notify handles
         let active_streams = self.registry.clear();
         for entry in active_streams {
-            let _ = entry.handle().send(StreamMessage::Close);
-        }
-
-        for (_, resp_tx) in self.outgoing_in_flight.drain() {
-            let _ = resp_tx.send(Err(RouterError::Stream("connection closed".to_string())));
-        }
-        for (_, mut queue) in self.outgoing_queued.drain() {
-            while let Some(req) = queue.pop_front() {
-                let _ = req
-                    .response_tx
-                    .send(Err(RouterError::Stream("connection closed".to_string())));
+            if let Some(h) = entry.handle() {
+                let _ = h.send(StreamMessage::Close);
             }
         }
 
@@ -319,46 +292,46 @@ impl<T: Transport> PacketRouter<T> {
             }
         };
 
-        if entry.remote_id().is_none() {
-            let _ = req.response_tx.send(Err(RouterError::Stream(
-                "remote_id not yet established".to_string(),
-            )));
-            return Ok(());
-        }
-
-        if self.outgoing_in_flight.contains_key(&local_id) {
-            self.outgoing_queued
-                .entry(local_id)
-                .or_default()
-                .push_back(req);
-            return Ok(());
-        }
-
-        self.send_stream_write(req).await
-    }
-
-    async fn send_stream_write(&mut self, req: StreamWriteRequest) -> Result<(), RouterError> {
-        let local_id = req.local_id;
-        let entry = match self.registry.get(local_id) {
-            Some(e) => e,
-            None => {
-                let _ = req
-                    .response_tx
-                    .send(Err(RouterError::Stream("stream closed".to_string())));
-                return Ok(());
-            }
-        };
-
-        let remote_id = match entry.remote_id() {
-            Some(rid) => rid,
-            None => {
+        let to_send = entry.with_state_mut(|state| match state {
+            StreamState::Opening { .. } => {
                 let _ = req.response_tx.send(Err(RouterError::Stream(
                     "remote_id not yet established".to_string(),
                 )));
-                return Ok(());
+                None
             }
-        };
+            StreamState::Open {
+                remote_id,
+                outbound,
+                ..
+            } => {
+                if outbound.in_flight.is_some() {
+                    outbound.queued.push_back(req);
+                    None
+                } else {
+                    Some((*remote_id, req))
+                }
+            }
+            StreamState::Closing => {
+                let _ = req
+                    .response_tx
+                    .send(Err(RouterError::Stream("stream closed".to_string())));
+                None
+            }
+        });
 
+        if let Some((remote_id, req)) = to_send {
+            self.send_stream_write(local_id, remote_id, req).await?;
+        }
+
+        Ok(())
+    }
+
+    async fn send_stream_write(
+        &mut self,
+        local_id: LocalId,
+        remote_id: RemoteId,
+        req: StreamWriteRequest,
+    ) -> Result<(), RouterError> {
         let wrte_packet = Packet::new(
             Command::Wrte,
             local_id.get(),
@@ -372,7 +345,18 @@ impl<T: Transport> PacketRouter<T> {
             return Ok(());
         }
 
-        self.outgoing_in_flight.insert(local_id, req.response_tx);
+        if let Some(entry) = self.registry.get(local_id) {
+            entry.with_state_mut(|state| {
+                if let StreamState::Open { outbound, .. } = state {
+                    outbound.in_flight = Some(req.response_tx);
+                } else {
+                    let _ = req
+                        .response_tx
+                        .send(Err(RouterError::Stream("stream closed".to_string())));
+                }
+            });
+        }
+
         Ok(())
     }
 
@@ -437,27 +421,38 @@ impl<T: Transport> PacketRouter<T> {
         };
 
         if let Some(entry) = self.registry.find(local_id, Some(remote_id)) {
-            if self.inbound_in_flight.contains(&local_id) {
-                return Err(RouterError::ProtocolViolation(format!(
-                    "consecutive WRTE without OKAY on stream local_id={local_id}, remote_id={remote_id}"
-                )));
-            }
+            let res = entry.with_state_mut(|state| match state {
+                StreamState::Open {
+                    remote_id: rid,
+                    inbound,
+                    ..
+                } if *rid == remote_id => {
+                    if inbound.awaiting_ack {
+                        Err(RouterError::ProtocolViolation(format!(
+                            "consecutive WRTE without OKAY on stream local_id={local_id}, remote_id={remote_id}"
+                        )))
+                    } else {
+                        inbound.awaiting_ack = true;
+                        Ok(())
+                    }
+                }
+                _ => Ok(()),
+            });
 
-            self.inbound_in_flight.insert(local_id);
+            res?;
 
             let acker = StreamAcker {
                 local_id,
                 cmd_tx: self.cmd_tx.clone(),
             };
 
-            if entry
-                .handle()
-                .send(StreamMessage::Data(packet.payload, acker))
-                .is_err()
-            {
+            let send_res = match entry.handle() {
+                Some(h) => h.send(StreamMessage::Data(packet.payload, acker)),
+                None => Err(tokio::sync::mpsc::error::SendError(StreamMessage::Close)),
+            };
+            if send_res.is_err() {
                 // Stream receiver dropped, remove from registry and reply CLSE
                 self.registry.remove(local_id);
-                self.inbound_in_flight.remove(&local_id);
                 self.send_close(Some(local_id), remote_id).await?;
             }
         } else {
@@ -483,33 +478,38 @@ impl<T: Transport> PacketRouter<T> {
             }
 
             let ack_bytes = if packet.payload.len() == 4 {
-                Some(i32::from_le_bytes(
+                Some(AckBytes::from_le_bytes(
                     packet.payload[..4].try_into().expect("slice length 4"),
                 ))
             } else {
                 None
             };
 
-            if let Some(resp_tx) = self.outgoing_in_flight.remove(&local_id) {
-                let _ = resp_tx.send(Ok(()));
-            }
-
-            if let Some(queue) = self.outgoing_queued.get_mut(&local_id) {
-                if let Some(next_req) = queue.pop_front() {
-                    self.send_stream_write(next_req).await?;
+            let next_to_send = entry.with_state_mut(|state| {
+                if let StreamState::Open { outbound, .. } = state {
+                    if let Some(resp_tx) = outbound.in_flight.take() {
+                        let _ = resp_tx.send(Ok(()));
+                    }
+                    outbound.queued.pop_front()
+                } else {
+                    None
                 }
+            });
+
+            if let Some(next_req) = next_to_send {
+                self.send_stream_write(local_id, remote_id, next_req)
+                    .await?;
             }
 
-            if entry
-                .handle()
-                .send(StreamMessage::Ready {
+            let send_res = match entry.handle() {
+                Some(h) => h.send(StreamMessage::Ready {
                     remote_id,
                     ack_bytes,
-                })
-                .is_err()
-            {
+                }),
+                None => Err(tokio::sync::mpsc::error::SendError(StreamMessage::Close)),
+            };
+            if send_res.is_err() {
                 self.registry.remove(local_id);
-                self.inbound_in_flight.remove(&local_id);
                 self.send_close(Some(local_id), remote_id).await?;
             }
         } else {
@@ -529,21 +529,11 @@ impl<T: Transport> PacketRouter<T> {
         // C++: find_local_socket(p->msg.arg1, p->msg.arg0)
         // Note: arg0 may be 0 for failed OPEN
         if let Some(entry) = self.registry.find(local_id, remote_id) {
-            let _ = entry.handle().send(StreamMessage::Close);
+            if let Some(h) = entry.handle() {
+                let _ = h.send(StreamMessage::Close);
+            }
+            // Removing the stream cleans up and drops the stream state (cancelling in-flight/queued writes)
             self.registry.remove(local_id);
-            self.inbound_in_flight.remove(&local_id);
-            if let Some(resp_tx) = self.outgoing_in_flight.remove(&local_id) {
-                let _ = resp_tx.send(Err(RouterError::Stream(
-                    "stream closed by peer".to_string(),
-                )));
-            }
-            if let Some(mut queue) = self.outgoing_queued.remove(&local_id) {
-                while let Some(req) = queue.pop_front() {
-                    let _ = req.response_tx.send(Err(RouterError::Stream(
-                        "stream closed by peer".to_string(),
-                    )));
-                }
-            }
         }
         // Per protocol parity, unmapped CLSE messages are ignored without responding
     }

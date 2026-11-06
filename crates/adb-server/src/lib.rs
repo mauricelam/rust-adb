@@ -5,10 +5,14 @@ pub mod state;
 pub mod state_machine;
 pub mod transport_type;
 
-pub use registry::{DeviceEntry, DeviceRegistry, RegistrationError, TransportId};
+pub use registry::{
+    DeviceEntry, DeviceListSnapshot, DeviceProperties, DeviceRegistry, RegistrationError,
+    RegistryError, TransportId,
+};
 pub use state::ConnectionState;
 pub use state_machine::{
-    DeviceStateMachine, DeviceStateMachineEvent, DeviceStateMachineOutput, OutgoingPacket,
+    DeviceConnectionStatus, DeviceStateMachine, DeviceStateMachineEvent, DeviceStateMachineOutput,
+    OutgoingPacket,
 };
 pub use transport_type::TransportType;
 pub mod diagnose;

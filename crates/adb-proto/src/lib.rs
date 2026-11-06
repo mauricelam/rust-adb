@@ -45,6 +45,6 @@ pub use sync::{
 };
 pub use transport_selector::{format_host_command, TransportSelector};
 pub use types::{
-    AdbPort, ConsolePort, IdError, LocalId, MaxPayload, ProtocolVersion, RemoteId, ServerVersion,
+    AckBytes, AdbPort, ConsolePort, LocalId, MaxPayload, ProtocolVersion, RemoteId, ServerVersion,
     TransportId, ADB_SERVER_VERSION, SERVER_VERSION,
 };

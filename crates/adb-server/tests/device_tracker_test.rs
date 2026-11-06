@@ -1,7 +1,7 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use adb_server::{ConnectionState, DeviceRegistry, TrackerFormat, TransportType};
+use adb_server::{ConnectionState, DeviceProperties, DeviceRegistry, TrackerFormat, TransportType};
 
 #[tokio::test]
 async fn test_tracker_initial_empty() {
@@ -45,13 +45,15 @@ async fn test_tracker_device_connect_and_state_change() {
     assert_eq!(notification, b"0018127.0.0.1:55555\toffline\n");
 
     // Device state changes to Authorizing
-    registry.update_state(id, ConnectionState::Authorizing);
+    registry
+        .update_state(id, ConnectionState::Authorizing)
+        .unwrap();
     let notification = rx.recv().await.expect("notification after authorizing");
     // "127.0.0.1:55555\tauthorizing\n" is 28 bytes (0x001c)
     assert_eq!(notification, b"001c127.0.0.1:55555\tauthorizing\n");
 
     // Device state changes to Device
-    registry.update_state(id, ConnectionState::Device);
+    registry.update_state(id, ConnectionState::Device).unwrap();
     let notification = rx.recv().await.expect("notification after device");
     // "127.0.0.1:55555\tdevice\n" is 23 bytes (0x0017)
     assert_eq!(notification, b"0017127.0.0.1:55555\tdevice\n");
@@ -71,23 +73,33 @@ async fn test_tracker_multi_format_and_ordering() {
     let id2 = registry
         .register("127.0.0.1:55556", TransportType::Local)
         .unwrap();
-    registry.update_state(id2, ConnectionState::Device);
-    registry.set_device_properties(
-        id2,
-        Some("mock_device".into()),
-        Some("mock_model".into()),
-        Some("mock_device".into()),
-    );
+    registry.update_state(id2, ConnectionState::Device).unwrap();
+    registry
+        .set_device_properties(
+            id2,
+            DeviceProperties {
+                product: Some("mock_device".into()),
+                model: Some("mock_model".into()),
+                device: Some("mock_device".into()),
+                devpath: None,
+            },
+        )
+        .unwrap();
 
     // device 1 is Usb transport (USB sorts before Local in upstream ADB: kTransportUsb < kTransportLocal)
     let id1 = registry.register("usb-serial", TransportType::Usb).unwrap();
-    registry.update_state(id1, ConnectionState::Device);
-    registry.set_device_properties(
-        id1,
-        Some("pixel".into()),
-        Some("Pixel 7".into()),
-        Some("panther".into()),
-    );
+    registry.update_state(id1, ConnectionState::Device).unwrap();
+    registry
+        .set_device_properties(
+            id1,
+            DeviceProperties {
+                product: Some("pixel".into()),
+                model: Some("Pixel 7".into()),
+                device: Some("panther".into()),
+                devpath: None,
+            },
+        )
+        .unwrap();
 
     // 1. Short Text: USB device first, then Local device
     let mut rx_short = registry.subscribe(TrackerFormat::ShortText);
@@ -158,7 +170,7 @@ async fn test_tracker_multiple_subscribers_concurrent_events() {
         for i in 0..5 {
             let serial = format!("dev-{i}");
             let id = reg.register(&serial, TransportType::Usb).unwrap();
-            reg.update_state(id, ConnectionState::Device);
+            let _ = reg.update_state(id, ConnectionState::Device);
             tokio::time::sleep(Duration::from_millis(5)).await;
         }
     });

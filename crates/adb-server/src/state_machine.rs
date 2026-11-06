@@ -30,49 +30,76 @@ pub struct DeviceStateMachineOutput {
 }
 
 /// Events driving the device state machine.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DeviceStateMachineEvent<'a> {
     /// Received `A_AUTH` with `ADB_AUTH_TOKEN` containing token challenge bytes.
     AuthToken(&'a [u8]),
-    /// Received `A_CNXN` with banner service type (e.g. "device", "recovery").
+    /// Received `A_CNXN` carrying the parsed `ConnectionState`.
     Cnxn {
-        /// Service type reported in device banner.
-        service_type: String,
+        /// Connection state derived from device banner.
+        state: ConnectionState,
     },
     /// The transport disconnected or failed.
     Disconnected,
 }
 
+impl<'a> DeviceStateMachineEvent<'a> {
+    /// Convenience constructor creating a `Cnxn` event from a banner service type string.
+    pub fn cnxn_from_service_type(service_type: &str) -> Self {
+        Self::Cnxn {
+            state: ConnectionState::from_service_type(service_type),
+        }
+    }
+}
+
+/// Explicit connection progression state of a device transport.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DeviceConnectionStatus {
+    /// Initial or offline state.
+    Offline,
+    /// Actively authenticating using signature or public key challenges.
+    Authorizing,
+    /// Connection established either via authorization or prompt displayed.
+    Established(ConnectionState),
+}
+
 /// Per-transport device state machine managing authentication progression and connection states.
 pub struct DeviceStateMachine {
-    state: ConnectionState,
+    status: DeviceConnectionStatus,
     auth: HostAuth,
-    connection_established: bool,
 }
 
 impl DeviceStateMachine {
-    /// Creates a new `DeviceStateMachine` with initial `Offline` state and provided `HostAuth`.
+    /// Creates a new `DeviceStateMachine` with initial `Offline` status and provided `HostAuth`.
     pub fn new(auth: HostAuth) -> Self {
         Self {
-            state: ConnectionState::Offline,
+            status: DeviceConnectionStatus::Offline,
             auth,
-            connection_established: false,
         }
+    }
+
+    /// Current connection status of the device.
+    pub fn status(&self) -> DeviceConnectionStatus {
+        self.status
     }
 
     /// Current connection state of the device.
     pub fn state(&self) -> ConnectionState {
-        self.state
+        match self.status {
+            DeviceConnectionStatus::Offline => ConnectionState::Offline,
+            DeviceConnectionStatus::Authorizing => ConnectionState::Authorizing,
+            DeviceConnectionStatus::Established(state) => state,
+        }
     }
 
     /// Whether the device is in an online operational state.
     pub fn is_online(&self) -> bool {
-        self.state.is_online()
+        self.state().is_online()
     }
 
     /// Whether the connection has been established (either authenticated or prompt shown).
     pub fn is_connection_established(&self) -> bool {
-        self.connection_established
+        matches!(self.status, DeviceConnectionStatus::Established(_))
     }
 
     /// Processes an incoming event, updates internal state, and returns any outputs/packets to send.
@@ -81,8 +108,8 @@ impl DeviceStateMachine {
 
         match event {
             DeviceStateMachineEvent::AuthToken(token) => {
-                if self.state != ConnectionState::Authorizing {
-                    self.state = ConnectionState::Authorizing;
+                if !matches!(self.status, DeviceConnectionStatus::Authorizing) {
+                    self.status = DeviceConnectionStatus::Authorizing;
                 }
 
                 let actions = self.auth.handle_event(AuthEvent::AuthToken(token));
@@ -101,28 +128,28 @@ impl DeviceStateMachine {
                             });
                         }
                         AuthAction::ReportUnauthorized => {
-                            self.state = ConnectionState::Unauthorized;
+                            self.status =
+                                DeviceConnectionStatus::Established(ConnectionState::Unauthorized);
                         }
                         AuthAction::ReportEstablished => {
-                            self.connection_established = true;
+                            self.status = DeviceConnectionStatus::Established(self.state());
                             output.connection_established = true;
                         }
                     }
                 }
             }
-            DeviceStateMachineEvent::Cnxn { service_type } => {
+            DeviceStateMachineEvent::Cnxn { state } => {
                 let actions = self.auth.handle_event(AuthEvent::Cnxn);
                 for action in actions {
                     if let AuthAction::ReportEstablished = action {
-                        self.connection_established = true;
                         output.connection_established = true;
                     }
                 }
-                self.state = ConnectionState::from_service_type(&service_type);
+                self.status = DeviceConnectionStatus::Established(state);
+                output.connection_established = true;
             }
             DeviceStateMachineEvent::Disconnected => {
-                self.state = ConnectionState::Offline;
-                self.connection_established = false;
+                self.status = DeviceConnectionStatus::Offline;
             }
         }
 

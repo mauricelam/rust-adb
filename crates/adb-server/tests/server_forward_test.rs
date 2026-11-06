@@ -13,7 +13,9 @@ async fn test_forward_lifecycle_and_norebind() {
     let dev_id = registry
         .register("device-1", TransportType::Usb)
         .expect("register device");
-    registry.update_state(dev_id, ConnectionState::Device);
+    registry
+        .update_state(dev_id, ConnectionState::Device)
+        .unwrap();
 
     let server = SmartSocketServer::bind("127.0.0.1:0", Arc::clone(&registry))
         .await
@@ -166,7 +168,9 @@ async fn test_forward_proxy_traffic_end_to_end() {
     let dev_id = registry
         .register("device-echo", TransportType::Local)
         .expect("register device");
-    registry.update_state(dev_id, ConnectionState::Device);
+    registry
+        .update_state(dev_id, ConnectionState::Device)
+        .unwrap();
 
     let server = SmartSocketServer::bind("127.0.0.1:0", Arc::clone(&registry))
         .await

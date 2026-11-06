@@ -8,6 +8,70 @@ use std::num::{NonZeroU32, NonZeroU64, ParseIntError};
 use std::ops::Deref;
 use std::str::FromStr;
 
+/// Delayed acknowledgment byte count in `A_OKAY` packets.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct AckBytes(pub u32);
+
+impl AckBytes {
+    /// Creates a new `AckBytes`.
+    pub const fn new(val: u32) -> Self {
+        Self(val)
+    }
+
+    /// Returns the raw `u32` byte count.
+    pub const fn get(&self) -> u32 {
+        self.0
+    }
+
+    /// Encodes `AckBytes` to 4 little-endian bytes.
+    pub fn to_le_bytes(&self) -> [u8; 4] {
+        self.0.to_le_bytes()
+    }
+
+    /// Decodes `AckBytes` from 4 little-endian bytes.
+    pub fn from_le_bytes(bytes: [u8; 4]) -> Self {
+        Self(u32::from_le_bytes(bytes))
+    }
+}
+
+impl fmt::Display for AckBytes {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.0)
+    }
+}
+
+impl From<u32> for AckBytes {
+    fn from(val: u32) -> Self {
+        Self(val)
+    }
+}
+
+impl From<AckBytes> for u32 {
+    fn from(val: AckBytes) -> Self {
+        val.0
+    }
+}
+
+impl Deref for AckBytes {
+    type Target = u32;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl PartialEq<u32> for AckBytes {
+    fn eq(&self, other: &u32) -> bool {
+        self.0 == *other
+    }
+}
+
+impl PartialEq<AckBytes> for u32 {
+    fn eq(&self, other: &AckBytes) -> bool {
+        *self == other.0
+    }
+}
+
 /// Expected ADB server version matching C++ `ADB_SERVER_VERSION` in `original/adb.h`.
 pub const ADB_SERVER_VERSION: u32 = 41;
 

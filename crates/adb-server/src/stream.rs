@@ -1,9 +1,12 @@
 use std::collections::hash_map::Entry;
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, RwLock};
+use tokio::sync::oneshot;
 
 use adb_proto::{LocalId, RemoteId};
+
+use crate::router::RouterError;
 
 /// Errors that can occur during stream registry operations.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
@@ -14,20 +17,112 @@ pub enum StreamError {
     CapacityExhausted,
 }
 
-/// A registered stream entry holding the local_id, optional remote_id, and the stream handle `H`.
-#[derive(Debug)]
-pub struct StreamEntry<H> {
-    local_id: LocalId,
-    remote_id: RwLock<Option<RemoteId>>,
-    handle: H,
+/// A request to write payload data to a logical stream.
+pub struct StreamWriteRequest {
+    pub local_id: LocalId,
+    pub payload: Vec<u8>,
+    pub response_tx: oneshot::Sender<Result<(), RouterError>>,
 }
 
-impl<H> StreamEntry<H> {
+impl std::fmt::Debug for StreamWriteRequest {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("StreamWriteRequest")
+            .field("local_id", &self.local_id)
+            .field("payload_len", &self.payload.len())
+            .finish()
+    }
+}
+
+/// State of inbound data receiving on an open logical stream.
+#[derive(Debug, Default)]
+pub struct InboundState {
+    /// Whether an inbound A_WRTE packet has arrived and is awaiting an A_OKAY acknowledgment.
+    pub awaiting_ack: bool,
+}
+
+/// State of outbound data transmission on an open logical stream.
+#[derive(Default)]
+pub struct OutboundState {
+    /// In-flight write response sender awaiting an A_OKAY acknowledgment from the peer.
+    pub in_flight: Option<oneshot::Sender<Result<(), RouterError>>>,
+    /// Queue of pending outbound writes awaiting peer A_OKAY.
+    pub queued: VecDeque<StreamWriteRequest>,
+}
+
+impl std::fmt::Debug for OutboundState {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("OutboundState")
+            .field("has_in_flight", &self.in_flight.is_some())
+            .field("queued_len", &self.queued.len())
+            .finish()
+    }
+}
+
+/// Explicit lifecycle state of a logical stream.
+pub enum StreamState<H> {
+    /// Stream is being opened (e.g. host sent OPEN or awaiting remote peer OKAY).
+    Opening { handle: H },
+    /// Stream is fully established with known peer RemoteId.
+    Open {
+        remote_id: RemoteId,
+        handle: H,
+        inbound: InboundState,
+        outbound: OutboundState,
+    },
+    /// Stream is closing or closed.
+    Closing,
+}
+
+impl<H> std::fmt::Debug for StreamState<H> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Opening { .. } => write!(f, "StreamState::Opening"),
+            Self::Open {
+                remote_id,
+                inbound,
+                outbound,
+                ..
+            } => f
+                .debug_struct("StreamState::Open")
+                .field("remote_id", remote_id)
+                .field("inbound", inbound)
+                .field("outbound", outbound)
+                .finish(),
+            Self::Closing => write!(f, "StreamState::Closing"),
+        }
+    }
+}
+
+/// A registered stream entry holding the local_id and the explicit `StreamState<H>`.
+pub struct StreamEntry<H> {
+    local_id: LocalId,
+    state: RwLock<StreamState<H>>,
+}
+
+impl<H> std::fmt::Debug for StreamEntry<H> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("StreamEntry")
+            .field("local_id", &self.local_id)
+            .field("state", &*self.state.read().expect("lock poisoned"))
+            .finish()
+    }
+}
+
+impl<H: Clone> StreamEntry<H> {
+    /// Creates a new `StreamEntry` in Opening or Open state depending on `remote_id`.
     pub fn new(local_id: LocalId, remote_id: Option<RemoteId>, handle: H) -> Self {
+        let state = match remote_id {
+            Some(rid) => StreamState::Open {
+                remote_id: rid,
+                handle,
+                inbound: InboundState::default(),
+                outbound: OutboundState::default(),
+            },
+            None => StreamState::Opening { handle },
+        };
         Self {
             local_id,
-            remote_id: RwLock::new(remote_id),
-            handle,
+            state: RwLock::new(state),
         }
     }
 
@@ -40,36 +135,77 @@ impl<H> StreamEntry<H> {
     /// Returns the remote peer's stream ID, if known.
     #[inline]
     pub fn remote_id(&self) -> Option<RemoteId> {
-        *self.remote_id.read().expect("lock poisoned")
+        match &*self.state.read().expect("lock poisoned") {
+            StreamState::Open { remote_id, .. } => Some(*remote_id),
+            _ => None,
+        }
     }
 
-    /// Sets or updates the remote peer's stream ID.
-    #[inline]
+    /// Sets or updates the remote peer's stream ID, transitioning `Opening` to `Open`.
     pub fn set_remote_id(&self, remote_id: RemoteId) {
-        *self.remote_id.write().expect("lock poisoned") = Some(remote_id);
+        let mut state_guard = self.state.write().expect("lock poisoned");
+        let current = std::mem::replace(&mut *state_guard, StreamState::Closing);
+        *state_guard = match current {
+            StreamState::Opening { handle } => StreamState::Open {
+                remote_id,
+                handle,
+                inbound: InboundState::default(),
+                outbound: OutboundState::default(),
+            },
+            StreamState::Open {
+                handle,
+                inbound,
+                outbound,
+                ..
+            } => StreamState::Open {
+                remote_id,
+                handle,
+                inbound,
+                outbound,
+            },
+            StreamState::Closing => StreamState::Closing,
+        };
     }
 
-    /// Clears the remote peer's stream ID.
-    #[inline]
-    pub fn clear_remote_id(&self) {
-        *self.remote_id.write().expect("lock poisoned") = None;
+    /// Returns a clone of the inner stream handle, if not closed.
+    pub fn handle(&self) -> Option<H> {
+        match &*self.state.read().expect("lock poisoned") {
+            StreamState::Opening { handle } => Some(handle.clone()),
+            StreamState::Open { handle, .. } => Some(handle.clone()),
+            StreamState::Closing => None,
+        }
     }
 
-    /// Returns a reference to the inner stream handle.
-    #[inline]
-    pub fn handle(&self) -> &H {
-        &self.handle
+    /// Executes an operation with a reference to the stream state.
+    pub fn with_state<R>(&self, f: impl FnOnce(&StreamState<H>) -> R) -> R {
+        let guard = self.state.read().expect("lock poisoned");
+        f(&*guard)
+    }
+
+    /// Executes an operation with a mutable reference to the stream state.
+    pub fn with_state_mut<R>(&self, f: impl FnOnce(&mut StreamState<H>) -> R) -> R {
+        let mut guard = self.state.write().expect("lock poisoned");
+        f(&mut *guard)
+    }
+
+    /// Closes this stream entry and cleans up any pending outbound write requests.
+    pub fn close(&self) {
+        let mut guard = self.state.write().expect("lock poisoned");
+        let prev = std::mem::replace(&mut *guard, StreamState::Closing);
+        if let StreamState::Open { mut outbound, .. } = prev {
+            if let Some(resp_tx) = outbound.in_flight.take() {
+                let _ = resp_tx.send(Err(RouterError::Stream("connection closed".to_string())));
+            }
+            while let Some(req) = outbound.queued.pop_front() {
+                let _ = req
+                    .response_tx
+                    .send(Err(RouterError::Stream("connection closed".to_string())));
+            }
+        }
     }
 }
 
 /// Concurrency-safe registry for multiplexed logical ADB streams over a physical transport.
-///
-/// Implements stream ID allocation and stream mapping matching upstream C++ ADB constraints:
-/// - Local stream IDs are positive non-zero 32-bit unsigned integers (`1..=u32::MAX`).
-/// - ID generation starts at 1 and wraps around to 1 (skipping 0).
-/// - Remote IDs must also never be 0.
-/// - Sockets can be looked up by `local_id` or `(local_id, remote_id)` where `remote_id.is_none()`
-///   matches any peer ID (matching `find_local_socket(local_id, peer_id)` in `original/sockets.cpp`).
 pub struct StreamRegistry<H> {
     next_id: AtomicU32,
     streams: RwLock<HashMap<LocalId, Arc<StreamEntry<H>>>>,
@@ -77,19 +213,21 @@ pub struct StreamRegistry<H> {
 
 impl<H> Default for StreamRegistry<H> {
     fn default() -> Self {
-        Self::new()
+        Self {
+            next_id: AtomicU32::new(1),
+            streams: RwLock::new(HashMap::new()),
+        }
     }
 }
 
 impl<H> StreamRegistry<H> {
     /// Creates a new empty `StreamRegistry`.
     pub fn new() -> Self {
-        Self {
-            next_id: AtomicU32::new(1),
-            streams: RwLock::new(HashMap::new()),
-        }
+        Self::default()
     }
+}
 
+impl<H: Clone> StreamRegistry<H> {
     /// Allocates the next unique `LocalId` and registers the stream handle.
     pub fn allocate(&self, handle: H) -> Result<LocalId, StreamError> {
         self.allocate_internal(None, handle)
@@ -155,10 +293,6 @@ impl<H> StreamRegistry<H> {
     }
 
     /// Looks up a stream by `local_id` and optional `remote_id`.
-    ///
-    /// Following C++ ADB `find_local_socket(local_id, peer_id)`:
-    /// - If `remote_id.is_none()`, checks only `local_id`.
-    /// - If `remote_id.is_some()`, checks that `entry.remote_id() == remote_id`.
     pub fn find(
         &self,
         local_id: LocalId,
@@ -184,7 +318,11 @@ impl<H> StreamRegistry<H> {
     /// Removes and reclaims a stream by its `local_id`.
     pub fn remove(&self, local_id: LocalId) -> Option<Arc<StreamEntry<H>>> {
         let mut map = self.streams.write().expect("lock poisoned");
-        map.remove(&local_id)
+        let entry = map.remove(&local_id);
+        if let Some(ref e) = entry {
+            e.close();
+        }
+        entry
     }
 
     /// Returns the number of currently active streams.
@@ -200,6 +338,7 @@ impl<H> StreamRegistry<H> {
     /// Clears all streams from the registry and returns them.
     pub fn clear(&self) -> Vec<Arc<StreamEntry<H>>> {
         let mut map = self.streams.write().expect("lock poisoned");
-        map.drain().map(|(_, v)| v).collect()
+        let drained: Vec<_> = map.drain().map(|(_, v)| v).collect();
+        drained
     }
 }

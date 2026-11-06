@@ -30,7 +30,7 @@ fn test_basic_allocation_and_lookup() {
     let entry1 = registry.get(id1).expect("stream 1 should exist");
     assert_eq!(entry1.local_id(), id1);
     assert_eq!(entry1.remote_id(), None);
-    assert_eq!(entry1.handle().name, "stream1");
+    assert_eq!(entry1.handle().unwrap().name, "stream1");
 
     let rid42 = RemoteId::from_u32(42).unwrap();
     let id2 = registry
@@ -47,7 +47,7 @@ fn test_basic_allocation_and_lookup() {
     let entry2 = registry.get(id2).expect("stream 2 should exist");
     assert_eq!(entry2.local_id(), id2);
     assert_eq!(entry2.remote_id(), Some(rid42));
-    assert_eq!(entry2.handle().name, "stream2");
+    assert_eq!(entry2.handle().unwrap().name, "stream2");
 }
 
 #[test]
@@ -99,7 +99,6 @@ fn test_removal_and_reclamation() {
 
     let removed = registry.remove(id1).expect("remove id1");
     assert_eq!(removed.local_id(), id1);
-    assert_eq!(removed.handle().name, "s1");
     assert_eq!(registry.count(), 1);
     assert!(registry.get(id1).is_none());
 

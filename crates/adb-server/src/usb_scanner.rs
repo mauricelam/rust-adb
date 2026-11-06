@@ -72,7 +72,8 @@ impl UsbDeviceScanner {
                 Some(dev.device_path.clone()),
             );
             if let Ok(tid) = res {
-                self.registry
+                let _ = self
+                    .registry
                     .update_state(tid, crate::state::ConnectionState::NoPerm);
                 return true;
             }
@@ -133,7 +134,8 @@ impl UsbDeviceScanner {
                     TransportType::Usb,
                     Some(dev.device_path),
                 ) {
-                    self.registry
+                    let _ = self
+                        .registry
                         .update_state(tid, crate::state::ConnectionState::NoPerm);
                     registered_count += 1;
                 }

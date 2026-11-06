@@ -16,24 +16,44 @@ use crate::transport_type::TransportType;
 /// Re-export strongly-typed TransportId from adb-proto.
 pub use adb_proto::TransportId;
 
+/// Error occurring during device registry lookup and update operations.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+pub enum RegistryError {
+    #[error("device not found")]
+    NotFound,
+}
+
 /// Error occurring during device registration.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 pub enum RegistrationError {
     /// A device with this serial number is already registered.
     ///
     /// Ported from `validate_transport_list` in `original/transport.cpp` returning `EALREADY`.
+    #[error("device is already registered")]
     AlreadyRegistered,
 }
 
-impl std::fmt::Display for RegistrationError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::AlreadyRegistered => write!(f, "device is already registered"),
-        }
-    }
+/// Updatable device properties.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct DeviceProperties {
+    pub product: Option<String>,
+    pub model: Option<String>,
+    pub device: Option<String>,
+    pub devpath: Option<String>,
 }
 
-impl std::error::Error for RegistrationError {}
+/// A snapshot of all registered devices at a given point in time.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DeviceListSnapshot {
+    pub devices: Vec<Arc<DeviceEntry>>,
+}
+
+impl DeviceListSnapshot {
+    /// Formats the snapshot according to the requested tracker format with framing.
+    pub fn format_framed(&self, format: TrackerFormat) -> Vec<u8> {
+        format_devices_framed(&self.devices, format)
+    }
+}
 
 /// Representation of a registered device / transport.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -166,8 +186,7 @@ fn parse_host_port(s: &str) -> Option<(String, u16)> {
 
 #[derive(Debug)]
 struct Subscriber {
-    format: TrackerFormat,
-    sender: mpsc::UnboundedSender<Vec<u8>>,
+    sender: mpsc::UnboundedSender<DeviceListSnapshot>,
 }
 
 /// Central thread-safe registry of connected devices and transports.
@@ -198,77 +217,61 @@ impl DeviceRegistry {
     }
 
     /// Allocates the next monotonic transport ID.
-    ///
-    /// Ported from `NextTransportId()` in `original/transport.cpp`:
-    /// ```cpp
-    /// TransportId NextTransportId() {
-    ///     static std::atomic<TransportId> next(1);
-    ///     return next++;
-    /// }
-    /// ```
     pub fn next_transport_id(&self) -> TransportId {
         let val = self.next_id.fetch_add(1, Ordering::Relaxed);
         TransportId::from_u64(val).expect("monotonic transport id never zero")
     }
 
-    /// Subscribes to device change notifications in the specified `TrackerFormat`.
-    ///
-    /// The receiver receives an initial notification immediately with current devices,
-    /// followed by framed update payloads whenever devices are registered, unregistered,
-    /// or change state/properties.
-    ///
-    /// Ported from `create_device_tracker` and `device_tracker_ready` in `original/transport.cpp`.
-    pub fn subscribe(&self, format: TrackerFormat) -> mpsc::UnboundedReceiver<Vec<u8>> {
+    /// Subscribes to typed device change notifications.
+    pub fn subscribe_snapshots(&self) -> mpsc::UnboundedReceiver<DeviceListSnapshot> {
         let (tx, rx) = mpsc::unbounded_channel();
         let sub_id = self.next_subscriber_id.fetch_add(1, Ordering::Relaxed);
 
         {
             let mut inner = self.inner.write();
             let devices: Vec<Arc<DeviceEntry>> = inner.by_id.values().cloned().collect();
-            let payload = format_devices_framed(&devices, format);
-            // Send initial state while holding write lock to prevent reordering with concurrent updates
-            let _ = tx.send(payload);
-            inner
-                .subscribers
-                .insert(sub_id, Subscriber { format, sender: tx });
+            let snapshot = DeviceListSnapshot { devices };
+            let _ = tx.send(snapshot);
+            inner.subscribers.insert(sub_id, Subscriber { sender: tx });
         }
 
         rx
     }
 
+    /// Subscribes to device change notifications framed in the specified `TrackerFormat`.
+    pub fn subscribe(&self, format: TrackerFormat) -> mpsc::UnboundedReceiver<Vec<u8>> {
+        let mut snapshot_rx = self.subscribe_snapshots();
+        let (framed_tx, framed_rx) = mpsc::unbounded_channel();
+
+        tokio::spawn(async move {
+            let mut cache: HashMap<TrackerFormat, Vec<u8>> = HashMap::new();
+            while let Some(snapshot) = snapshot_rx.recv().await {
+                let payload = cache
+                    .entry(format)
+                    .or_insert_with(|| snapshot.format_framed(format))
+                    .clone();
+                cache.clear();
+                if framed_tx.send(payload).is_err() {
+                    break;
+                }
+            }
+        });
+
+        framed_rx
+    }
+
     /// Internal helper to notify all active subscribers.
-    ///
-    /// Cleans up any subscribers whose channel receiver has been dropped.
-    /// Ported from `update_transports()` in `original/transport.cpp`.
     fn notify_subscribers(&self, inner: &mut RegistryInner) {
         if inner.subscribers.is_empty() {
             return;
         }
 
         let devices: Vec<Arc<DeviceEntry>> = inner.by_id.values().cloned().collect();
+        let snapshot = DeviceListSnapshot { devices };
 
-        // Cached formats to avoid re-formatting for multiple subscribers of the same format
-        let mut short_text: Option<Vec<u8>> = None;
-        let mut long_text: Option<Vec<u8>> = None;
-        let mut proto_bin: Option<Vec<u8>> = None;
-        let mut proto_text: Option<Vec<u8>> = None;
-
-        inner.subscribers.retain(|_, sub| {
-            let payload =
-                match sub.format {
-                    TrackerFormat::ShortText => short_text
-                        .get_or_insert_with(|| format_devices_framed(&devices, sub.format)),
-                    TrackerFormat::LongText => {
-                        long_text.get_or_insert_with(|| format_devices_framed(&devices, sub.format))
-                    }
-                    TrackerFormat::ProtoBinary => {
-                        proto_bin.get_or_insert_with(|| format_devices_framed(&devices, sub.format))
-                    }
-                    TrackerFormat::ProtoText => proto_text
-                        .get_or_insert_with(|| format_devices_framed(&devices, sub.format)),
-                };
-            sub.sender.send(payload.clone()).is_ok()
-        });
+        inner
+            .subscribers
+            .retain(|_, sub| sub.sender.send(snapshot.clone()).is_ok());
     }
 
     /// Registers a new device transport with the given serial and transport type.
@@ -376,40 +379,49 @@ impl DeviceRegistry {
     }
 
     /// Updates the connection state of a device by its transport ID.
-    /// Returns `true` if the device was found and updated.
-    pub fn update_state(&self, transport_id: TransportId, state: ConnectionState) -> bool {
+    pub fn update_state(
+        &self,
+        transport_id: TransportId,
+        state: ConnectionState,
+    ) -> Result<(), RegistryError> {
         let mut inner = self.inner.write();
         if let Some(entry) = inner.by_id.get_mut(&transport_id) {
             let mut updated = (**entry).clone();
             updated.state = state;
             *entry = Arc::new(updated);
             self.notify_subscribers(&mut inner);
-            true
+            Ok(())
         } else {
-            false
+            Err(RegistryError::NotFound)
         }
     }
 
-    /// Updates device property attributes (product, model, device).
-    /// Returns `true` if the device was found and updated.
+    /// Updates device property attributes.
     pub fn set_device_properties(
         &self,
         transport_id: TransportId,
-        product: Option<String>,
-        model: Option<String>,
-        device: Option<String>,
-    ) -> bool {
+        properties: DeviceProperties,
+    ) -> Result<(), RegistryError> {
         let mut inner = self.inner.write();
         if let Some(entry) = inner.by_id.get_mut(&transport_id) {
             let mut updated = (**entry).clone();
-            updated.product = product;
-            updated.model = model;
-            updated.device = device;
+            if properties.product.is_some() {
+                updated.product = properties.product;
+            }
+            if properties.model.is_some() {
+                updated.model = properties.model;
+            }
+            if properties.device.is_some() {
+                updated.device = properties.device;
+            }
+            if properties.devpath.is_some() {
+                updated.devpath = properties.devpath;
+            }
             *entry = Arc::new(updated);
             self.notify_subscribers(&mut inner);
-            true
+            Ok(())
         } else {
-            false
+            Err(RegistryError::NotFound)
         }
     }
 }
