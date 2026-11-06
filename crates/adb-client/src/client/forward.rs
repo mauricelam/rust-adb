@@ -4,6 +4,8 @@ use super::AdbClient;
 use crate::session::{Session, SessionError};
 use crate::transport::TransportSelector;
 
+use adb_proto::SocketSpec;
+
 /// Validates forward/reverse targets.
 ///
 /// Ports `forward_targets_are_valid` from C++ `original/adb_utils.cpp`.
@@ -29,7 +31,8 @@ pub fn forward_targets_are_valid(source: &str, dest: &str) -> Result<(), String>
 ///
 /// Ports `forward_dest_is_featured` from C++ `original/client/commandline.cpp`.
 pub fn forward_dest_is_featured(dest: &str, features: &adb_proto::Features) -> Result<(), String> {
-    if dest.starts_with("dev-raw:") && !features.contains(&adb_proto::Feature::DevRaw) {
+    let spec: SocketSpec = dest.parse().unwrap_or(SocketSpec::Other(dest.to_string()));
+    if matches!(spec, SocketSpec::DevRaw(_)) && !features.contains(&adb_proto::Feature::DevRaw) {
         return Err("dev-raw is not supported by the device".to_string());
     }
     Ok(())
